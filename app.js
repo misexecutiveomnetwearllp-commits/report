@@ -51,6 +51,77 @@ const AGG_LABELS = { sum: 'Sum', count: 'Count', avg: 'Average', min: 'Min', max
 const CHART_COLORS = ['#A6402C', '#1F6F5C', '#B9862F', '#4A6FA5', '#7A4CA0', '#C6784B', '#3E8E7E', '#8C5B3F', '#5B7553', '#9C4F6B'];
 
 /* ---------------------------------------------------------------
+   1b. LIBRARY LOADER — app.js khud libraries load karta hai
+   ---------------------------------------------------------------
+   Isse ye faayda hai ki agar index.html purana ho (jisme galat CDN
+   URL tha) tab bhi site chal jayegi. Ek CDN block ho (ad-blocker,
+   office firewall) to agla try hota hai.
+   --------------------------------------------------------------- */
+const XLSX_URLS = [
+  'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
+  'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+  'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'
+];
+const CHART_URLS = [
+  'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
+  'https://unpkg.com/chart.js@4.4.4/dist/chart.umd.min.js'
+];
+
+const Libs = { xlsx: null, chart: null };
+
+function loadScriptWithFallback(urls) {
+  return new Promise(function (resolve, reject) {
+    let i = 0;
+    (function next() {
+      if (i >= urls.length) { reject(new Error('sabhi CDN fail ho gaye')); return; }
+      const s = document.createElement('script');
+      s.src = urls[i++];
+      s.async = false;
+      s.onload = function () { resolve(); };
+      s.onerror = function () { if (s.parentNode) s.parentNode.removeChild(s); next(); };
+      document.head.appendChild(s);
+    })();
+  });
+}
+
+function ensureXLSX() {
+  if (typeof XLSX !== 'undefined') return Promise.resolve(true);
+  if (!Libs.xlsx) {
+    Libs.xlsx = loadScriptWithFallback(XLSX_URLS)
+      .then(function () { return typeof XLSX !== 'undefined'; })
+      .catch(function () { return false; });
+  }
+  return Libs.xlsx;
+}
+
+function ensureChart() {
+  if (typeof Chart !== 'undefined') return Promise.resolve(true);
+  if (!Libs.chart) {
+    Libs.chart = loadScriptWithFallback(CHART_URLS)
+      .then(function () { return typeof Chart !== 'undefined'; })
+      .catch(function () { return false; });
+  }
+  return Libs.chart;
+}
+
+function showLibError(msg) {
+  let b = document.getElementById('lib-error');
+  if (!b) {
+    // Purane index.html mein ye element nahi hai — bana dete hain.
+    b = document.createElement('div');
+    b.id = 'lib-error';
+    b.className = 'lib-error';
+    b.style.cssText = 'background:#F7DED7;border:1px solid #A6402C;color:#7A2716;' +
+      'padding:12px 16px;border-radius:8px;font-size:13px;margin-bottom:18px;line-height:1.5;';
+    const main = document.querySelector('.main');
+    if (main) main.insertBefore(b, main.firstChild);
+    else document.body.insertBefore(b, document.body.firstChild);
+  }
+  b.style.display = '';
+  b.textContent = msg;
+}
+
+/* ---------------------------------------------------------------
    2. UTILITIES
    --------------------------------------------------------------- */
 function normKey(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
@@ -268,7 +339,15 @@ function readWorkbook(file) {
   const reader = new FileReader();
   reader.onload = function (e) {
     const data = new Uint8Array(e.target.result);
-    parseWorkbookBuffer(data, file);
+    // Library abhi tak load na hui ho to pehle usko laate hain, phir parse.
+    ensureXLSX().then(function (ok) {
+      if (!ok) {
+        showLibError('Excel reader library load nahi ho payi. Internet connection, ad-blocker ' +
+          'ya office firewall check karo — inke bina file padhna kaam nahi karega.');
+        return;
+      }
+      parseWorkbookBuffer(data, file);
+    });
   };
   reader.onerror = () => toast(file.name + ': browser file read nahi kar paya (' + (reader.error ? reader.error.name : 'unknown') + ').');
   reader.readAsArrayBuffer(file);
@@ -282,7 +361,7 @@ function readWorkbook(file) {
  */
 function parseWorkbookBuffer(data, file) {
   if (typeof XLSX === 'undefined') {
-    toast('Excel reader library load nahi hui — page refresh karo. Phir bhi na chale to ad-blocker/firewall check karo.');
+    showLibError('Excel reader library load nahi ho payi. Page refresh karo; phir bhi na chale to ad-blocker/firewall check karo.');
     return;
   }
 
@@ -1289,9 +1368,19 @@ function chartCurrentPivot() {
   pivotChart = makeChart(ctx, { type: labels.length > 25 ? 'line' : chartType, data: { labels, datasets }, options: chartOptions() });
 }
 
-/** Chart.js na mile to app crash na ho — chart chhod kar baaki sab chalta rahe. */
+/** Chart.js na mile to app crash na ho — background mein load karke dobara draw karte hain. */
+let chartReloadQueued = false;
 function makeChart(ctx, cfg) {
-  if (typeof Chart === 'undefined') return null;
+  if (typeof Chart === 'undefined') {
+    if (!chartReloadQueued) {
+      chartReloadQueued = true;
+      ensureChart().then(function (ok) {
+        chartReloadQueued = false;
+        if (ok) { renderDashboard(); renderPerformance(); }
+      });
+    }
+    return null;
+  }
   try { return new Chart(ctx, cfg); }
   catch (e) { console.error('Chart render failed', e); return null; }
 }
