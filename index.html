@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StockLedger — ERP Sales, Purchase &amp; Stock Analyzer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2218%22 fill=%22%23A63D2F%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22%23F5EFE0%22 font-family=%22Georgia%22>S</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app-shell">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">S</span>
+      <div class="brand-text">
+        <strong>StockLedger</strong>
+        <small>Sales · Purchase · Stock</small>
+      </div>
+    </div>
+
+    <nav class="tabs" id="tab-nav">
+      <button class="tab-btn active" data-tab="import">
+        <span class="tab-no">01</span> Import Data
+      </button>
+      <button class="tab-btn" data-tab="dashboard">
+        <span class="tab-no">02</span> Dashboard
+      </button>
+      <button class="tab-btn" data-tab="performance">
+        <span class="tab-no">03</span> Product Performance
+      </button>
+      <button class="tab-btn" data-tab="insights">
+        <span class="tab-no">04</span> Reorder Planner
+      </button>
+      <button class="tab-btn" data-tab="pivot">
+        <span class="tab-no">05</span> Pivot Builder
+      </button>
+      <button class="tab-btn" data-tab="explore">
+        <span class="tab-no">06</span> Explore Rows
+      </button>
+    </nav>
+
+    <div class="sidebar-datasets">
+      <div class="sidebar-datasets-head">Loaded files</div>
+      <div id="sidebar-dataset-list" class="sidebar-dataset-list">
+        <div class="empty-hint">No files yet — start on Import Data.</div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button id="btn-save-session" class="ghost-btn" title="Download everything you've loaded &amp; mapped as one JSON file">⬇ Save session</button>
+      <label class="ghost-btn" for="session-load-input" title="Reload a session JSON you saved earlier">⬆ Load session
+        <input type="file" id="session-load-input" accept=".json" hidden>
+      </label>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+
+    <!-- ---------- TAB: IMPORT ---------- -->
+    <section class="tab-panel active" id="tab-import">
+      <header class="panel-head">
+        <h1>Import your ERP exports</h1>
+        <p>Bring data in two ways: drop the .xls / .xlsx / .csv files your ERP exports, or connect a Google Sheet once and pull straight from it every time. Column order and naming don't need to match between sources — StockLedger reads each one's own header row and lets you confirm what every column means.</p>
+      </header>
+
+      <div class="source-switch" id="source-switch">
+        <button class="source-tab active" data-source="file">📁 Upload files</button>
+        <button class="source-tab" data-source="sheet">🔗 Google Sheet</button>
+      </div>
+
+      <!-- source: local files -->
+      <div id="source-file">
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="file-input" multiple accept=".xls,.xlsx,.csv" hidden>
+          <div class="dropzone-inner">
+            <div class="dropzone-icon">⤒</div>
+            <p><strong>Drag files here</strong> or <button type="button" id="browse-btn" class="link-btn">browse</button></p>
+            <small>.xls · .xlsx · .csv — any number of files, any report type</small>
+          </div>
+        </div>
+      </div>
+
+      <!-- source: google sheet via apps script -->
+      <div id="source-sheet" style="display:none;">
+        <div class="connect-card">
+          <div class="connect-row">
+            <label class="toolbar-label" for="gs-url">Web app URL</label>
+            <input type="url" id="gs-url" class="text-input grow" placeholder="https://script.google.com/macros/s/AKfyc.../exec">
+          </div>
+          <div class="connect-row">
+            <label class="toolbar-label" for="gs-key">API key</label>
+            <input type="password" id="gs-key" class="text-input grow" placeholder="Code.gs mein jo API_KEY set ki hai">
+            <label class="toolbar-checkbox"><input type="checkbox" id="gs-remember" checked> Remember on this device</label>
+          </div>
+          <div class="connect-row">
+            <button id="gs-connect" class="ghost-btn primary">Connect</button>
+            <button id="gs-forget" class="ghost-btn small">Forget saved details</button>
+            <span id="gs-status" class="connect-status"></span>
+          </div>
+          <details class="connect-help">
+            <summary>Pehli baar setup kaise karein?</summary>
+            <ol>
+              <li>Apni Google Sheet kholo → <strong>Extensions → Apps Script</strong>.</li>
+              <li><code>Code.gs</code> ka content hata kar diye gaye <code>Code.gs</code> file ka content paste karo.</li>
+              <li><code>CONFIG.API_KEY</code> ko apna koi lamba random text bana do.</li>
+              <li><strong>Deploy → New deployment → Web app</strong>; “Execute as: Me”, “Who has access: <strong>Anyone</strong>” → Deploy.</li>
+              <li>Jo <code>/exec</code> URL mile, wo aur apni API key upar paste karke Connect dabao.</li>
+            </ol>
+            <p class="muted">“Anyone” isliye chahiye ki browser bina Google login ke data maang sake — bina sahi API key ke script kuch bhi return nahi karta.</p>
+          </details>
+        </div>
+
+        <div id="gs-sheet-list" class="sheet-list" style="display:none;"></div>
+      </div>
+
+      <div id="import-queue" class="import-queue"></div>
+
+      <div id="loaded-datasets-panel" class="loaded-panel" style="display:none;">
+        <h2>Loaded datasets</h2>
+        <table class="simple-table" id="loaded-datasets-table">
+          <thead><tr><th>File</th><th>Detected as</th><th>Rows</th><th>Date range</th><th>Mapped fields</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ---------- TAB: EXPLORE ---------- -->
+    <section class="tab-panel" id="tab-explore">
+      <header class="panel-head">
+        <h1>Explore the raw data</h1>
+        <p>Search, sort and filter any loaded file, row by row — like scrolling an Excel sheet.</p>
+      </header>
+
+      <div class="toolbar" id="explore-toolbar">
+        <select id="explore-dataset-select" class="select"></select>
+        <input type="search" id="explore-search" class="text-input" placeholder="Search all columns…">
+        <div id="explore-filters" class="filter-chip-row"></div>
+        <span class="spacer"></span>
+        <button id="explore-export" class="ghost-btn small">⬇ Export CSV</button>
+      </div>
+
+      <div class="table-scroll" id="explore-table-wrap">
+        <table class="data-table" id="explore-table"></table>
+      </div>
+      <div class="pager" id="explore-pager"></div>
+    </section>
+
+    <!-- ---------- TAB: PIVOT ---------- -->
+    <section class="tab-panel" id="tab-pivot">
+      <header class="panel-head">
+        <h1>Pivot builder</h1>
+        <p>Drag fields the way you would in Excel: into Filters, Rows, Columns and Values. Works across one file or several combined.</p>
+      </header>
+
+      <div class="toolbar" id="pivot-toolbar">
+        <label class="toolbar-label">Data:</label>
+        <select id="pivot-dataset-select" class="select"></select>
+        <label class="toolbar-label">Show as:</label>
+        <select id="pivot-show-as" class="select">
+          <option value="value">Raw values</option>
+          <option value="rowpct">% of row</option>
+          <option value="colpct">% of column</option>
+          <option value="totalpct">% of grand total</option>
+        </select>
+        <span class="spacer"></span>
+        <button id="pivot-add-chart" class="ghost-btn small">📊 Chart this</button>
+        <button id="pivot-export" class="ghost-btn small">⬇ Export CSV</button>
+        <button id="pivot-to-sheet" class="ghost-btn small gs-only" style="display:none;">↗ Send to Sheet</button>
+      </div>
+
+      <div class="pivot-layout">
+        <div class="pivot-fieldlist">
+          <div class="pivot-fieldlist-head">Fields</div>
+          <div id="pivot-field-list" class="field-chip-list"></div>
+        </div>
+
+        <div class="pivot-zones">
+          <div class="pivot-zone" id="zone-filters" data-zone="filters">
+            <div class="zone-title">Filters</div>
+            <div class="zone-body" data-drop="filters"></div>
+          </div>
+          <div class="pivot-zone-row">
+            <div class="pivot-zone" id="zone-rows" data-zone="rows">
+              <div class="zone-title">Rows</div>
+              <div class="zone-body" data-drop="rows"></div>
+            </div>
+            <div class="pivot-zone" id="zone-columns" data-zone="columns">
+              <div class="zone-title">Columns</div>
+              <div class="zone-body" data-drop="columns"></div>
+            </div>
+          </div>
+          <div class="pivot-zone" id="zone-values" data-zone="values">
+            <div class="zone-title">Values</div>
+            <div class="zone-body" data-drop="values"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-scroll pivot-result-scroll" id="pivot-table-wrap">
+        <table class="data-table pivot-table" id="pivot-table"></table>
+      </div>
+      <div id="pivot-chart-holder" class="chart-holder" style="display:none;">
+        <canvas id="pivot-chart-canvas"></canvas>
+        <button class="chip-remove-btn" id="pivot-chart-close">✕</button>
+      </div>
+    </section>
+
+    <!-- ---------- TAB: REORDER PLANNER ---------- -->
+    <section class="tab-panel" id="tab-insights">
+      <header class="panel-head">
+        <h1>Reorder planner</h1>
+        <p>Kya mangwana hai. Sales, Purchase aur Stock ko jodkar har item ka average daily sale nikalta hai, aur bataata hai ki target stock cover tak pahunchne ke liye kitna order karna chahiye.</p>
+      </header>
+
+      <div class="toolbar" id="insights-toolbar">
+        <label class="toolbar-label">Group by:</label>
+        <select id="insights-groupby" class="select">
+          <option value="Article No" selected>Article No</option>
+          <option value="Sub Section">Sub Section</option>
+          <option value="Item Code">Item Code (barcode level)</option>
+          <option value="Brand">Brand</option>
+          <option value="Style">Style</option>
+          <option value="Supplier">Supplier</option>
+          <option value="Section">Section</option>
+          <option value="Colour">Colour</option>
+          <option value="Size">Size</option>
+        </select>
+        <label class="toolbar-label">Sales window:</label>
+        <select id="insights-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option></select>
+        <label class="toolbar-label">Target cover:</label>
+        <input type="number" id="insights-target-days" class="text-input narrow" value="30" min="1" max="365"> days
+        <label class="toolbar-checkbox"><input type="checkbox" id="insights-only-flagged" checked> Only items needing reorder</label>
+        <span class="spacer"></span>
+        <button id="insights-export" class="ghost-btn small">⬇ Export CSV</button>
+        <button id="insights-to-sheet" class="ghost-btn small gs-only" style="display:none;">↗ Send to Sheet</button>
+      </div>
+
+      <div id="insights-kpis" class="kpi-row"></div>
+      <div id="insights-missing-note" class="note-banner" style="display:none;"></div>
+
+      <div class="table-scroll" id="insights-table-wrap">
+        <table class="data-table" id="insights-table"></table>
+      </div>
+    </section>
+
+    <!-- ---------- TAB: PRODUCT PERFORMANCE ---------- -->
+    <section class="tab-panel" id="tab-performance">
+      <header class="panel-head">
+        <h1>Product performance</h1>
+        <p>Kya chal raha hai aur kya atka hua hai. Har item ka sell-through, aakhri bikri kab hui, stock kitna purana hai, aur ABC class — taaki best performers aur dead stock dono turant saaf dikhein.</p>
+        <p class="head-tip">Tip: aapke ERP mein <strong>Item Code</strong> har piece ka alag barcode hai, isliye default grouping <strong>Article No</strong> rakhi hai — wahan trend saaf dikhta hai. Style ya Sub Section par bhi switch kar sakte ho.</p>
+      </header>
+
+      <div class="toolbar">
+        <label class="toolbar-label">Group by:</label>
+        <select id="perf-groupby" class="select">
+          <option value="Article No" selected>Article No</option>
+          <option value="Item Code">Item Code (barcode level)</option>
+          <option value="Style">Style</option>
+          <option value="Brand">Brand</option>
+          <option value="Sub Section">Sub Section</option>
+          <option value="Section">Section</option>
+          <option value="Supplier">Supplier</option>
+          <option value="Colour">Colour</option>
+          <option value="Size">Size</option>
+        </select>
+        <label class="toolbar-label">Sales window:</label>
+        <select id="perf-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option></select>
+        <input type="search" id="perf-search" class="text-input" placeholder="Search item, brand, supplier…">
+        <span class="spacer"></span>
+        <button id="perf-export" class="ghost-btn small">⬇ Export CSV</button>
+      </div>
+
+      <div id="perf-kpis" class="kpi-row"></div>
+
+      <div id="perf-charts">
+        <div class="chart-grid">
+          <div class="chart-card wide">
+            <h3>Pareto — which items make up the sales <span class="h3-note">(bars = qty sold, line = cumulative %)</span></h3>
+            <div class="chart-box chart-box-wide"><canvas id="chart-pareto"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Status split</h3>
+            <div class="chart-box"><canvas id="chart-status"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Stock ageing (by purchase bill date)</h3>
+            <div class="chart-box"><canvas id="chart-ageing"></canvas></div>
+          </div>
+          <div class="chart-card wide">
+            <h3>Biggest non-movers <span class="h3-note">(stock lying with zero sale in this window)</span></h3>
+            <div class="chart-box chart-box-wide"><canvas id="chart-bottom"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="seg-control" id="perf-view">
+        <button class="seg-btn active" data-view="all">All</button>
+        <button class="seg-btn" data-view="best">⭐ Best sellers</button>
+        <button class="seg-btn" data-view="slow">🐢 Slow movers</button>
+        <button class="seg-btn" data-view="dead">🧊 Dead stock</button>
+        <button class="seg-btn" data-view="over">📦 Overstocked</button>
+        <button class="seg-btn" data-view="oos">⚠ Out of stock</button>
+        <span class="seg-count" id="perf-count"></span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="data-table" id="perf-table"></table>
+      </div>
+    </section>
+
+    <!-- ---------- TAB: DASHBOARD ---------- -->
+    <section class="tab-panel" id="tab-dashboard">
+      <header class="panel-head">
+        <h1>Dashboard</h1>
+        <p>Poore business ki ek nazar mein tasveer — kitna bika, kitna aaya, kitna pada hai.</p>
+      </header>
+
+      <div id="dashboard-empty" class="empty-hint big">Load a Sales, Purchase or Stock file on the Import tab to see charts here.</div>
+
+      <div id="dashboard-body" style="display:none;">
+        <div class="toolbar">
+          <label class="toolbar-label">Sales window:</label>
+          <select id="dash-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option></select>
+          <label class="toolbar-label">Trend by:</label>
+          <div class="seg-control inline" id="dash-grain">
+            <button class="seg-btn" data-grain="day">Day</button>
+            <button class="seg-btn active" data-grain="month">Month</button>
+            <button class="seg-btn" data-grain="year">Year</button>
+          </div>
+        </div>
+
+        <div id="dashboard-kpis" class="kpi-row"></div>
+        <div class="chart-grid">
+          <div class="chart-card wide">
+            <h3>Sales vs purchase trend</h3>
+            <div class="chart-box chart-box-wide"><canvas id="chart-trend"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Top brands (sold qty)</h3>
+            <div class="chart-box"><canvas id="chart-topbrands"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Top sections (sold qty)</h3>
+            <div class="chart-box"><canvas id="chart-topsections"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Top suppliers (sold qty)</h3>
+            <div class="chart-box"><canvas id="chart-topsuppliers"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h3>Size-wise sale</h3>
+            <div class="chart-box"><canvas id="chart-topsizes"></canvas></div>
+          </div>
+          <div class="chart-card wide">
+            <h3>Stock spread by section</h3>
+            <div class="chart-box"><canvas id="chart-stocksplit"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.20.2/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
