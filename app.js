@@ -171,6 +171,8 @@ function parseDateLoose(v) {
 
 function fmtDate(d) {
   if (!d) return '';
+  if (!(d instanceof Date)) { d = parseDateLoose(d); if (!d) return ''; }
+  if (isNaN(d.getTime())) return '';
   return String(d.getUTCDate()).padStart(2, '0') + '-' + MONTH_LABELS[d.getUTCMonth()] + '-' + d.getUTCFullYear();
 }
 
@@ -284,8 +286,67 @@ function toast(msg) {
    --------------------------------------------------------------- */
 const App = {
   datasets: [],     // { id, name, type, fields[], records[], rowCount }
+  relationships: [],// { id, fromDsId, fromField, toDsId, toField, enabled }
   nextDsColor: 0
 };
+
+/* Lookup cache — relationships ke through dusre dataset se value uthane ke liye.
+   Data ya relationship badalne par saaf ho jata hai. */
+let LookupCache = new Map();
+function clearLookups() { LookupCache = new Map(); }
+
+function getLookup(dsId, keyField, valueField) {
+  const ck = dsId + '|' + keyField + '|' + valueField;
+  let lut = LookupCache.get(ck);
+  if (lut) return lut;
+  lut = new Map();
+  const ds = App.datasets.find(d => d.id === dsId);
+  if (ds) {
+    for (const rec of ds.records) {
+      const k = rec[keyField];
+      if (k === null || k === undefined || k === '') continue;
+      const v = rec[valueField];
+      if (v === null || v === undefined || v === '') continue;
+      const ks = String(k);
+      if (!lut.has(ks)) lut.set(ks, v);
+    }
+  }
+  LookupCache.set(ck, lut);
+  return lut;
+}
+
+/**
+ * Kisi record se field ki value nikalta hai. Agar us record ke dataset mein
+ * wo field nahi hai, to active relationships ke through jude hue dataset se
+ * uthane ki koshish karta hai — jaise Power BI mein related table se column
+ * aa jata hai.
+ */
+function resolveField(rec, field) {
+  const v = rec[field];
+  if (v !== undefined && v !== null && v !== '') return v;
+  const dsId = rec.__ds;
+  if (!dsId || !App.relationships.length) return null;
+
+  for (const rel of App.relationships) {
+    if (!rel.enabled) continue;
+    // Sirf asli key ke through value uthana safe hai (many-to-one lookup).
+    // Warna ek Section ke hazaron items mein se koi bhi random value aa sakti hai.
+    if (!rel.score || !rel.score.canEnrich) continue;
+    let myField, otherId, otherField;
+    if (rel.fromDsId === dsId) { myField = rel.fromField; otherId = rel.toDsId; otherField = rel.toField; }
+    else if (rel.toDsId === dsId) { myField = rel.toField; otherId = rel.fromDsId; otherField = rel.fromField; }
+    else continue;
+
+    const other = App.datasets.find(d => d.id === otherId);
+    if (!other || other.fields.indexOf(field) === -1) continue;
+
+    const key = rec[myField];
+    if (key === null || key === undefined || key === '') continue;
+    const got = getLookup(otherId, otherField, field).get(String(key));
+    if (got !== undefined) return got;
+  }
+  return null;
+}
 
 function fieldsOfDataset(ds) {
   return ds.fields.slice();
@@ -500,11 +561,11 @@ function escapeHtml(s) {
 }
 
 /** Turns raw rows + a column mapping into normalized record objects. */
-function buildRecords(dataRows, mapping) {
+function buildRecords(dataRows, mapping, dsId) {
   const dateFields = new Set(mapping.filter(m => FIELD_KIND[m.field] === 'date').map(m => m.field));
   const numberFields = new Set(mapping.filter(m => FIELD_KIND[m.field] === 'number').map(m => m.field));
   return dataRows.map(r => {
-    const rec = {};
+    const rec = { __ds: dsId };
     mapping.forEach(m => {
       let v = cleanValue(r[m.colIdx]);
       if (v !== null && dateFields.has(m.field)) v = parseDateLoose(v);
@@ -531,10 +592,11 @@ function confirmImport(card, filename, columns, dataRows, origin, headerIdx) {
   });
   if (!mapping.length) { toast('Map at least one column before adding.'); return; }
 
-  const records = buildRecords(dataRows, mapping);
+  const dsId = uid();
+  const records = buildRecords(dataRows, mapping, dsId);
   const fields = [...new Set(mapping.map(m => m.field))];
   const ds = {
-    id: uid(), name, type, fields, records, rowCount: records.length,
+    id: dsId, name, type, fields, records, rowCount: records.length,
     colorIdx: App.nextDsColor++,
     origin: origin || null,     // {url, key, sheet} when pulled from Google Sheets
     mapping: mapping,           // remembered so Refresh needs no re-mapping
@@ -547,6 +609,10 @@ function confirmImport(card, filename, columns, dataRows, origin, headerIdx) {
 }
 
 function refreshAfterDataChange() {
+  clearLookups();
+  // dusri file aate hi connections khud detect kar lete hain
+  if (App.datasets.length > 1 && !App.relationships.length) autoDetectRelationships(true);
+  rescoreRelationships();
   renderSidebarDatasets();
   renderLoadedTable();
   populateDatasetSelects();
@@ -556,6 +622,8 @@ function refreshAfterDataChange() {
   renderDashboard();
   renderInsights();
   renderPerformance();
+  renderRelations();
+  if (Drill.open) renderDrill();
 }
 
 function removeDataset(id) {
@@ -583,7 +651,7 @@ function dateRangeOf(ds) {
   let min = null, max = null;
   ds.records.forEach(r => {
     const d = r[dField];
-    if (!d) return;
+    if (!d || !(d instanceof Date) || isNaN(d.getTime())) return;
     if (!min || d < min) min = d;
     if (!max || d > max) max = d;
   });
@@ -830,7 +898,7 @@ function refreshDataset(id) {
 
   next(0).then(() => {
     const dataRows = all.slice(ds.headerIdx + 1).filter(r => r && r.some(c => c !== null && c !== undefined && c !== ''));
-    ds.records = buildRecords(dataRows, ds.mapping);
+    ds.records = buildRecords(dataRows, ds.mapping, ds.id);
     ds.rowCount = ds.records.length;
     GS.url = savedUrl || GS.url; GS.key = savedKey || GS.key;
     refreshAfterDataChange();
@@ -880,12 +948,95 @@ function initTabs() {
 /* ---------------------------------------------------------------
    6. EXPLORE TAB
    --------------------------------------------------------------- */
-const ExploreState = { page: 1, pageSize: 100, sortField: null, sortDir: 1, search: '' };
+const ExploreState = { page: 1, pageSize: 100, sortField: null, sortDir: 1, search: '', filters: {} };
 
 function initExplore() {
-  document.getElementById('explore-dataset-select').addEventListener('change', () => { ExploreState.page = 1; renderExplore(); });
+  document.getElementById('explore-dataset-select').addEventListener('change', () => {
+    ExploreState.page = 1; ExploreState.filters = {}; ExploreState.sortField = null; renderExplore();
+  });
   document.getElementById('explore-search').addEventListener('input', debounce(e => { ExploreState.search = e.target.value; ExploreState.page = 1; renderExplore(); }, 200));
   document.getElementById('explore-export').addEventListener('click', exportExploreCSV);
+  document.getElementById('explore-add-filter').addEventListener('click', openExploreFilterPicker);
+}
+
+/** Column chunkar uski values mein se filter lagane ka popup. */
+function openExploreFilterPicker() {
+  const fields = exploreFields();
+  if (!fields.length) { toast('Pehle koi file load karo.'); return; }
+  const recs = currentExploreRecords();
+
+  const popup = document.createElement('div');
+  popup.className = 'modal-backdrop';
+  popup.innerHTML = '<div class="modal-box">' +
+    '<h3>Filter lagao</h3>' +
+    '<label class="toolbar-label">Column:</label> ' +
+    '<select id="efp-field" class="select">' + fields.map(f => '<option value="' + escapeHtml(f) + '">' + escapeHtml(f) + '</option>').join('') + '</select>' +
+    '<div id="efp-values" class="efp-values"></div>' +
+    '<div class="modal-actions">' +
+      '<button class="ghost-btn small" id="efp-all">Select all</button>' +
+      '<button class="ghost-btn small" id="efp-none">Clear</button>' +
+      '<span class="spacer"></span>' +
+      '<button class="ghost-btn primary small" id="efp-apply">Apply</button>' +
+      '<button class="ghost-btn small" id="efp-cancel">Cancel</button>' +
+    '</div></div>';
+  document.body.appendChild(popup);
+
+  function loadValues() {
+    const f = popup.querySelector('#efp-field').value;
+    const counts = new Map();
+    recs.forEach(r => {
+      let v = r[f];
+      if (v instanceof Date) v = fmtDate(v);
+      v = (v === null || v === undefined || v === '') ? '(blank)' : String(v);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    });
+    const sel = ExploreState.filters[f];
+    const vals = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 500);
+    popup.querySelector('#efp-values').innerHTML = vals.map(([v, c]) =>
+      '<label class="efp-row"><input type="checkbox" value="' + escapeHtml(v) + '"' +
+      (!sel || sel.has(v) ? ' checked' : '') + '> <span>' + escapeHtml(v) + '</span>' +
+      '<span class="efp-count">' + c.toLocaleString('en-IN') + '</span></label>').join('') +
+      (counts.size > 500 ? '<div class="empty-hint">' + counts.size.toLocaleString('en-IN') + ' unique values — top 500 dikha rahe hain.</div>' : '');
+  }
+  loadValues();
+  popup.querySelector('#efp-field').addEventListener('change', loadValues);
+  popup.querySelector('#efp-all').onclick = () => popup.querySelectorAll('#efp-values input').forEach(c => c.checked = true);
+  popup.querySelector('#efp-none').onclick = () => popup.querySelectorAll('#efp-values input').forEach(c => c.checked = false);
+  popup.querySelector('#efp-cancel').onclick = () => popup.remove();
+  popup.addEventListener('click', e => { if (e.target === popup) popup.remove(); });
+  popup.querySelector('#efp-apply').onclick = () => {
+    const f = popup.querySelector('#efp-field').value;
+    const boxes = [...popup.querySelectorAll('#efp-values input')];
+    const checked = boxes.filter(b => b.checked).map(b => b.value);
+    if (checked.length === boxes.length) delete ExploreState.filters[f];
+    else ExploreState.filters[f] = new Set(checked);
+    popup.remove();
+    ExploreState.page = 1;
+    renderExplore();
+  };
+}
+
+function renderExploreFilterChips() {
+  const wrap = document.getElementById('explore-filters');
+  const keys = Object.keys(ExploreState.filters);
+  wrap.innerHTML = keys.map(f =>
+    '<span class="filter-chip">' + escapeHtml(f) + ': ' + ExploreState.filters[f].size + ' selected' +
+    '<button data-f="' + escapeHtml(f) + '">&times;</button></span>').join('');
+  wrap.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    delete ExploreState.filters[b.dataset.f];
+    renderExplore();
+  }));
+}
+
+function applyExploreFilters(recs) {
+  const keys = Object.keys(ExploreState.filters);
+  if (!keys.length) return recs;
+  return recs.filter(r => keys.every(f => {
+    let v = r[f];
+    if (v instanceof Date) v = fmtDate(v);
+    v = (v === null || v === undefined || v === '') ? '(blank)' : String(v);
+    return ExploreState.filters[f].has(v);
+  }));
 }
 
 function currentExploreRecords() {
@@ -913,8 +1064,9 @@ function renderExplore() {
   const table = document.getElementById('explore-table');
   if (!App.datasets.length) { table.innerHTML = '<tr><td class="empty-hint">Load a file first.</td></tr>'; document.getElementById('explore-pager').innerHTML = ''; return; }
 
-  let recs = currentExploreRecords();
+  let recs = applyExploreFilters(currentExploreRecords());
   const fields = exploreFields();
+  renderExploreFilterChips();
 
   if (ExploreState.search) {
     const q = ExploreState.search.toLowerCase();
@@ -977,7 +1129,7 @@ function renderExplore() {
 
 function exportExploreCSV() {
   const fields = exploreFields();
-  let recs = currentExploreRecords();
+  let recs = applyExploreFilters(currentExploreRecords());
   if (ExploreState.search) {
     const q = ExploreState.search.toLowerCase();
     recs = recs.filter(r => fields.some(f => {
@@ -1451,9 +1603,118 @@ function periodDayCount(range, recs) {
 
 function dimKey(rec, dim) {
   let key = rec[dim];
+  if (key === null || key === undefined || key === '') key = resolveField(rec, dim);
   if (key === null || key === undefined || key === '') return '(blank)';
   if (key instanceof Date) return fmtDate(key);
   return String(key);
+}
+
+/* ---------------------------------------------------------------
+   7c. RELATIONSHIPS — auto-detect + quality scoring
+   --------------------------------------------------------------- */
+
+/** Do datasets ke beech ek field par kitna overlap hai, ye naapta hai.
+ *  Saath hi batata hai ki target field ek asli "key" hai ya nahi — yani uski
+ *  values unique hain ya nahi. Ye zaroori hai: Section jaisa field 100% match
+ *  dikhata hai lekin usse doosri file se value uthana galat hoga, kyunki ek
+ *  Section ke andar hazaron alag-alag rows hoti hain. */
+function scoreRelationship(fromDs, fromField, toDs, toField, sampleLimit) {
+  const limit = sampleLimit || 4000;
+  const toSet = new Set();
+  let toNonNull = 0;
+  for (const r of toDs.records) {
+    const v = r[toField];
+    if (v === null || v === undefined || v === '') continue;
+    toNonNull++;
+    toSet.add(String(v));
+  }
+  if (!toSet.size) return { matched: 0, checked: 0, pct: 0, toDistinct: 0, uniqueness: 0, canEnrich: false };
+
+  let checked = 0, matched = 0;
+  const fromSet = new Set();
+  const step = Math.max(1, Math.floor(fromDs.records.length / limit));
+  for (let i = 0; i < fromDs.records.length; i += step) {
+    const v = fromDs.records[i][fromField];
+    if (v === null || v === undefined || v === '') continue;
+    checked++;
+    fromSet.add(String(v));
+    if (toSet.has(String(v))) matched++;
+  }
+
+  const uniqueness = toNonNull ? toSet.size / toNonNull : 0;
+  return {
+    matched, checked,
+    pct: checked ? (matched / checked) * 100 : 0,
+    toDistinct: toSet.size,
+    fromDistinct: fromSet.size,
+    uniqueness,
+    // Enrichment (dusri file se column uthana) sirf tab safe hai jab target
+    // field lagbhag unique ho — warna kaunsi row uthaayen, ye tay hi nahi hota.
+    canEnrich: uniqueness >= 0.9
+  };
+}
+
+function relationshipId(a, b, c, d) { return [a, b, c, d].join('~'); }
+
+/** Har dataset-pair ke liye sabse achha joining field dhoondta hai.
+ *  Sirf match % dekhna kaafi nahi — kam distinct values wala field (jaise
+ *  Section) 100% match dikhata hai par join ke liye bekaar hai. Isliye
+ *  cardinality ko bhi weight dete hain. */
+function suggestRelationships() {
+  const out = [];
+  const KEY_PREFERENCE = ['Item Code', 'Article No', 'Style', 'Brand', 'Supplier', 'Sub Section', 'Section'];
+  for (let i = 0; i < App.datasets.length; i++) {
+    for (let j = i + 1; j < App.datasets.length; j++) {
+      const a = App.datasets[i], b = App.datasets[j];
+      const shared = a.fields.filter(f => b.fields.indexOf(f) !== -1 && FIELD_KIND[f] !== 'number' && FIELD_KIND[f] !== 'date');
+      if (!shared.length) continue;
+      const candidates = [];
+      shared.forEach(f => {
+        const sc = scoreRelationship(a, f, b, f);
+        if (sc.toDistinct < 5) return;                 // 4 values wala field key nahi hota
+        const card = sc.toDistinct >= 500 ? 1 : (sc.toDistinct >= 100 ? 0.9 : (sc.toDistinct >= 20 ? 0.7 : 0.4));
+        const pref = KEY_PREFERENCE.indexOf(f);
+        const prefBonus = pref >= 0 ? (KEY_PREFERENCE.length - pref) * 2 : 0;
+        candidates.push({ field: f, score: sc, rank: sc.pct * card + prefBonus });
+      });
+      if (!candidates.length) continue;
+
+      // Jo connection sach mein kaam ki hai (jiske through column lookup ho
+      // sakta hai) usko pehle chunte hain — chahe uska match % kam ho.
+      const enrichable = candidates.filter(c => c.score.canEnrich && c.score.pct >= 10);
+      const pool = enrichable.length ? enrichable : candidates;
+      const best = pool.reduce((x, y) => (y.rank > x.rank ? y : x));
+
+      if (best && best.score.pct >= 20) {
+        out.push({
+          id: relationshipId(a.id, best.field, b.id, best.field),
+          fromDsId: a.id, fromField: best.field,
+          toDsId: b.id, toField: best.field,
+          enabled: true, score: best.score
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function autoDetectRelationships(silent) {
+  const found = suggestRelationships();
+  let added = 0;
+  found.forEach(r => {
+    if (!App.relationships.some(x => x.id === r.id)) { App.relationships.push(r); added++; }
+  });
+  clearLookups();
+  if (!silent) toast(added ? added + ' connection(s) detect hui.' : 'Koi nayi connection nahi mili.');
+  return added;
+}
+
+function rescoreRelationships() {
+  App.relationships.forEach(rel => {
+    const a = App.datasets.find(d => d.id === rel.fromDsId);
+    const b = App.datasets.find(d => d.id === rel.toDsId);
+    rel.score = (a && b) ? scoreRelationship(a, rel.fromField, b, rel.toField) : { pct: 0, matched: 0, checked: 0 };
+  });
 }
 
 /**
@@ -1656,7 +1917,8 @@ function renderInsights() {
   const head = '<thead><tr><th>' + dim + '</th><th class="num">Sold</th><th class="num">Purchased</th><th class="num">Stock</th>' +
     '<th class="num">Avg/day</th><th class="num">Days cover</th><th>Last sold</th><th class="num">Suggested reorder</th></tr></thead>';
   const body = '<tbody>' + rows.slice(0, 1000).map(r =>
-    '<tr>' + '<td>' + escapeHtml(r.key) + (r.reorder ? ' <span class="row-flag">●</span>' : '') + '</td>' +
+    '<tr class="drillable" data-key="' + escapeHtml(r.key) + '">' +
+    '<td>' + escapeHtml(r.key) + ' <span class="drill-hint">▸</span>' + (r.reorder ? ' <span class="row-flag">●</span>' : '') + '</td>' +
     '<td class="num">' + fmtNum(r.sold) + '</td>' +
     '<td class="num">' + fmtNum(r.purchased) + '</td>' +
     '<td class="num">' + fmtNum(r.stock) + '</td>' +
@@ -1668,9 +1930,9 @@ function renderInsights() {
   ).join('') + '</tbody>';
 
   wrap.innerHTML = head + body;
-  if (rows.length > 1000) {
-    wrap.insertAdjacentHTML('afterend', '');
-  }
+  wrap.querySelectorAll('tbody tr').forEach(tr => tr.addEventListener('click', () => {
+    if (tr.dataset.key) openDrill(dim, tr.dataset.key);
+  }));
 }
 
 function insightsToGrid() {
@@ -1787,8 +2049,8 @@ function renderPerformance() {
     (sk === k ? '<span class="sort-arrow">' + (sd === 1 ? '▲' : '▼') + '</span>' : '') + '</th>').join('') + '</tr></thead>';
 
   const body = '<tbody>' + rows.slice(0, 800).map(r =>
-    '<tr>' +
-      '<td title="' + escapeHtml(Object.values(r.meta).join(' · ')) + '">' + escapeHtml(r.key) + '</td>' +
+    '<tr class="drillable" data-key="' + escapeHtml(r.key) + '">' +
+      '<td title="' + escapeHtml(Object.values(r.meta).join(' · ')) + '">' + escapeHtml(r.key) + ' <span class="drill-hint">▸</span></td>' +
       '<td class="num">' + fmtNum(r.sold) + '</td>' +
       '<td class="num">' + fmtNum(r.stock) + '</td>' +
       '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>' +
@@ -1808,6 +2070,9 @@ function renderPerformance() {
     else { PerfState.sortKey = k; PerfState.sortDir = (k === 'key' || k === 'status' || k === 'abc') ? 1 : -1; }
     renderPerformance();
   }));
+  tableEl.querySelectorAll('tbody tr').forEach(tr => tr.addEventListener('click', () => {
+    if (tr.dataset.key) openDrill(dim, tr.dataset.key);
+  }));
 
   document.getElementById('perf-count').textContent =
     rows.length.toLocaleString('en-IN') + ' rows' + (rows.length > 800 ? ' (showing first 800 — export for full list)' : '');
@@ -1820,6 +2085,8 @@ function renderParetoChart(rows) {
   const top = rows.filter(r => r.sold > 0).slice(0, 15);
   if (!top.length) return;
   const ctx = document.getElementById('chart-pareto').getContext('2d');
+  const paretoKeys = top.map(r => r.key);
+  const paretoDim = document.getElementById('perf-groupby').value;
   perfCharts['chart-pareto'] = makeChart(ctx, {
     data: {
       labels: top.map(r => r.key.length > 22 ? r.key.slice(0, 22) + '…' : r.key),
@@ -1830,6 +2097,8 @@ function renderParetoChart(rows) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      onClick: (evt, els) => { if (els && els.length) openDrill(paretoDim, paretoKeys[els[0].index]); },
+      plugins: { tooltip: { callbacks: { title: items => paretoKeys[items[0].dataIndex] + '  (click for details)' } } },
       scales: {
         x: { ticks: { font: { size: 9.5 }, maxRotation: 60, minRotation: 40 } },
         y: { beginAtZero: true, position: 'left', title: { display: true, text: 'Qty' } },
@@ -1872,13 +2141,20 @@ function renderBottomChart(rows) {
   const stuck = rows.filter(r => r.stock > 0 && r.sold === 0).sort((a, b) => b.stock - a.stock).slice(0, 10);
   if (!stuck.length) return;
   const ctx = document.getElementById('chart-bottom').getContext('2d');
+  const stuckKeys = stuck.map(r => r.key);
+  const stuckDim = document.getElementById('perf-groupby').value;
   perfCharts['chart-bottom'] = makeChart(ctx, {
     type: 'bar',
     data: {
       labels: stuck.map(r => r.key.length > 24 ? r.key.slice(0, 24) + '…' : r.key),
       datasets: [{ label: 'Stock lying unsold', data: stuck.map(r => r.stock), backgroundColor: CHART_COLORS[5] }]
     },
-    options: Object.assign(chartOptions(), { indexAxis: 'y', plugins: { legend: { display: false } } })
+    options: Object.assign(chartOptions(), {
+      indexAxis: 'y',
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { title: items => stuckKeys[items[0].dataIndex] + '  (click for details)' } } },
+      onClick: (evt, els) => { if (els && els.length) openDrill(stuckDim, stuckKeys[els[0].index]); }
+    })
   });
 }
 
@@ -1900,6 +2176,278 @@ function exportPerfCSV() {
   const grid = perfToGrid();
   if (!grid) { toast('Nothing to export yet.'); return; }
   downloadBlob(toCSV(grid.headers, grid.rows), 'product-performance.csv', 'text/csv');
+}
+
+/* ---------------------------------------------------------------
+   8c. DRILL-DOWN — kisi bhi cheez par click karke depth mein jaao
+   --------------------------------------------------------------- */
+const Drill = { filters: [], dim: 'Colour', open: false, showRaw: false, sortKey: 'sold', sortDir: -1 };
+let drillChart = null;
+
+const DRILL_DIMS = ['Article No', 'Style', 'Colour', 'Size', 'Brand', 'Sub Section',
+                    'Section', 'Supplier', 'Item Code', 'Month'];
+
+function availableDrillDims() {
+  const have = new Set();
+  App.datasets.forEach(d => d.fields.forEach(f => have.add(f)));
+  // relationships se jude fields bhi available maante hain
+  if (App.relationships.some(r => r.enabled)) App.datasets.forEach(d => d.fields.forEach(f => have.add(f)));
+  return DRILL_DIMS.filter(d => d === 'Month' || have.has(d));
+}
+
+function drillMatches(rec) {
+  for (const f of Drill.filters) {
+    let v;
+    if (f.field === 'Month') v = rec.Date ? dateKeyForGrain(rec.Date, 'month') : '(blank)';
+    else v = dimKey(rec, f.field);
+    if (v !== f.value) return false;
+  }
+  return true;
+}
+
+function drillRecords(type) {
+  const range = periodRange();
+  let recs;
+  if (type === 'sales') recs = salesRecords().filter(r => inPeriod(r, range));
+  else if (type === 'purchase') recs = purchaseRecords().filter(r => inPeriod(r, range));
+  else recs = stockRecords();
+  return recs.filter(drillMatches);
+}
+
+function openDrill(field, value) {
+  Drill.filters = [{ field, value }];
+  Drill.open = true;
+  Drill.showRaw = false;
+  // default breakdown: pehla available dim jo filter mein nahi hai
+  const dims = availableDrillDims().filter(d => d !== field);
+  Drill.dim = dims.includes('Colour') ? 'Colour' : (dims[0] || 'Style');
+  document.getElementById('drill-overlay').style.display = 'flex';
+  renderDrill();
+}
+
+function pushDrill(field, value) {
+  if (Drill.filters.some(f => f.field === field)) return;
+  Drill.filters.push({ field, value });
+  const dims = availableDrillDims().filter(d => !Drill.filters.some(f => f.field === d));
+  Drill.dim = dims[0] || Drill.dim;
+  renderDrill();
+}
+
+function popDrillTo(idx) {
+  Drill.filters = Drill.filters.slice(0, idx + 1);
+  renderDrill();
+}
+
+function closeDrill() {
+  Drill.open = false;
+  document.getElementById('drill-overlay').style.display = 'none';
+  if (drillChart) { drillChart.destroy(); drillChart = null; }
+}
+
+function initDrill() {
+  document.getElementById('drill-close').addEventListener('click', closeDrill);
+  document.getElementById('drill-overlay').addEventListener('click', e => {
+    if (e.target.id === 'drill-overlay') closeDrill();
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && Drill.open) closeDrill(); });
+  document.getElementById('drill-dim').addEventListener('change', e => { Drill.dim = e.target.value; renderDrill(); });
+  document.getElementById('drill-raw-toggle').addEventListener('click', () => {
+    Drill.showRaw = !Drill.showRaw; renderDrill();
+  });
+  document.getElementById('drill-export').addEventListener('click', exportDrillCSV);
+}
+
+let lastDrillRows = null;
+
+function renderDrill() {
+  const sales = drillRecords('sales');
+  const purch = drillRecords('purchase');
+  const stock = drillRecords('stock');
+  const range = periodRange();
+  const days = periodDayCount(range, sales.length ? sales : purch);
+  const anchor = dataAnchorDate();
+
+  const sumQ = rs => rs.reduce((s, r) => s + (typeof r.Quantity === 'number' ? r.Quantity : 0), 0);
+  const sold = sumQ(sales), purchased = sumQ(purch), inStock = sumQ(stock);
+  const sellThrough = (sold + inStock) > 0 ? (sold / (sold + inStock)) * 100 : 0;
+  const avgDaily = sold / days;
+  const daysCover = avgDaily > 0 ? inStock / avgDaily : (inStock > 0 ? Infinity : 0);
+  const dates = sales.map(r => r.Date).filter(Boolean);
+  const lastSale = dates.length ? new Date(Math.max(...dates)) : null;
+
+  // title + breadcrumb
+  const last = Drill.filters[Drill.filters.length - 1];
+  document.getElementById('drill-title').textContent = last ? last.value : 'Details';
+  document.getElementById('drill-subtitle').textContent =
+    Drill.filters.map(f => f.field + ': ' + f.value).join('  ·  ');
+
+  document.getElementById('drill-breadcrumb').innerHTML =
+    Drill.filters.map((f, i) =>
+      '<button class="crumb" data-idx="' + i + '">' + escapeHtml(f.field) + ': <strong>' + escapeHtml(f.value) + '</strong>' +
+      (i < Drill.filters.length - 1 ? '' : '') + '</button>'
+    ).join('<span class="crumb-sep">›</span>');
+  document.querySelectorAll('#drill-breadcrumb .crumb').forEach(b =>
+    b.addEventListener('click', () => popDrillTo(parseInt(b.dataset.idx, 10))));
+
+  // KPIs
+  document.getElementById('drill-kpis').innerHTML = [
+    ['Sold', fmtNum(sold), sales.length.toLocaleString('en-IN') + ' bill lines'],
+    ['Purchased', fmtNum(purchased), purch.length.toLocaleString('en-IN') + ' lines'],
+    ['Stock', fmtNum(inStock), stock.length.toLocaleString('en-IN') + ' stock rows'],
+    ['Sell-through', fmtNum(sellThrough, 1) + '%', 'sold ÷ (sold + stock)'],
+    ['Days cover', daysCover === Infinity ? '∞' : fmtNum(daysCover, 0), 'at ' + fmtNum(avgDaily, 2) + '/day'],
+    ['Last sold', lastSale ? fmtDate(lastSale) : '—', lastSale ? Math.round((anchor - lastSale) / 86400000) + ' days ago' : 'no sale in window']
+  ].map(([l, v, s]) => '<div class="kpi-card small"><div class="kpi-label">' + l + '</div><div class="kpi-value">' + v + '</div><div class="kpi-sub">' + s + '</div></div>').join('');
+
+  // breakdown dim selector
+  const dims = availableDrillDims().filter(d => !Drill.filters.some(f => f.field === d));
+  const dimSel = document.getElementById('drill-dim');
+  dimSel.innerHTML = dims.map(d => '<option value="' + d + '"' + (d === Drill.dim ? ' selected' : '') + '>' + d + '</option>').join('');
+  if (!dims.includes(Drill.dim)) Drill.dim = dims[0];
+
+  renderDrillTrend(sales);
+  renderDrillBreakdown(sales, purch, stock, days);
+
+  document.getElementById('drill-raw-toggle').textContent = Drill.showRaw ? '▴ Hide raw rows' : '▾ Show raw rows';
+  const rawWrap = document.getElementById('drill-raw');
+  if (Drill.showRaw) { rawWrap.style.display = ''; renderDrillRaw(sales); }
+  else rawWrap.style.display = 'none';
+}
+
+function renderDrillTrend(sales) {
+  if (drillChart) { drillChart.destroy(); drillChart = null; }
+  const m = new Map();
+  sales.forEach(r => {
+    if (!r.Date) return;
+    const k = dateKeyForGrain(r.Date, 'month');
+    m.set(k, (m.get(k) || 0) + (typeof r.Quantity === 'number' ? r.Quantity : 0));
+  });
+  const keys = [...m.keys()].sort((a, b) => grainSort(a, 'month') - grainSort(b, 'month'));
+  const el = document.getElementById('drill-trend');
+  if (!keys.length) { el.parentElement.style.display = 'none'; return; }
+  el.parentElement.style.display = '';
+  drillChart = makeChart(el.getContext('2d'), {
+    type: 'bar',
+    data: { labels: keys, datasets: [{ label: 'Qty sold', data: keys.map(k => m.get(k)), backgroundColor: CHART_COLORS[0] }] },
+    options: Object.assign(chartOptions(), { plugins: { legend: { display: false } } })
+  });
+}
+
+function renderDrillBreakdown(sales, purch, stock, days) {
+  const dim = Drill.dim;
+  const map = new Map();
+  function slot(k) {
+    let s = map.get(k);
+    if (!s) { s = { key: k, sold: 0, purchased: 0, stock: 0, lastSale: null }; map.set(k, s); }
+    return s;
+  }
+  const keyOf = r => dim === 'Month'
+    ? (r.Date ? dateKeyForGrain(r.Date, 'month') : '(blank)')
+    : dimKey(r, dim);
+
+  sales.forEach(r => {
+    const s = slot(keyOf(r));
+    s.sold += typeof r.Quantity === 'number' ? r.Quantity : 0;
+    if (r.Date && (!s.lastSale || r.Date > s.lastSale)) s.lastSale = r.Date;
+  });
+  purch.forEach(r => { slot(keyOf(r)).purchased += typeof r.Quantity === 'number' ? r.Quantity : 0; });
+  stock.forEach(r => { slot(keyOf(r)).stock += typeof r.Quantity === 'number' ? r.Quantity : 0; });
+
+  let rows = [...map.values()].map(s => {
+    const opening = s.sold + s.stock;
+    return Object.assign(s, {
+      sellThrough: opening > 0 ? (s.sold / opening) * 100 : 0,
+      daysCover: (s.sold / days) > 0 ? s.stock / (s.sold / days) : (s.stock > 0 ? Infinity : 0)
+    });
+  });
+
+  const sk = Drill.sortKey, sd = Drill.sortDir;
+  rows.sort((a, b) => {
+    let va = a[sk], vb = b[sk];
+    if (va instanceof Date) va = va.getTime();
+    if (vb instanceof Date) vb = vb.getTime();
+    if (va === null || va === undefined) va = -Infinity;
+    if (vb === null || vb === undefined) vb = -Infinity;
+    if (typeof va === 'string' || typeof vb === 'string') return String(va).localeCompare(String(vb)) * sd;
+    return (va - vb) * sd;
+  });
+  lastDrillRows = { rows, dim };
+
+  const totalSold = rows.reduce((s, r) => s + r.sold, 0);
+  const cols = [['key', dim, false], ['sold', 'Sold', true], ['share', 'Share', true],
+                ['stock', 'Stock', true], ['sellThrough', 'Sell-thru', true],
+                ['daysCover', 'Cover', true], ['lastSale', 'Last sold', false]];
+
+  const canDrillDeeper = availableDrillDims().filter(d => !Drill.filters.some(f => f.field === d)).length > 1;
+
+  document.getElementById('drill-breakdown').innerHTML =
+    '<thead><tr>' + cols.map(([k, l, n]) =>
+      '<th data-key="' + k + '" class="' + (n ? 'num' : '') + '">' + l +
+      (sk === k ? '<span class="sort-arrow">' + (sd === 1 ? '▲' : '▼') + '</span>' : '') + '</th>').join('') +
+    '</tr></thead><tbody>' +
+    rows.slice(0, 300).map(r =>
+      '<tr class="' + (canDrillDeeper ? 'drillable' : '') + '" data-value="' + escapeHtml(r.key) + '">' +
+        '<td>' + escapeHtml(r.key) + (canDrillDeeper ? ' <span class="drill-hint">▸</span>' : '') + '</td>' +
+        '<td class="num">' + fmtNum(r.sold) + '</td>' +
+        '<td class="num">' + (totalSold > 0 ? fmtNum(r.sold / totalSold * 100, 1) + '%' : '—') + '</td>' +
+        '<td class="num">' + fmtNum(r.stock) + '</td>' +
+        '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>' +
+        '<td class="num">' + (r.daysCover === Infinity ? '∞' : fmtNum(r.daysCover, 0)) + '</td>' +
+        '<td>' + (r.lastSale ? fmtDate(r.lastSale) : '—') + '</td>' +
+      '</tr>').join('') + '</tbody>';
+
+  document.querySelectorAll('#drill-breakdown thead th').forEach(th => th.addEventListener('click', () => {
+    const k = th.dataset.key;
+    if (Drill.sortKey === k) Drill.sortDir *= -1;
+    else { Drill.sortKey = k; Drill.sortDir = (k === 'key') ? 1 : -1; }
+    renderDrill();
+  }));
+  if (canDrillDeeper) {
+    document.querySelectorAll('#drill-breakdown tbody tr.drillable').forEach(tr =>
+      tr.addEventListener('click', () => pushDrill(Drill.dim, tr.dataset.value)));
+  }
+  document.getElementById('drill-breakdown-count').textContent =
+    rows.length.toLocaleString('en-IN') + ' ' + dim + ' values' + (rows.length > 300 ? ' (top 300 shown)' : '');
+
+  // Agar zyadatar sale rows mein ye column khaali hai to breakdown bharosemand
+  // nahi hai — user ko saaf bata dete hain.
+  const blankRow = rows.find(r => r.key === '(blank)');
+  const noteEl = document.getElementById('drill-blank-note');
+  if (blankRow && totalSold > 0 && (blankRow.sold / totalSold) >= 0.3) {
+    noteEl.style.display = '';
+    noteEl.textContent = 'Dhyan do: is selection ki ' + fmtNum(blankRow.sold / totalSold * 100, 0) +
+      '% sale rows mein "' + dim + '" khaali hai, isliye ye breakdown adhoora hai. ' +
+      'ERP mein ' + dim + ' bharna shuru karoge to ye analysis kaam karega.';
+  } else {
+    noteEl.style.display = 'none';
+  }
+}
+
+function renderDrillRaw(sales) {
+  const fields = ['Date', 'Item Code', 'Article No', 'Style', 'Colour', 'Size', 'Brand', 'Supplier', 'Quantity'];
+  const have = fields.filter(f => App.datasets.some(d => d.fields.includes(f)));
+  const rows = sales.slice(0, 200);
+  document.getElementById('drill-raw-table').innerHTML =
+    '<thead><tr>' + have.map(f => '<th class="' + (FIELD_KIND[f] === 'number' ? 'num' : '') + '">' + f + '</th>').join('') + '</tr></thead>' +
+    '<tbody>' + rows.map(r => '<tr>' + have.map(f => {
+      let v = r[f];
+      if (v === null || v === undefined || v === '') v = resolveField(r, f);
+      if (v instanceof Date) v = fmtDate(v);
+      else if (typeof v === 'number' && FIELD_KIND[f] === 'number') v = fmtNum(v);
+      return '<td class="' + (FIELD_KIND[f] === 'number' ? 'num' : '') + '">' + escapeHtml(v == null ? '' : v) + '</td>';
+    }).join('') + '</tr>').join('') + '</tbody>';
+  document.getElementById('drill-raw-count').textContent =
+    sales.length.toLocaleString('en-IN') + ' sale rows' + (sales.length > 200 ? ' (first 200 shown)' : '');
+}
+
+function exportDrillCSV() {
+  if (!lastDrillRows || !lastDrillRows.rows.length) { toast('Kuch export karne ko nahi hai.'); return; }
+  const { rows, dim } = lastDrillRows;
+  const headers = [dim, 'Sold Qty', 'Purchased Qty', 'Stock Qty', 'Sell-through %', 'Days Cover', 'Last Sold'];
+  const data = rows.map(r => [r.key, r.sold, r.purchased, r.stock, Number(r.sellThrough.toFixed(1)),
+    r.daysCover === Infinity ? '' : Math.round(r.daysCover), r.lastSale ? fmtDate(r.lastSale) : '']);
+  const ctx = Drill.filters.map(f => f.field + '-' + f.value).join('_').replace(/[^\w-]+/g, '');
+  downloadBlob(toCSV(headers, data), 'drill-' + ctx.slice(0, 60) + '.csv', 'text/csv');
 }
 
 /* ---------------------------------------------------------------
@@ -2012,10 +2560,16 @@ function renderTopChart(canvasId, recs, field, label) {
   const map = aggregateByDimension(recs, field);
   const top = [...map.entries()].filter(([k]) => k !== '(blank)').sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (!top.length) { el.style.display = 'none'; return; }
+  const fullLabels = top.map(t => t[0]);
   dashCharts[canvasId] = makeChart(ctx, {
     type: 'bar',
     data: { labels: top.map(t => t[0].length > 22 ? t[0].slice(0, 22) + '…' : t[0]), datasets: [{ label, data: top.map(t => t[1]), backgroundColor: CHART_COLORS[3] }] },
-    options: Object.assign(chartOptions(), { indexAxis: 'y', plugins: { legend: { display: false } } })
+    options: Object.assign(chartOptions(), {
+      indexAxis: 'y',
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { title: items => fullLabels[items[0].dataIndex] + '  (click for details)' } } },
+      onClick: (evt, els) => { if (els && els.length) openDrill(field, fullLabels[els[0].index]); }
+    })
   });
 }
 
@@ -2035,6 +2589,268 @@ function renderStockSplitChart(stockRecs) {
 }
 
 /* ---------------------------------------------------------------
+   9b. CONNECTIONS — Power BI jaisa wire-based data model
+   --------------------------------------------------------------- */
+const RelUI = { positions: {}, dragNode: null, dragPort: null, tempLine: null, selected: null };
+
+function initRelations() {
+  document.getElementById('rel-autodetect').addEventListener('click', () => {
+    autoDetectRelationships();
+    renderRelations();
+    refreshAnalysisViews();
+  });
+  document.getElementById('rel-clear').addEventListener('click', () => {
+    if (!App.relationships.length) { toast('Koi connection nahi hai.'); return; }
+    App.relationships = [];
+    clearLookups();
+    renderRelations();
+    refreshAnalysisViews();
+    toast('Sab connections hata di gayi.');
+  });
+  document.getElementById('rel-arrange').addEventListener('click', () => {
+    RelUI.positions = {};
+    renderRelations();
+  });
+
+  const canvas = document.getElementById('rel-canvas');
+  canvas.addEventListener('mousemove', onRelMouseMove);
+  canvas.addEventListener('mouseup', onRelMouseUp);
+  canvas.addEventListener('mouseleave', onRelMouseUp);
+}
+
+function defaultPosition(idx) {
+  const col = idx % 3, row = Math.floor(idx / 3);
+  return { x: 30 + col * 300, y: 24 + row * 340 };
+}
+
+function renderRelations() {
+  const canvas = document.getElementById('rel-canvas');
+  const empty = document.getElementById('rel-empty');
+  if (!App.datasets.length) {
+    empty.style.display = '';
+    canvas.style.display = 'none';
+    document.getElementById('rel-list').innerHTML = '';
+    return;
+  }
+  empty.style.display = 'none';
+  canvas.style.display = '';
+
+  App.datasets.forEach((ds, i) => {
+    if (!RelUI.positions[ds.id]) RelUI.positions[ds.id] = defaultPosition(i);
+  });
+
+  const nodesHtml = App.datasets.map(ds => {
+    const p = RelUI.positions[ds.id];
+    return '<div class="rel-node" data-ds="' + ds.id + '" style="left:' + p.x + 'px;top:' + p.y + 'px;">' +
+      '<div class="rel-node-head ' + typeTagClass(ds.type) + '">' +
+        '<span class="rel-node-title">' + escapeHtml(ds.name) + '</span>' +
+        '<span class="rel-node-type">' + ds.type + '</span>' +
+      '</div>' +
+      '<div class="rel-node-meta">' + ds.rowCount.toLocaleString('en-IN') + ' rows</div>' +
+      '<div class="rel-fields">' +
+        ds.fields.map(f =>
+          '<div class="rel-field" data-ds="' + ds.id + '" data-field="' + escapeHtml(f) + '">' +
+            '<span class="rel-port" data-ds="' + ds.id + '" data-field="' + escapeHtml(f) + '" title="Drag to connect"></span>' +
+            '<span class="rel-field-name">' + escapeHtml(f) + '</span>' +
+            (FIELD_KIND[f] ? '<span class="rel-field-kind">' + FIELD_KIND[f].slice(0, 3) + '</span>' : '') +
+          '</div>').join('') +
+      '</div></div>';
+  }).join('');
+
+  canvas.innerHTML = '<svg id="rel-wires"></svg>' + nodesHtml;
+  wireRelNodeEvents();
+  drawWires();
+  renderRelList();
+}
+
+function wireRelNodeEvents() {
+  document.querySelectorAll('.rel-node-head').forEach(head => {
+    head.addEventListener('mousedown', e => {
+      const node = head.closest('.rel-node');
+      const canvasRect = document.getElementById('rel-canvas').getBoundingClientRect();
+      RelUI.dragNode = {
+        id: node.dataset.ds,
+        offX: e.clientX - canvasRect.left - RelUI.positions[node.dataset.ds].x,
+        offY: e.clientY - canvasRect.top - RelUI.positions[node.dataset.ds].y
+      };
+      e.preventDefault();
+    });
+  });
+
+  document.querySelectorAll('.rel-port').forEach(port => {
+    port.addEventListener('mousedown', e => {
+      RelUI.dragPort = { dsId: port.dataset.ds, field: port.dataset.field };
+      e.stopPropagation();
+      e.preventDefault();
+    });
+    port.addEventListener('mouseup', e => {
+      if (!RelUI.dragPort) return;
+      const from = RelUI.dragPort;
+      const to = { dsId: port.dataset.ds, field: port.dataset.field };
+      RelUI.dragPort = null;
+      removeTempLine();
+      if (from.dsId === to.dsId) { toast('Ek hi file ke do columns ko jodna kaam nahi karega.'); return; }
+      addRelationship(from.dsId, from.field, to.dsId, to.field);
+      e.stopPropagation();
+    });
+  });
+}
+
+function addRelationship(fromDsId, fromField, toDsId, toField) {
+  const id = relationshipId(fromDsId, fromField, toDsId, toField);
+  const rev = relationshipId(toDsId, toField, fromDsId, fromField);
+  if (App.relationships.some(r => r.id === id || r.id === rev)) { toast('Ye connection pehle se hai.'); return; }
+  const a = App.datasets.find(d => d.id === fromDsId), b = App.datasets.find(d => d.id === toDsId);
+  const score = scoreRelationship(a, fromField, b, toField);
+  App.relationships.push({ id, fromDsId, fromField, toDsId, toField, enabled: true, score });
+  clearLookups();
+  renderRelations();
+  refreshAnalysisViews();
+  toast('Connection bani: ' + fromField + ' ↔ ' + toField + ' (' + fmtNum(score.pct, 0) + '% match)');
+}
+
+function onRelMouseMove(e) {
+  const canvas = document.getElementById('rel-canvas');
+  const rect = canvas.getBoundingClientRect();
+
+  if (RelUI.dragNode) {
+    const p = RelUI.positions[RelUI.dragNode.id];
+    p.x = Math.max(0, e.clientX - rect.left - RelUI.dragNode.offX);
+    p.y = Math.max(0, e.clientY - rect.top - RelUI.dragNode.offY);
+    const node = canvas.querySelector('.rel-node[data-ds="' + RelUI.dragNode.id + '"]');
+    if (node) { node.style.left = p.x + 'px'; node.style.top = p.y + 'px'; }
+    drawWires();
+    return;
+  }
+
+  if (RelUI.dragPort) {
+    const svg = document.getElementById('rel-wires');
+    const start = portCenter(RelUI.dragPort.dsId, RelUI.dragPort.field);
+    if (!start) return;
+    let line = document.getElementById('rel-temp-line');
+    if (!line) {
+      line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      line.id = 'rel-temp-line';
+      line.setAttribute('class', 'rel-wire temp');
+      svg.appendChild(line);
+    }
+    const ex = e.clientX - rect.left + canvas.scrollLeft;
+    const ey = e.clientY - rect.top + canvas.scrollTop;
+    line.setAttribute('d', bezier(start.x, start.y, ex, ey));
+  }
+}
+
+function onRelMouseUp() {
+  RelUI.dragNode = null;
+  if (RelUI.dragPort) { RelUI.dragPort = null; removeTempLine(); }
+}
+
+function removeTempLine() {
+  const l = document.getElementById('rel-temp-line');
+  if (l) l.remove();
+}
+
+function portCenter(dsId, field) {
+  const canvas = document.getElementById('rel-canvas');
+  const port = canvas.querySelector('.rel-port[data-ds="' + dsId + '"][data-field="' + cssEscape(field) + '"]');
+  if (!port) return null;
+  const pr = port.getBoundingClientRect(), cr = canvas.getBoundingClientRect();
+  return {
+    x: pr.left - cr.left + canvas.scrollLeft + pr.width / 2,
+    y: pr.top - cr.top + canvas.scrollTop + pr.height / 2
+  };
+}
+
+function cssEscape(s) { return String(s).replace(/"/g, '\\"'); }
+
+function bezier(x1, y1, x2, y2) {
+  const dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
+  return 'M' + x1 + ',' + y1 + ' C' + (x1 - dx) + ',' + y1 + ' ' + (x2 + dx) + ',' + y2 + ' ' + x2 + ',' + y2;
+}
+
+function drawWires() {
+  const svg = document.getElementById('rel-wires');
+  if (!svg) return;
+  const canvas = document.getElementById('rel-canvas');
+  svg.setAttribute('width', canvas.scrollWidth);
+  svg.setAttribute('height', canvas.scrollHeight);
+
+  const parts = App.relationships.map(rel => {
+    const a = portCenter(rel.fromDsId, rel.fromField);
+    const b = portCenter(rel.toDsId, rel.toField);
+    if (!a || !b) return '';
+    const cls = 'rel-wire' + (rel.enabled ? '' : ' disabled') + (RelUI.selected === rel.id ? ' selected' : '');
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const pct = rel.score ? Math.round(rel.score.pct) : 0;
+    return '<path class="' + cls + '" d="' + bezier(a.x, a.y, b.x, b.y) + '" data-rel="' + rel.id + '"></path>' +
+      '<circle class="rel-wire-dot" cx="' + a.x + '" cy="' + a.y + '" r="4"></circle>' +
+      '<circle class="rel-wire-dot" cx="' + b.x + '" cy="' + b.y + '" r="4"></circle>' +
+      '<rect class="rel-wire-label-bg" x="' + (mx - 20) + '" y="' + (my - 9) + '" width="40" height="18" rx="9"></rect>' +
+      '<text class="rel-wire-label" x="' + mx + '" y="' + (my + 4) + '" text-anchor="middle">' + pct + '%</text>';
+  }).join('');
+
+  svg.innerHTML = parts;
+  svg.querySelectorAll('.rel-wire').forEach(p => {
+    p.addEventListener('click', () => {
+      RelUI.selected = RelUI.selected === p.dataset.rel ? null : p.dataset.rel;
+      drawWires(); renderRelList();
+    });
+  });
+}
+
+function renderRelList() {
+  const wrap = document.getElementById('rel-list');
+  if (!App.relationships.length) {
+    wrap.innerHTML = '<div class="empty-hint">Abhi koi connection nahi. "Auto-detect" dabao, ya kisi column ke gol point se drag karke doosri file ke column par chhodo.</div>';
+    return;
+  }
+  const nameOf = id => { const d = App.datasets.find(x => x.id === id); return d ? d.name : '?'; };
+
+  wrap.innerHTML = '<table class="simple-table"><thead><tr>' +
+    '<th>From</th><th>Column</th><th>To</th><th>Column</th><th>Match</th><th>Unique keys</th><th>Can look up</th><th>Active</th><th></th></tr></thead><tbody>' +
+    App.relationships.map(rel => {
+      const sc = rel.score || {};
+      const pct = sc.pct || 0;
+      const cls = pct >= 70 ? 'ok' : (pct >= 30 ? 'warn' : 'bad');
+      return '<tr class="' + (RelUI.selected === rel.id ? 'row-selected' : '') + '">' +
+        '<td>' + escapeHtml(nameOf(rel.fromDsId)) + '</td>' +
+        '<td><code>' + escapeHtml(rel.fromField) + '</code></td>' +
+        '<td>' + escapeHtml(nameOf(rel.toDsId)) + '</td>' +
+        '<td><code>' + escapeHtml(rel.toField) + '</code></td>' +
+        '<td><span class="match-pill ' + cls + '">' + fmtNum(pct, 0) + '%</span></td>' +
+        '<td>' + (sc.toDistinct || 0).toLocaleString('en-IN') + '</td>' +
+        '<td>' + (sc.canEnrich
+            ? '<span class="match-pill ok" title="Ye ek asli key hai — iske through doosri file ke columns bhi use ho sakte hain">Yes</span>'
+            : '<span class="match-pill warn" title="Values unique nahi hain, isliye sirf samajhne ke liye — column lookup band hai">No</span>') + '</td>' +
+        '<td><input type="checkbox" class="rel-toggle" data-id="' + rel.id + '"' + (rel.enabled ? ' checked' : '') + '></td>' +
+        '<td><button class="ghost-btn small rel-del" data-id="' + rel.id + '">Remove</button></td>' +
+      '</tr>';
+    }).join('') + '</tbody></table>' +
+    '<p class="rel-help"><strong>Match %</strong> = pehli file ki kitni rows ko doosri file mein jodne wali value mili. ' +
+    '<strong>Unique keys</strong> = target column mein kitni alag values hain. ' +
+    '<strong>Can look up</strong> = kya iske through doosri file ka column is file ke analysis mein use ho sakta hai. ' +
+    'Ye sirf tab "Yes" hota hai jab values lagbhag unique hon (jaise Item Code / barcode). ' +
+    'Section jaisa column 100% match dikhata hai par uske through value uthana galat hoga — ek Section mein hazaron alag items hote hain.</p>';
+
+  wrap.querySelectorAll('.rel-toggle').forEach(cb => cb.addEventListener('change', () => {
+    const rel = App.relationships.find(r => r.id === cb.dataset.id);
+    if (rel) rel.enabled = cb.checked;
+    clearLookups(); drawWires(); refreshAnalysisViews();
+  }));
+  wrap.querySelectorAll('.rel-del').forEach(btn => btn.addEventListener('click', () => {
+    App.relationships = App.relationships.filter(r => r.id !== btn.dataset.id);
+    clearLookups(); renderRelations(); refreshAnalysisViews();
+  }));
+}
+
+function refreshAnalysisViews() {
+  renderDashboard();
+  renderPerformance();
+  renderInsights();
+  if (Drill.open) renderDrill();
+}
+
+/* ---------------------------------------------------------------
    10. SESSION SAVE / LOAD
    --------------------------------------------------------------- */
 function initSession() {
@@ -2044,14 +2860,25 @@ function initSession() {
 
 function saveSession() {
   if (!App.datasets.length) { toast('Nothing loaded yet.'); return; }
-  const out = App.datasets.map(ds => ({
-    name: ds.name, type: ds.type, fields: ds.fields,
-    records: ds.records.map(r => {
-      const o = {};
-      ds.fields.forEach(f => { const v = r[f]; o[f] = v instanceof Date ? { __date: v.toISOString() } : v; });
-      return o;
-    })
-  }));
+  const out = {
+    version: 2,
+    savedAt: new Date().toISOString(),
+    datasets: App.datasets.map(ds => ({
+      id: ds.id, name: ds.name, type: ds.type, fields: ds.fields,
+      origin: ds.origin || null, mapping: ds.mapping || null, headerIdx: ds.headerIdx || 0,
+      records: ds.records.map(r => {
+        const o = {};
+        ds.fields.forEach(f => { const v = r[f]; o[f] = v instanceof Date ? { __date: v.toISOString() } : v; });
+        return o;
+      })
+    })),
+    relationships: App.relationships.map(r => ({
+      id: r.id, fromDsId: r.fromDsId, fromField: r.fromField,
+      toDsId: r.toDsId, toField: r.toField, enabled: r.enabled
+    })),
+    positions: RelUI.positions,
+    period: App.period
+  };
   downloadBlob(JSON.stringify(out), 'stockledger-session.json', 'application/json');
   toast('Session saved.');
 }
@@ -2060,17 +2887,57 @@ function loadSession(file) {
   const reader = new FileReader();
   reader.onload = e => {
     try {
-      const data = JSON.parse(e.target.result);
-      data.forEach(ds => {
+      const parsed = JSON.parse(e.target.result);
+      // v1 = plain array of datasets; v2 = object with relationships too
+      const list = Array.isArray(parsed) ? parsed : parsed.datasets;
+      if (!list || !list.length) throw new Error('no datasets in file');
+
+      const idMap = {};
+      list.forEach(ds => {
+        const newId = uid();
+        idMap[ds.id || newId] = newId;
         const records = ds.records.map(r => {
-          const o = {};
-          ds.fields.forEach(f => { const v = r[f]; o[f] = (v && typeof v === 'object' && v.__date) ? new Date(v.__date) : v; });
+          const o = { __ds: newId };
+          ds.fields.forEach(f => {
+            let v = r[f];
+            if (v && typeof v === 'object' && v.__date) v = new Date(v.__date);
+            // Purani ya haath se badli hui session file mein date string bhi
+            // ho sakti hai — usse wapas asli Date bana lete hain.
+            else if (typeof v === 'string' && FIELD_KIND[f] === 'date') v = parseDateLoose(v);
+            if (v instanceof Date && isNaN(v.getTime())) v = null;
+            o[f] = v;
+          });
           return o;
         });
-        App.datasets.push({ id: uid(), name: ds.name, type: ds.type, fields: ds.fields, records, rowCount: records.length, colorIdx: App.nextDsColor++ });
+        App.datasets.push({
+          id: newId, name: ds.name, type: ds.type, fields: ds.fields, records,
+          rowCount: records.length, colorIdx: App.nextDsColor++,
+          origin: ds.origin || null, mapping: ds.mapping || null, headerIdx: ds.headerIdx || 0
+        });
       });
+
+      if (!Array.isArray(parsed)) {
+        (parsed.relationships || []).forEach(rel => {
+          const f = idMap[rel.fromDsId], t = idMap[rel.toDsId];
+          if (!f || !t) return;
+          App.relationships.push({
+            id: relationshipId(f, rel.fromField, t, rel.toField),
+            fromDsId: f, fromField: rel.fromField, toDsId: t, toField: rel.toField,
+            enabled: rel.enabled !== false
+          });
+        });
+        if (parsed.positions) {
+          Object.keys(parsed.positions).forEach(oldId => {
+            if (idMap[oldId]) RelUI.positions[idMap[oldId]] = parsed.positions[oldId];
+          });
+        }
+        if (parsed.period) App.period = parsed.period;
+      }
+
+      clearLookups();
+      rescoreRelationships();
       refreshAfterDataChange();
-      toast('Session loaded — ' + data.length + ' file(s).');
+      toast('Session loaded — ' + list.length + ' file(s), ' + App.relationships.length + ' connection(s).');
     } catch (err) {
       console.error(err);
       toast('That file does not look like a StockLedger session export.');
@@ -2091,11 +2958,14 @@ document.addEventListener('DOMContentLoaded', function () {
   initInsights();
   initPerformance();
   initDashboard();
+  initRelations();
+  initDrill();
   initSession();
   wirePeriodSelects();
   updateGsOnlyButtons();
   renderDashboard();
   renderPerformance();
+  renderRelations();
 });
 
 })();

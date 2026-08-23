@@ -40,8 +40,11 @@
       <button class="tab-btn" data-tab="pivot">
         <span class="tab-no">05</span> Pivot Builder
       </button>
+      <button class="tab-btn" data-tab="relations">
+        <span class="tab-no">06</span> Connections
+      </button>
       <button class="tab-btn" data-tab="explore">
-        <span class="tab-no">06</span> Explore Rows
+        <span class="tab-no">07</span> Explore Rows
       </button>
     </nav>
 
@@ -133,6 +136,28 @@
       </div>
     </section>
 
+    <!-- ---------- TAB: CONNECTIONS ---------- -->
+    <section class="tab-panel" id="tab-relations">
+      <header class="panel-head">
+        <h1>Connections</h1>
+        <p>Yahan aapki files ke beech ke rishte banate hain — bilkul Power BI / Tableau ke model view jaisa. Kisi column ke gol point se drag karke doosri file ke column par chhod do, wire ban jayegi. Jud jaane ke baad ek file ka column doosri file ke analysis mein bhi use ho sakta hai.</p>
+      </header>
+
+      <div class="toolbar">
+        <button id="rel-autodetect" class="ghost-btn primary">Auto-detect connections</button>
+        <button id="rel-arrange" class="ghost-btn small">Re-arrange boxes</button>
+        <button id="rel-clear" class="ghost-btn small">Clear all</button>
+        <span class="spacer"></span>
+        <span class="toolbar-label">Box ke header se drag karke hilao · column ke point se drag karke jodo</span>
+      </div>
+
+      <div id="rel-empty" class="empty-hint big">Do ya zyada files load karo, phir yahan unke beech connections banaoge.</div>
+      <div id="rel-canvas" class="rel-canvas"></div>
+
+      <h2 class="section-title">Active connections</h2>
+      <div id="rel-list"></div>
+    </section>
+
     <!-- ---------- TAB: EXPLORE ---------- -->
     <section class="tab-panel" id="tab-explore">
       <header class="panel-head">
@@ -143,6 +168,7 @@
       <div class="toolbar" id="explore-toolbar">
         <select id="explore-dataset-select" class="select"></select>
         <input type="search" id="explore-search" class="text-input" placeholder="Search all columns…">
+        <button id="explore-add-filter" class="ghost-btn small">+ Filter</button>
         <div id="explore-filters" class="filter-chip-row"></div>
         <span class="spacer"></span>
         <button id="explore-export" class="ghost-btn small">⬇ Export CSV</button>
@@ -370,6 +396,51 @@
     </section>
 
   </main>
+</div>
+
+<!-- ============ DRILL-DOWN PANEL ============ -->
+<div id="drill-overlay" class="drill-overlay" style="display:none;">
+  <div class="drill-panel">
+    <div class="drill-head">
+      <div>
+        <h2 id="drill-title">Details</h2>
+        <div id="drill-subtitle" class="drill-subtitle"></div>
+      </div>
+      <button id="drill-close" class="drill-close" title="Close (Esc)">&times;</button>
+    </div>
+
+    <div id="drill-breadcrumb" class="drill-breadcrumb"></div>
+    <div id="drill-kpis" class="kpi-row drill-kpis"></div>
+
+    <div class="drill-chart-card">
+      <h3>Month-wise sale</h3>
+      <div class="chart-box"><canvas id="drill-trend"></canvas></div>
+    </div>
+
+    <div class="drill-toolbar">
+      <label class="toolbar-label">Break down by:</label>
+      <select id="drill-dim" class="select"></select>
+      <span class="drill-count" id="drill-breakdown-count"></span>
+      <span class="spacer"></span>
+      <button id="drill-export" class="ghost-btn small">Export CSV</button>
+    </div>
+
+    <div id="drill-blank-note" class="note-banner" style="display:none;"></div>
+
+    <div class="table-scroll drill-table-scroll">
+      <table class="data-table" id="drill-breakdown"></table>
+    </div>
+
+    <div class="drill-raw-section">
+      <button id="drill-raw-toggle" class="ghost-btn small">&#9662; Show raw rows</button>
+      <div id="drill-raw" style="display:none;">
+        <div class="drill-count" id="drill-raw-count"></div>
+        <div class="table-scroll drill-table-scroll">
+          <table class="data-table" id="drill-raw-table"></table>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="toast" class="toast"></div>
