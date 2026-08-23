@@ -63,6 +63,8 @@
   <!-- ============ MAIN ============ -->
   <main class="main">
 
+    <div id="lib-error" class="lib-error" style="display:none;"></div>
+
     <!-- ---------- TAB: IMPORT ---------- -->
     <section class="tab-panel active" id="tab-import">
       <header class="panel-head">
@@ -372,8 +374,55 @@
 
 <div id="toast" class="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.20.2/dist/xlsx.full.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="app.js"></script>
+<script>
+/* Library loader with CDN fallbacks.
+   SheetJS ke naye versions npm par nahi hain (npm par 0.18.5 tak hi), isliye
+   pehle official SheetJS CDN try karte hain, phir jsDelivr/unpkg ka 0.18.5.
+   Ek CDN block ho jaye (office firewall, ad-blocker) to doosra chal jata hai. */
+(function () {
+  var pending = 2, failed = [];
+
+  function loadWithFallback(name, urls, done) {
+    var i = 0;
+    (function next() {
+      if (i >= urls.length) { failed.push(name); done(); return; }
+      var s = document.createElement('script');
+      s.src = urls[i++];
+      s.async = false;
+      s.onload = function () { done(); };
+      s.onerror = function () { s.parentNode && s.parentNode.removeChild(s); next(); };
+      document.head.appendChild(s);
+    })();
+  }
+
+  function finish() {
+    if (--pending > 0) return;
+    window.__libsFailed = failed;
+    if (failed.length) {
+      var show = function () {
+        var b = document.getElementById('lib-error');
+        if (!b) return;
+        b.style.display = '';
+        b.textContent = failed.join(' aur ') + ' library load nahi hui. Internet connection, ' +
+          'ad-blocker ya office firewall check karo — inke bina file padhna kaam nahi karega.';
+      };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', show);
+      else show();
+    }
+  }
+
+  loadWithFallback('SheetJS (Excel reader)', [
+    'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js',
+    'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+    'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'
+  ], finish);
+
+  loadWithFallback('Chart.js (graphs)', [
+    'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
+    'https://unpkg.com/chart.js@4.4.4/dist/chart.umd.min.js'
+  ], finish);
+})();
+</script>
+<script src="app.js" defer></script>
 </body>
 </html>

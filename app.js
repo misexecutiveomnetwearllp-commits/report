@@ -281,6 +281,11 @@ function readWorkbook(file) {
  * wahi use hota hai. Sab fail ho to asli error dikhate hain, generic nahi.
  */
 function parseWorkbookBuffer(data, file) {
+  if (typeof XLSX === 'undefined') {
+    toast('Excel reader library load nahi hui — page refresh karo. Phir bhi na chale to ad-blocker/firewall check karo.');
+    return;
+  }
+
   const attempts = [
     () => XLSX.read(data, { type: 'array' }),
     () => XLSX.read(data, { type: 'array', codepage: 65001 }),
@@ -1281,7 +1286,14 @@ function chartCurrentPivot() {
     });
   }
   const chartType = (Pivot.rows.length && FIELD_KIND[Pivot.rows[0].field] === 'date') ? 'line' : 'bar';
-  pivotChart = new Chart(ctx, { type: labels.length > 25 ? 'line' : chartType, data: { labels, datasets }, options: chartOptions() });
+  pivotChart = makeChart(ctx, { type: labels.length > 25 ? 'line' : chartType, data: { labels, datasets }, options: chartOptions() });
+}
+
+/** Chart.js na mile to app crash na ho — chart chhod kar baaki sab chalta rahe. */
+function makeChart(ctx, cfg) {
+  if (typeof Chart === 'undefined') return null;
+  try { return new Chart(ctx, cfg); }
+  catch (e) { console.error('Chart render failed', e); return null; }
 }
 
 function chartOptions(extra) {
@@ -1719,7 +1731,7 @@ function renderParetoChart(rows) {
   const top = rows.filter(r => r.sold > 0).slice(0, 15);
   if (!top.length) return;
   const ctx = document.getElementById('chart-pareto').getContext('2d');
-  perfCharts['chart-pareto'] = new Chart(ctx, {
+  perfCharts['chart-pareto'] = makeChart(ctx, {
     data: {
       labels: top.map(r => r.key.length > 22 ? r.key.slice(0, 22) + '…' : r.key),
       datasets: [
@@ -1745,7 +1757,7 @@ function renderStatusChart(rows) {
   const labels = Object.keys(counts);
   if (!labels.length) return;
   const ctx = document.getElementById('chart-status').getContext('2d');
-  perfCharts['chart-status'] = new Chart(ctx, {
+  perfCharts['chart-status'] = makeChart(ctx, {
     type: 'doughnut',
     data: { labels, datasets: [{ data: labels.map(l => counts[l]), backgroundColor: labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } } } }
@@ -1759,7 +1771,7 @@ function renderAgeingChart(rows) {
     rows.reduce((s, r) => s + ((r.stockAgeDays !== null && r.stockAgeDays >= lo && r.stockAgeDays <= hi) ? r.stock : 0), 0));
   if (!data.some(d => d > 0)) return;
   const ctx = document.getElementById('chart-ageing').getContext('2d');
-  perfCharts['chart-ageing'] = new Chart(ctx, {
+  perfCharts['chart-ageing'] = makeChart(ctx, {
     type: 'bar',
     data: { labels: buckets.map(b => b[0]), datasets: [{ label: 'Stock qty', data, backgroundColor: buckets.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
     options: Object.assign(chartOptions(), { plugins: { legend: { display: false } } })
@@ -1771,7 +1783,7 @@ function renderBottomChart(rows) {
   const stuck = rows.filter(r => r.stock > 0 && r.sold === 0).sort((a, b) => b.stock - a.stock).slice(0, 10);
   if (!stuck.length) return;
   const ctx = document.getElementById('chart-bottom').getContext('2d');
-  perfCharts['chart-bottom'] = new Chart(ctx, {
+  perfCharts['chart-bottom'] = makeChart(ctx, {
     type: 'bar',
     data: {
       labels: stuck.map(r => r.key.length > 24 ? r.key.slice(0, 24) + '…' : r.key),
@@ -1886,7 +1898,7 @@ function renderTrendChart(salesRecs, purchaseRecs) {
     .sort((a, b) => grainSort(a, grain) - grainSort(b, grain));
 
   const ctx = document.getElementById('chart-trend').getContext('2d');
-  dashCharts['chart-trend'] = new Chart(ctx, {
+  dashCharts['chart-trend'] = makeChart(ctx, {
     type: grain === 'year' ? 'bar' : 'line',
     data: {
       labels: allKeys,
@@ -1911,7 +1923,7 @@ function renderTopChart(canvasId, recs, field, label) {
   const map = aggregateByDimension(recs, field);
   const top = [...map.entries()].filter(([k]) => k !== '(blank)').sort((a, b) => b[1] - a[1]).slice(0, 8);
   if (!top.length) { el.style.display = 'none'; return; }
-  dashCharts[canvasId] = new Chart(ctx, {
+  dashCharts[canvasId] = makeChart(ctx, {
     type: 'bar',
     data: { labels: top.map(t => t[0].length > 22 ? t[0].slice(0, 22) + '…' : t[0]), datasets: [{ label, data: top.map(t => t[1]), backgroundColor: CHART_COLORS[3] }] },
     options: Object.assign(chartOptions(), { indexAxis: 'y', plugins: { legend: { display: false } } })
@@ -1926,7 +1938,7 @@ function renderStockSplitChart(stockRecs) {
   el.style.display = '';
   const map = aggregateByDimension(stockRecs, 'Section');
   const top = [...map.entries()].filter(([k]) => k !== '(blank)').sort((a, b) => b[1] - a[1]).slice(0, 8);
-  dashCharts['chart-stocksplit'] = new Chart(el.getContext('2d'), {
+  dashCharts['chart-stocksplit'] = makeChart(el.getContext('2d'), {
     type: 'doughnut',
     data: { labels: top.map(t => t[0]), datasets: [{ data: top.map(t => t[1]), backgroundColor: top.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } } } }
