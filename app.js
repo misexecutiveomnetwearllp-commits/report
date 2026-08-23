@@ -262,23 +262,56 @@ function handleFiles(fileList) {
 }
 
 function readWorkbook(file) {
+  if (file.size === 0) { toast(file.name + ': file khaali hai (0 bytes) — dobara download karke try karo.'); return; }
+  if (file.size > 80 * 1024 * 1024) { toast(file.name + ': file bahut badi hai (' + (file.size / 1024 / 1024).toFixed(0) + ' MB) — browser mein load karna mushkil ho sakta hai.'); }
+
   const reader = new FileReader();
   reader.onload = function (e) {
-    try {
-      const data = new Uint8Array(e.target.result);
-      const wb = XLSX.read(data, { type: 'array' });
-      if (wb.SheetNames.length === 1) {
-        loadSheet(file, wb, wb.SheetNames[0]);
-      } else {
-        renderMultiSheetChoice(file, wb);
-      }
-    } catch (err) {
-      console.error(err);
-      toast('Could not read ' + file.name + ' — is it a valid Excel/CSV file?');
-    }
+    const data = new Uint8Array(e.target.result);
+    parseWorkbookBuffer(data, file);
   };
-  reader.onerror = () => toast('Failed to read ' + file.name);
+  reader.onerror = () => toast(file.name + ': browser file read nahi kar paya (' + (reader.error ? reader.error.name : 'unknown') + ').');
   reader.readAsArrayBuffer(file);
+}
+
+/**
+ * XLSX.read kई formats support karta hai, lekin ek hi option-set har file ke
+ * saath kaam nahi karta — kuch ERP ".xls" asal mein HTML table hote hain, kuch
+ * mein encoding alag hoti hai. Isliye 3 tareeke try karte hain, pehla jo chale
+ * wahi use hota hai. Sab fail ho to asli error dikhate hain, generic nahi.
+ */
+function parseWorkbookBuffer(data, file) {
+  const attempts = [
+    () => XLSX.read(data, { type: 'array' }),
+    () => XLSX.read(data, { type: 'array', codepage: 65001 }),
+    () => XLSX.read(data, { type: 'array', raw: true, cellText: false }),
+    () => {
+      // kuch exports asal mein HTML table hote hain jinka naam .xls hota hai
+      let str;
+      try { str = new TextDecoder('utf-8').decode(data); }
+      catch (e) { str = new TextDecoder('windows-1252').decode(data); }
+      return XLSX.read(str, { type: 'string' });
+    }
+  ];
+
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      const wb = attempt();
+      if (wb && wb.SheetNames && wb.SheetNames.length) {
+        if (wb.SheetNames.length === 1) loadSheet(file, wb, wb.SheetNames[0]);
+        else renderMultiSheetChoice(file, wb);
+        return;
+      }
+      lastErr = new Error('File padhi gayi lekin koi sheet nahi mili.');
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  console.error('StockLedger: could not parse', file.name, lastErr);
+  toast(file.name + ': read nahi ho payi — ' + (lastErr ? lastErr.message : 'unknown error') +
+    '. Excel mein khol kar "Save As → .xlsx" karke dobara try karo.');
 }
 
 function renderMultiSheetChoice(file, wb) {
