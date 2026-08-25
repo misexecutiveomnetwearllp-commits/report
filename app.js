@@ -624,6 +624,7 @@ function refreshAfterDataChange() {
   renderPerformance();
   renderRelations();
   if (Drill.open) renderDrill();
+  maybeAutoShowSnapshot();
 }
 
 function removeDataset(id) {
@@ -797,6 +798,7 @@ function connectSheet() {
     setGsStatus('Connected: ' + meta.spreadsheetName + ' (' + meta.sheets.length + ' sheets)', 'ok');
     renderSheetList(meta);
     updateGsOnlyButtons();
+    pullSnapshotConfigFromSheet();
   }).catch(err => {
     GS.meta = null;
     setGsStatus(err.message, 'err');
@@ -1569,7 +1571,10 @@ function periodRange() {
   const endOfAnchor = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()));
   if (p.mode === 'all') return { from: null, to: null, label: 'All data' };
   if (p.mode === 'custom') {
-    return { from: p.from ? parseDateLoose(p.from) : null, to: p.to ? parseDateLoose(p.to) : null, label: 'Custom range' };
+    const from = p.from ? parseDateLoose(p.from) : null;
+    const to = p.to ? parseDateLoose(p.to) : null;
+    const label = (from && to) ? (fmtDate(from) + ' → ' + fmtDate(to)) : 'Custom range';
+    return { from, to, label };
   }
   if (p.mode === 'thismonth') {
     return { from: new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1)), to: endOfAnchor, label: 'This month' };
@@ -1833,10 +1838,16 @@ function periodSelectHtml(id) {
   const p = App.period.mode;
   const opts = [['all', 'All data'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
                 ['180', 'Last 180 days'], ['365', 'Last 365 days'],
-                ['thismonth', 'Latest month'], ['thisyear', 'Latest year']];
+                ['thismonth', 'Latest month'], ['thisyear', 'Latest year'],
+                ['custom', 'Custom range…']];
+  const isCustom = p === 'custom';
   return '<select id="' + id + '" class="select period-select">' +
     opts.map(([v, l]) => '<option value="' + v + '"' + (p === v ? ' selected' : '') + '>' + l + '</option>').join('') +
-    '</select>';
+    '</select>' +
+    '<span class="period-custom-range" style="' + (isCustom ? '' : 'display:none;') + '">' +
+      '<input type="date" class="text-input period-from" value="' + (App.period.from || '') + '"> to ' +
+      '<input type="date" class="text-input period-to" value="' + (App.period.to || '') + '">' +
+    '</span>';
 }
 
 function wirePeriodSelects() {
@@ -1844,11 +1855,33 @@ function wirePeriodSelects() {
     sel.addEventListener('change', () => {
       App.period.mode = sel.value;
       document.querySelectorAll('.period-select').forEach(s => { s.value = sel.value; });
-      renderInsights();
-      renderPerformance();
-      renderDashboard();
+      document.querySelectorAll('.period-custom-range').forEach(el => {
+        el.style.display = sel.value === 'custom' ? '' : 'none';
+      });
+      if (sel.value !== 'custom' || (App.period.from && App.period.to)) renderAllPeriodViews();
     });
   });
+  document.querySelectorAll('.period-from').forEach(inp => {
+    inp.addEventListener('change', function () {
+      App.period.from = this.value || null;
+      document.querySelectorAll('.period-from').forEach(el => { el.value = App.period.from || ''; });
+      if (App.period.from && App.period.to) renderAllPeriodViews();
+    });
+  });
+  document.querySelectorAll('.period-to').forEach(inp => {
+    inp.addEventListener('change', function () {
+      App.period.to = this.value || null;
+      document.querySelectorAll('.period-to').forEach(el => { el.value = App.period.to || ''; });
+      if (App.period.from && App.period.to) renderAllPeriodViews();
+    });
+  });
+}
+
+function renderAllPeriodViews() {
+  renderInsights();
+  renderPerformance();
+  renderDashboard();
+  if (typeof Drill !== 'undefined' && Drill.open) renderDrill();
 }
 
 /* ---------------------------------------------------------------
@@ -2451,6 +2484,207 @@ function exportDrillCSV() {
 }
 
 /* ---------------------------------------------------------------
+   8d. TOP ITEMS SNAPSHOT — data load hote hi ek popup, configurable
+   --------------------------------------------------------------- */
+const SNAPSHOT_ALL_DIMS = ['Sub Section', 'Style', 'Section', 'Colour', 'Brand', 'Supplier', 'Size', 'Article No'];
+const SNAPSHOT_DEFAULT_CONFIG = { dims: ['Sub Section', 'Style', 'Colour', 'Supplier'], autoShow: true, topN: 5 };
+
+const Snapshot = {
+  config: Object.assign({}, SNAPSHOT_DEFAULT_CONFIG),
+  periodMode: 'thisweek',   // thisweek | lastweek | thismonth | custom
+  from: null, to: null,
+  shownThisSession: false,
+  view: 'top'               // 'top' | 'settings'
+};
+
+function loadSnapshotConfig() {
+  try {
+    const raw = Store.get('sl_snapshot_config');
+    if (raw) Snapshot.config = Object.assign({}, SNAPSHOT_DEFAULT_CONFIG, JSON.parse(raw));
+  } catch (e) {}
+}
+
+function saveSnapshotConfigLocal() {
+  Store.set('sl_snapshot_config', JSON.stringify(Snapshot.config));
+}
+
+/** Google Sheet se connect hote hi purani settings (agar save ki thi) khinch leta hai. */
+function pullSnapshotConfigFromSheet() {
+  if (!GS.url) return;
+  gsGet({ action: 'data', sheet: 'StockLedger Settings', offset: 0, limit: 20 }).then(res => {
+    const row = (res.rows || []).find(r => r[0] === 'snapshot_config');
+    if (row && row[1]) {
+      try {
+        Snapshot.config = Object.assign({}, SNAPSHOT_DEFAULT_CONFIG, JSON.parse(row[1]));
+        saveSnapshotConfigLocal();
+        if (document.getElementById('snapshot-overlay').style.display !== 'none') renderSnapshotSettings();
+      } catch (e) {}
+    }
+  }).catch(() => { /* sheet abhi nahi bani — koi baat nahi, default settings chalengi */ });
+}
+
+/** Settings ko local aur (connected ho to) Google Sheet dono jagah save karta hai. */
+function pushSnapshotConfig() {
+  saveSnapshotConfigLocal();
+  if (GS.url && GS.meta && GS.meta.canWrite) {
+    gsPost({ action: 'write', sheet: 'StockLedger Settings', mode: 'replace',
+      values: [['key', 'value'], ['snapshot_config', JSON.stringify(Snapshot.config)]] })
+      .then(() => toast('Settings save ho gayi — Google Sheet mein bhi.'))
+      .catch(() => toast('Settings is device par save ho gayi (Sheet mein save nahi ho payi).'));
+  } else {
+    toast('Settings is device par save ho gayi.');
+  }
+}
+
+function mondayOfWeekUTC(d) {
+  const day = d.getUTCDay();
+  const diff = (day === 0 ? -6 : 1 - day);
+  return new Date(d.getTime() + diff * 86400000);
+}
+
+function snapshotRange() {
+  const anchor = dataAnchorDate();
+  const anchorMid = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()));
+  if (Snapshot.periodMode === 'lastweek') {
+    const curMon = mondayOfWeekUTC(anchorMid);
+    const lastMon = new Date(curMon.getTime() - 7 * 86400000);
+    const lastSun = new Date(curMon.getTime() - 1 * 86400000);
+    return { from: lastMon, to: lastSun, label: 'Last week (' + fmtDate(lastMon) + ' – ' + fmtDate(lastSun) + ')' };
+  }
+  if (Snapshot.periodMode === 'thismonth') {
+    return { from: new Date(Date.UTC(anchorMid.getUTCFullYear(), anchorMid.getUTCMonth(), 1)), to: anchorMid, label: 'This month' };
+  }
+  if (Snapshot.periodMode === 'custom') {
+    const from = Snapshot.from ? parseDateLoose(Snapshot.from) : null;
+    const to = Snapshot.to ? parseDateLoose(Snapshot.to) : null;
+    return { from, to, label: (from && to) ? (fmtDate(from) + ' – ' + fmtDate(to)) : 'Custom range' };
+  }
+  // default: this week, Monday to Sunday
+  const mon = mondayOfWeekUTC(anchorMid);
+  const sun = new Date(mon.getTime() + 6 * 86400000);
+  return { from: mon, to: sun, label: 'This week (' + fmtDate(mon) + ' – ' + fmtDate(sun) + ')' };
+}
+
+function initSnapshot() {
+  loadSnapshotConfig();
+  document.getElementById('snapshot-close').addEventListener('click', closeSnapshot);
+  document.getElementById('snapshot-overlay').addEventListener('click', e => { if (e.target.id === 'snapshot-overlay') closeSnapshot(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && document.getElementById('snapshot-overlay').style.display !== 'none') closeSnapshot();
+  });
+  document.querySelectorAll('#snapshot-period-btns .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#snapshot-period-btns .seg-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      Snapshot.periodMode = btn.dataset.p;
+      document.getElementById('snapshot-custom-range').style.display = btn.dataset.p === 'custom' ? '' : 'none';
+      if (btn.dataset.p !== 'custom' || (Snapshot.from && Snapshot.to)) renderSnapshot();
+    });
+  });
+  document.querySelectorAll('#snapshot-custom-range input').forEach(inp => {
+    inp.addEventListener('change', () => {
+      Snapshot.from = document.getElementById('snapshot-from').value || null;
+      Snapshot.to = document.getElementById('snapshot-to').value || null;
+      if (Snapshot.from && Snapshot.to) renderSnapshot();
+    });
+  });
+  document.querySelectorAll('#snapshot-view-tabs .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#snapshot-view-tabs .seg-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      Snapshot.view = btn.dataset.view;
+      document.getElementById('snapshot-body-top').style.display = Snapshot.view === 'top' ? '' : 'none';
+      document.getElementById('snapshot-body-settings').style.display = Snapshot.view === 'settings' ? '' : 'none';
+      if (Snapshot.view === 'settings') renderSnapshotSettings();
+    });
+  });
+  document.getElementById('btn-open-snapshot').addEventListener('click', () => openSnapshot());
+}
+
+function openSnapshot() {
+  document.getElementById('snapshot-overlay').style.display = 'flex';
+  renderSnapshot();
+}
+function closeSnapshot() {
+  document.getElementById('snapshot-overlay').style.display = 'none';
+}
+
+function maybeAutoShowSnapshot() {
+  if (Snapshot.shownThisSession) return;
+  if (!Snapshot.config.autoShow) return;
+  if (!salesRecords().length) return;
+  Snapshot.shownThisSession = true;
+  openSnapshot();
+}
+
+function renderSnapshot() {
+  const range = snapshotRange();
+  document.getElementById('snapshot-subtitle').textContent = range.label;
+  const recs = salesRecords().filter(r => inPeriod(r, range));
+  const totalSold = recs.reduce((s, r) => s + (typeof r.Quantity === 'number' ? r.Quantity : 0), 0);
+  document.getElementById('snapshot-total').textContent =
+    recs.length ? (fmtNum(totalSold) + ' pcs sold across ' + recs.length.toLocaleString('en-IN') + ' bill lines') : 'Is period mein koi sale nahi mili.';
+
+  const dims = Snapshot.config.dims.filter(d => SNAPSHOT_ALL_DIMS.includes(d));
+  const wrap = document.getElementById('snapshot-grid');
+  if (!dims.length) {
+    wrap.innerHTML = '<div class="empty-hint">Koi type chuni nahi hai — "Settings" tab se select karo.</div>';
+    return;
+  }
+  wrap.innerHTML = dims.map(dim => {
+    const map = aggregateByDimension(recs, dim);
+    const top = [...map.entries()].filter(([k]) => k !== '(blank)').sort((a, b) => b[1] - a[1]).slice(0, Snapshot.config.topN || 5);
+    return '<div class="snap-card">' +
+      '<h4>' + escapeHtml(dim) + '</h4>' +
+      (top.length ? '<table class="snap-table">' + top.map(([k, v], i) =>
+        '<tr class="snap-row" data-dim="' + escapeHtml(dim) + '" data-value="' + escapeHtml(k) + '">' +
+          '<td class="snap-rank">' + (i + 1) + '</td>' +
+          '<td class="snap-name">' + escapeHtml(k) + '</td>' +
+          '<td class="num snap-qty">' + fmtNum(v) + '</td>' +
+        '</tr>').join('') + '</table>'
+        : '<div class="empty-hint">Is period mein data nahi mila.</div>') +
+      '</div>';
+  }).join('');
+
+  wrap.querySelectorAll('.snap-row').forEach(tr => tr.addEventListener('click', () => {
+    closeSnapshot();
+    openDrill(tr.dataset.dim, tr.dataset.value);
+  }));
+}
+
+function renderSnapshotSettings() {
+  const wrap = document.getElementById('snapshot-settings-body');
+  wrap.innerHTML =
+    '<p class="drill-subtitle" style="margin-bottom:12px;">Kaunse type "Top Items" mein dikhein, chuno:</p>' +
+    '<div class="snap-checklist">' +
+      SNAPSHOT_ALL_DIMS.map(d =>
+        '<label class="snap-check"><input type="checkbox" value="' + d + '"' +
+        (Snapshot.config.dims.includes(d) ? ' checked' : '') + '> ' + d + '</label>').join('') +
+    '</div>' +
+    '<div class="connect-row" style="margin-top:14px;">' +
+      '<label class="toolbar-label">Har type mein top:</label>' +
+      '<input type="number" id="snap-topn" class="text-input narrow" min="3" max="15" value="' + (Snapshot.config.topN || 5) + '">' +
+    '</div>' +
+    '<label class="toolbar-checkbox" style="margin-top:10px;">' +
+      '<input type="checkbox" id="snap-autoshow"' + (Snapshot.config.autoShow ? ' checked' : '') + '> ' +
+      'Data upload hote hi ye popup khud khule' +
+    '</label>' +
+    '<div class="modal-actions" style="margin-top:16px;">' +
+      '<button class="ghost-btn primary small" id="snap-save">Save settings</button>' +
+    '</div>';
+
+  wrap.querySelector('#snap-save').addEventListener('click', () => {
+    const checked = [...wrap.querySelectorAll('.snap-check input:checked')].map(c => c.value);
+    Snapshot.config.dims = checked;
+    Snapshot.config.topN = Math.max(3, Math.min(15, parseInt(wrap.querySelector('#snap-topn').value, 10) || 5));
+    Snapshot.config.autoShow = wrap.querySelector('#snap-autoshow').checked;
+    pushSnapshotConfig();
+    document.querySelector('#snapshot-view-tabs .seg-btn[data-view="top"]').click();
+    renderSnapshot();
+  });
+}
+
+/* ---------------------------------------------------------------
    9. DASHBOARD
    --------------------------------------------------------------- */
 let dashCharts = {};
@@ -2960,6 +3194,7 @@ document.addEventListener('DOMContentLoaded', function () {
   initDashboard();
   initRelations();
   initDrill();
+  initSnapshot();
   initSession();
   wirePeriodSelects();
   updateGsOnlyButtons();

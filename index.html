@@ -56,6 +56,7 @@
     </div>
 
     <div class="sidebar-footer">
+      <button id="btn-open-snapshot" class="ghost-btn" title="Top items ka snapshot dobara kholo">📌 Top Items Snapshot</button>
       <button id="btn-save-session" class="ghost-btn" title="Download everything you've loaded &amp; mapped as one JSON file">⬇ Save session</button>
       <label class="ghost-btn" for="session-load-input" title="Reload a session JSON you saved earlier">⬆ Load session
         <input type="file" id="session-load-input" accept=".json" hidden>
@@ -261,7 +262,7 @@
           <option value="Size">Size</option>
         </select>
         <label class="toolbar-label">Sales window:</label>
-        <select id="insights-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option></select>
+        <select id="insights-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option><option value="custom">Custom range…</option></select><span class="period-custom-range" id="insights-period-custom" style="display:none;"><input type="date" class="text-input period-from"> to <input type="date" class="text-input period-to"></span>
         <label class="toolbar-label">Target cover:</label>
         <input type="number" id="insights-target-days" class="text-input narrow" value="30" min="1" max="365"> days
         <label class="toolbar-checkbox"><input type="checkbox" id="insights-only-flagged" checked> Only items needing reorder</label>
@@ -300,7 +301,7 @@
           <option value="Size">Size</option>
         </select>
         <label class="toolbar-label">Sales window:</label>
-        <select id="perf-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option></select>
+        <select id="perf-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option><option value="custom">Custom range…</option></select><span class="period-custom-range" id="perf-period-custom" style="display:none;"><input type="date" class="text-input period-from"> to <input type="date" class="text-input period-to"></span>
         <input type="search" id="perf-search" class="text-input" placeholder="Search item, brand, supplier…">
         <span class="spacer"></span>
         <button id="perf-export" class="ghost-btn small">⬇ Export CSV</button>
@@ -356,7 +357,7 @@
       <div id="dashboard-body" style="display:none;">
         <div class="toolbar">
           <label class="toolbar-label">Sales window:</label>
-          <select id="dash-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option></select>
+          <select id="dash-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option><option value="custom">Custom range…</option></select><span class="period-custom-range" id="dash-period-custom" style="display:none;"><input type="date" class="text-input period-from"> to <input type="date" class="text-input period-to"></span>
           <label class="toolbar-label">Trend by:</label>
           <div class="seg-control inline" id="dash-grain">
             <button class="seg-btn" data-grain="day">Day</button>
@@ -439,6 +440,45 @@
           <table class="data-table" id="drill-raw-table"></table>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ TOP ITEMS SNAPSHOT POPUP ============ -->
+<div id="snapshot-overlay" class="drill-overlay snapshot-overlay" style="display:none;">
+  <div class="drill-panel snapshot-panel">
+    <div class="drill-head">
+      <div>
+        <h2>Top Items Snapshot</h2>
+        <div id="snapshot-subtitle" class="drill-subtitle"></div>
+      </div>
+      <button id="snapshot-close" class="drill-close" title="Close (Esc)">&times;</button>
+    </div>
+
+    <div class="seg-control" id="snapshot-view-tabs" style="margin:14px 0 10px;">
+      <button class="seg-btn active" data-view="top">Top Items</button>
+      <button class="seg-btn" data-view="settings">⚙ Settings</button>
+    </div>
+
+    <div id="snapshot-body-top">
+      <div class="toolbar">
+        <div class="seg-control inline" id="snapshot-period-btns">
+          <button class="seg-btn active" data-p="thisweek">This week (Mon–Sun)</button>
+          <button class="seg-btn" data-p="lastweek">Last week (Mon–Sun)</button>
+          <button class="seg-btn" data-p="thismonth">This month</button>
+          <button class="seg-btn" data-p="custom">Custom</button>
+        </div>
+        <span class="period-custom-range" id="snapshot-custom-range" style="display:none;">
+          <input type="date" id="snapshot-from" class="text-input"> to
+          <input type="date" id="snapshot-to" class="text-input">
+        </span>
+      </div>
+      <div id="snapshot-total" class="drill-subtitle" style="margin-bottom:10px;"></div>
+      <div id="snapshot-grid" class="snap-grid"></div>
+    </div>
+
+    <div id="snapshot-body-settings" style="display:none;">
+      <div id="snapshot-settings-body"></div>
     </div>
   </div>
 </div>

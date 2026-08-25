@@ -143,6 +143,8 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 .text-input.narrow { width: 70px; }
 .toolbar-label { font-size: 12.5px; color: var(--text-soft); font-weight: 500; }
 .toolbar-checkbox { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-soft); }
+.period-custom-range { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-soft); }
+.period-custom-range input[type="date"] { padding: 7px 8px; font-family: var(--font-mono); font-size: 12px; }
 
 .toolbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -475,6 +477,24 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
   .drill-panel { padding: 16px; }
   .rel-canvas { height: 460px; }
 }
+
+/* ============ TOP ITEMS SNAPSHOT ============ */
+.snapshot-panel { max-width: 900px; }
+.snap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.snap-card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.snap-card h4 { font-family: var(--font-display); font-size: 13.5px; margin-bottom: 8px; padding-bottom: 7px; border-bottom: 1px dashed var(--line-strong); }
+.snap-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.snap-row { cursor: pointer; }
+.snap-row:hover { background: #FCE7D6; }
+.snap-row td { padding: 5px 4px; border-bottom: 1px solid var(--line); }
+.snap-row:last-child td { border-bottom: none; }
+.snap-rank { font-family: var(--font-mono); color: var(--text-soft); width: 18px; }
+.snap-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+.snap-qty { font-family: var(--font-mono); font-weight: 600; text-align: right; }
+
+.snap-checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.snap-check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 6px 9px; background: var(--paper-raised); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.snap-check:hover { border-color: var(--rust); }
 
 /* ---- dashboard charts ---- */
 .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
