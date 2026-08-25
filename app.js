@@ -1560,7 +1560,14 @@ function purchaseRecords() { return datasetsOfType('purchase').flatMap(d => d.re
 function stockRecords() { return datasetsOfType('stock').flatMap(d => d.records); }
 
 function dataAnchorDate() {
-  const dates = salesRecords().concat(purchaseRecords()).map(r => r.Date).filter(Boolean);
+  let dates = salesRecords().concat(purchaseRecords()).map(r => r.Date).filter(Boolean);
+  if (!dates.length) {
+    // Agar file "sales"/"purchase" type mein import nahi hui to bhi anchor data
+    // se hi banni chahiye, warna aaj ki date lag jayegi aur "This week" khaali dikhega.
+    dates = App.datasets
+      .filter(d => d.fields.includes('Date'))
+      .flatMap(d => d.records).map(r => r.Date).filter(Boolean);
+  }
   if (!dates.length) return new Date();
   return new Date(Math.max(...dates));
 }
@@ -1850,7 +1857,30 @@ function periodSelectHtml(id) {
     '</span>';
 }
 
+/** Purane markup mein "Custom range" option aur date boxes nahi hote — yahan
+ *  khud jod dete hain, taaki sirf app.js update karne se bhi feature mile. */
+function ensurePeriodCustomInputs() {
+  document.querySelectorAll('.period-select').forEach(sel => {
+    if (![...sel.options].some(o => o.value === 'custom')) {
+      const opt = document.createElement('option');
+      opt.value = 'custom';
+      opt.textContent = 'Custom range\u2026';
+      sel.appendChild(opt);
+    }
+    const nxt = sel.nextElementSibling;
+    if (!nxt || !nxt.classList.contains('period-custom-range')) {
+      const span = document.createElement('span');
+      span.className = 'period-custom-range date-range-inline';
+      span.style.display = sel.value === 'custom' ? '' : 'none';
+      span.innerHTML = '<span class="dr-label">From</span><input type="date" class="text-input period-from">' +
+                       '<span class="dr-label">To</span><input type="date" class="text-input period-to">';
+      sel.parentNode.insertBefore(span, sel.nextSibling);
+    }
+  });
+}
+
 function wirePeriodSelects() {
+  ensurePeriodCustomInputs();
   document.querySelectorAll('.period-select').forEach(sel => {
     sel.addEventListener('change', () => {
       App.period.mode = sel.value;
@@ -2565,7 +2595,58 @@ function snapshotRange() {
   return { from: mon, to: sun, label: 'This week (' + fmtDate(mon) + ' – ' + fmtDate(sun) + ')' };
 }
 
+/** Agar index.html purana/cached ho aur popup ka markup na ho, to hum khud
+ *  bana dete hain — taaki sirf app.js update karne se bhi feature chale. */
+function ensureSnapshotDom() {
+  if (!document.getElementById('snapshot-overlay')) {
+    const div = document.createElement('div');
+    div.id = 'snapshot-overlay';
+    div.className = 'drill-overlay snapshot-overlay';
+    div.style.display = 'none';
+    div.innerHTML =
+      '<div class="drill-panel snapshot-panel">' +
+        '<div class="drill-head"><div>' +
+          '<h2>Top Items Snapshot</h2>' +
+          '<div id="snapshot-subtitle" class="drill-subtitle"></div>' +
+        '</div><button id="snapshot-close" class="drill-close" title="Close (Esc)">&times;</button></div>' +
+        '<div class="seg-control" id="snapshot-view-tabs" style="margin:14px 0 10px;">' +
+          '<button class="seg-btn active" data-view="top">Top Items</button>' +
+          '<button class="seg-btn" data-view="settings">&#9881; Settings</button>' +
+        '</div>' +
+        '<div id="snapshot-body-top">' +
+          '<div class="toolbar">' +
+            '<div class="seg-control inline" id="snapshot-period-btns">' +
+              '<button class="seg-btn active" data-p="thisweek">This week (Mon&ndash;Sun)</button>' +
+              '<button class="seg-btn" data-p="lastweek">Last week (Mon&ndash;Sun)</button>' +
+              '<button class="seg-btn" data-p="thismonth">This month</button>' +
+              '<button class="seg-btn" data-p="custom">Custom</button>' +
+            '</div>' +
+            '<span class="date-range-inline" id="snapshot-custom-range" style="display:none;">' +
+              '<span class="dr-label">From</span><input type="date" id="snapshot-from" class="text-input">' +
+              '<span class="dr-label">To</span><input type="date" id="snapshot-to" class="text-input">' +
+            '</span>' +
+          '</div>' +
+          '<div id="snapshot-total" class="drill-subtitle" style="margin-bottom:10px;"></div>' +
+          '<div id="snapshot-grid" class="snap-grid"></div>' +
+        '</div>' +
+        '<div id="snapshot-body-settings" style="display:none;"><div id="snapshot-settings-body"></div></div>' +
+      '</div>';
+    document.body.appendChild(div);
+  }
+
+  if (!document.getElementById('btn-open-snapshot')) {
+    const btn = document.createElement('button');
+    btn.id = 'btn-open-snapshot';
+    btn.className = 'ghost-btn';
+    btn.textContent = '\uD83D\uDCCC Top Items Snapshot';
+    const footer = document.querySelector('.sidebar-footer');
+    if (footer) footer.insertBefore(btn, footer.firstChild);
+    else document.body.appendChild(btn);
+  }
+}
+
 function initSnapshot() {
+  ensureSnapshotDom();
   loadSnapshotConfig();
   document.getElementById('snapshot-close').addEventListener('click', closeSnapshot);
   document.getElementById('snapshot-overlay').addEventListener('click', e => { if (e.target.id === 'snapshot-overlay') closeSnapshot(); });
@@ -2598,7 +2679,11 @@ function initSnapshot() {
       if (Snapshot.view === 'settings') renderSnapshotSettings();
     });
   });
-  document.getElementById('btn-open-snapshot').addEventListener('click', () => openSnapshot());
+  // Event delegation — button kabhi re-render ho ya baad mein aaye, tab bhi chalega.
+  document.addEventListener('click', e => {
+    const btn = e.target.closest && e.target.closest('#btn-open-snapshot');
+    if (btn) { e.preventDefault(); openSnapshot(); }
+  });
 }
 
 function openSnapshot() {
@@ -2609,10 +2694,23 @@ function closeSnapshot() {
   document.getElementById('snapshot-overlay').style.display = 'none';
 }
 
+/** Snapshot ke liye records — Sales pehli pasand, lekin agar file "sales" type
+ *  mein import nahi hui to bhi kaam chalta rahe, isliye koi bhi dated dataset
+ *  chal jayega. Warna popup chup-chaap kabhi khulta hi nahi. */
+function snapshotSourceRecords() {
+  const sales = salesRecords();
+  if (sales.length) return { recs: sales, label: 'sales' };
+  const dated = App.datasets
+    .filter(d => d.type !== 'stock' && d.fields.includes('Date') && d.fields.includes('Quantity'))
+    .flatMap(d => d.records);
+  if (dated.length) return { recs: dated, label: 'transactions' };
+  return { recs: [], label: '' };
+}
+
 function maybeAutoShowSnapshot() {
   if (Snapshot.shownThisSession) return;
   if (!Snapshot.config.autoShow) return;
-  if (!salesRecords().length) return;
+  if (!snapshotSourceRecords().recs.length) return;
   Snapshot.shownThisSession = true;
   openSnapshot();
 }
@@ -2620,10 +2718,20 @@ function maybeAutoShowSnapshot() {
 function renderSnapshot() {
   const range = snapshotRange();
   document.getElementById('snapshot-subtitle').textContent = range.label;
-  const recs = salesRecords().filter(r => inPeriod(r, range));
+  const src = snapshotSourceRecords();
+  const recs = src.recs.filter(r => inPeriod(r, range));
   const totalSold = recs.reduce((s, r) => s + (typeof r.Quantity === 'number' ? r.Quantity : 0), 0);
-  document.getElementById('snapshot-total').textContent =
-    recs.length ? (fmtNum(totalSold) + ' pcs sold across ' + recs.length.toLocaleString('en-IN') + ' bill lines') : 'Is period mein koi sale nahi mili.';
+
+  const totalEl = document.getElementById('snapshot-total');
+  if (!src.recs.length) {
+    totalEl.textContent = 'Abhi koi sale data load nahi hua — Import tab se Sales file daalo.';
+  } else if (!recs.length) {
+    const all = src.recs.map(r => r.Date).filter(Boolean);
+    const hint = all.length ? ' Aapke data ki range: ' + fmtDate(new Date(Math.min(...all))) + ' – ' + fmtDate(new Date(Math.max(...all))) + '.' : '';
+    totalEl.textContent = 'Is period mein koi sale nahi mili.' + hint + ' Upar se doosra period chuno.';
+  } else {
+    totalEl.textContent = fmtNum(totalSold) + ' pcs sold across ' + recs.length.toLocaleString('en-IN') + ' bill lines';
+  }
 
   const dims = Snapshot.config.dims.filter(d => SNAPSHOT_ALL_DIMS.includes(d));
   const wrap = document.getElementById('snapshot-grid');
@@ -3183,24 +3291,37 @@ function loadSession(file) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
+const BUILD_VERSION = 'v7';
+
+/** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
+ *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
+ *  uske baad ka saara setup (date range, session) chalta hi nahi tha. */
+function safeInit(label, fn) {
+  try { fn(); }
+  catch (e) { console.error('StockLedger: "' + label + '" setup failed —', e); }
+}
+
 document.addEventListener('DOMContentLoaded', function () {
-  initTabs();
-  initImport();
-  initSheets();
-  initExplore();
-  initPivot();
-  initInsights();
-  initPerformance();
-  initDashboard();
-  initRelations();
-  initDrill();
-  initSnapshot();
-  initSession();
-  wirePeriodSelects();
-  updateGsOnlyButtons();
-  renderDashboard();
-  renderPerformance();
-  renderRelations();
+  const vb = document.getElementById('build-badge');
+  if (vb) vb.textContent = 'build ' + BUILD_VERSION;
+
+  safeInit('tabs', initTabs);
+  safeInit('import', initImport);
+  safeInit('sheets', initSheets);
+  safeInit('explore', initExplore);
+  safeInit('pivot', initPivot);
+  safeInit('insights', initInsights);
+  safeInit('performance', initPerformance);
+  safeInit('dashboard', initDashboard);
+  safeInit('relations', initRelations);
+  safeInit('drill', initDrill);
+  safeInit('snapshot', initSnapshot);
+  safeInit('session', initSession);
+  safeInit('period-selects', wirePeriodSelects);
+  safeInit('gs-buttons', updateGsOnlyButtons);
+  safeInit('dashboard-render', renderDashboard);
+  safeInit('performance-render', renderPerformance);
+  safeInit('relations-render', renderRelations);
 });
 
 })();
