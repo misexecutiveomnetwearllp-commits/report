@@ -610,6 +610,7 @@ function confirmImport(card, filename, columns, dataRows, origin, headerIdx) {
 
 function refreshAfterDataChange() {
   clearLookups();
+  clearAnchorCache();
   // dusri file aate hi connections khud detect kar lete hain
   if (App.datasets.length > 1 && !App.relationships.length) autoDetectRelationships(true);
   rescoreRelationships();
@@ -1559,7 +1560,25 @@ function salesRecords() { return datasetsOfType('sales').flatMap(d => d.records)
 function purchaseRecords() { return datasetsOfType('purchase').flatMap(d => d.records); }
 function stockRecords() { return datasetsOfType('stock').flatMap(d => d.records); }
 
+/** Math.max(...arr) bade arrays par stack overflow de sakta hai (57,000+ rows),
+ *  isliye loop se min/max nikalte hain. */
+function minMaxTime(dates) {
+  let mn = null, mx = null;
+  for (let i = 0; i < dates.length; i++) {
+    const t = dates[i].getTime();
+    if (mn === null || t < mn) mn = t;
+    if (mx === null || t > mx) mx = t;
+  }
+  return { min: mn, max: mx };
+}
+
+// Anchor date poore data par nikalti hai, isliye cache karte hain — warna har
+// filter call par saara data dobara scan hota hai (popup 48 sec le raha tha).
+let _anchorCache = null;
+function clearAnchorCache() { _anchorCache = null; }
+
 function dataAnchorDate() {
+  if (_anchorCache) return _anchorCache;
   let dates = salesRecords().concat(purchaseRecords()).map(r => r.Date).filter(Boolean);
   if (!dates.length) {
     // Agar file "sales"/"purchase" type mein import nahi hui to bhi anchor data
@@ -1569,7 +1588,8 @@ function dataAnchorDate() {
       .flatMap(d => d.records).map(r => r.Date).filter(Boolean);
   }
   if (!dates.length) return new Date();
-  return new Date(Math.max(...dates));
+  _anchorCache = new Date(minMaxTime(dates).max);
+  return _anchorCache;
 }
 
 function periodRange() {
@@ -1609,7 +1629,8 @@ function periodDayCount(range, recs) {
   if (range.from && range.to) return Math.max(1, Math.round((range.to - range.from) / 86400000) + 1);
   const dates = recs.map(r => r.Date).filter(Boolean);
   if (!dates.length) return 30;
-  const min = new Date(Math.min(...dates)), max = new Date(Math.max(...dates));
+  const mm = minMaxTime(dates);
+  const min = new Date(mm.min), max = new Date(mm.max);
   return Math.max(1, Math.round((max - min) / 86400000) + 1);
 }
 
@@ -2288,6 +2309,39 @@ function openDrill(field, value) {
   renderDrill();
 }
 
+function toISODate(d) {
+  if (!(d instanceof Date)) return null;
+  return d.getUTCFullYear() + '-' +
+         String(d.getUTCMonth() + 1).padStart(2, '0') + '-' +
+         String(d.getUTCDate()).padStart(2, '0');
+}
+
+/** Snapshot ki window ko baaki app ke period filter par bhi laga deta hai,
+ *  taaki "This week" ka node click karne par drill bhi wahi week dikhaye. */
+function syncPeriodToRange(range) {
+  if (!range || !range.from || !range.to) return;
+  App.period = { mode: 'custom', from: toISODate(range.from), to: toISODate(range.to) };
+  document.querySelectorAll('.period-select').forEach(s => { s.value = 'custom'; });
+  document.querySelectorAll('.period-custom-range').forEach(el => { el.style.display = ''; });
+  document.querySelectorAll('.period-from').forEach(el => { el.value = App.period.from; });
+  document.querySelectorAll('.period-to').forEach(el => { el.value = App.period.to; });
+  renderInsights(); renderPerformance(); renderDashboard();
+}
+
+/** Mind map se aaye poore raste (Sub Section > Style > Colour) ke saath drill kholta hai. */
+function openDrillPath(filters, range) {
+  if (!filters || !filters.length) return;
+  if (range) syncPeriodToRange(range);
+  Drill.filters = filters.slice();
+  Drill.open = true;
+  Drill.showRaw = false;
+  const used = filters.map(f => f.field);
+  const dims = availableDrillDims().filter(d => used.indexOf(d) === -1);
+  Drill.dim = dims[0] || 'Style';
+  document.getElementById('drill-overlay').style.display = 'flex';
+  renderDrill();
+}
+
 function pushDrill(field, value) {
   if (Drill.filters.some(f => f.field === field)) return;
   Drill.filters.push({ field, value });
@@ -2336,7 +2390,7 @@ function renderDrill() {
   const avgDaily = sold / days;
   const daysCover = avgDaily > 0 ? inStock / avgDaily : (inStock > 0 ? Infinity : 0);
   const dates = sales.map(r => r.Date).filter(Boolean);
-  const lastSale = dates.length ? new Date(Math.max(...dates)) : null;
+  const lastSale = dates.length ? new Date(minMaxTime(dates).max) : null;
 
   // title + breadcrumb
   const last = Drill.filters[Drill.filters.length - 1];
@@ -2514,23 +2568,36 @@ function exportDrillCSV() {
 }
 
 /* ---------------------------------------------------------------
-   8d. TOP ITEMS SNAPSHOT — data load hote hi ek popup, configurable
+   8d. TOP ITEMS SNAPSHOT — mind map + top lists, configurable
    --------------------------------------------------------------- */
 const SNAPSHOT_ALL_DIMS = ['Sub Section', 'Style', 'Section', 'Colour', 'Brand', 'Supplier', 'Size', 'Article No'];
-const SNAPSHOT_DEFAULT_CONFIG = { dims: ['Sub Section', 'Style', 'Colour', 'Supplier'], autoShow: true, topN: 5 };
+const SNAPSHOT_DEFAULT_CONFIG = {
+  levels: ['Sub Section', 'Style', 'Colour'],          // mind map ki hierarchy (upar se neeche)
+  dims: ['Sub Section', 'Style', 'Colour', 'Supplier'], // purana "Top Lists" view
+  autoShow: true,
+  topN: 5
+};
 
 const Snapshot = {
   config: Object.assign({}, SNAPSHOT_DEFAULT_CONFIG),
   periodMode: 'thisweek',   // thisweek | lastweek | thismonth | custom
   from: null, to: null,
   shownThisSession: false,
-  view: 'top'               // 'top' | 'settings'
+  view: 'map'               // 'map' | 'cards' | 'settings'
 };
+
+// Mind map ka apna zoom/pan/expand state
+const SnapMap = { zoom: 1, panX: 40, panY: 0, expanded: {}, drag: null, nodes: [], w: 0, h: 0 };
 
 function loadSnapshotConfig() {
   try {
     const raw = Store.get('sl_snapshot_config');
-    if (raw) Snapshot.config = Object.assign({}, SNAPSHOT_DEFAULT_CONFIG, JSON.parse(raw));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Purani setting mein sirf "dims" tha — usse hierarchy bana lete hain.
+      if (!parsed.levels && parsed.dims) parsed.levels = parsed.dims.slice(0, 3);
+      Snapshot.config = Object.assign({}, SNAPSHOT_DEFAULT_CONFIG, parsed);
+    }
   } catch (e) {}
 }
 
@@ -2545,12 +2612,14 @@ function pullSnapshotConfigFromSheet() {
     const row = (res.rows || []).find(r => r[0] === 'snapshot_config');
     if (row && row[1]) {
       try {
-        Snapshot.config = Object.assign({}, SNAPSHOT_DEFAULT_CONFIG, JSON.parse(row[1]));
+        const parsed = JSON.parse(row[1]);
+        if (!parsed.levels && parsed.dims) parsed.levels = parsed.dims.slice(0, 3);
+        Snapshot.config = Object.assign({}, SNAPSHOT_DEFAULT_CONFIG, parsed);
         saveSnapshotConfigLocal();
-        if (document.getElementById('snapshot-overlay').style.display !== 'none') renderSnapshotSettings();
+        if (document.getElementById('snapshot-overlay').style.display !== 'none') renderSnapshot();
       } catch (e) {}
     }
-  }).catch(() => { /* sheet abhi nahi bani — koi baat nahi, default settings chalengi */ });
+  }).catch(() => { /* sheet abhi nahi bani — default settings chalengi */ });
 }
 
 /** Settings ko local aur (connected ho to) Google Sheet dono jagah save karta hai. */
@@ -2589,49 +2658,23 @@ function snapshotRange() {
     const to = Snapshot.to ? parseDateLoose(Snapshot.to) : null;
     return { from, to, label: (from && to) ? (fmtDate(from) + ' – ' + fmtDate(to)) : 'Custom range' };
   }
-  // default: this week, Monday to Sunday
   const mon = mondayOfWeekUTC(anchorMid);
   const sun = new Date(mon.getTime() + 6 * 86400000);
   return { from: mon, to: sun, label: 'This week (' + fmtDate(mon) + ' – ' + fmtDate(sun) + ')' };
 }
 
-/** Agar index.html purana/cached ho aur popup ka markup na ho, to hum khud
- *  bana dete hain — taaki sirf app.js update karne se bhi feature chale. */
+/** Agar index.html purana/cached ho to popup ka markup hum khud bana dete hain. */
 function ensureSnapshotDom() {
   if (!document.getElementById('snapshot-overlay')) {
     const div = document.createElement('div');
     div.id = 'snapshot-overlay';
     div.className = 'drill-overlay snapshot-overlay';
     div.style.display = 'none';
-    div.innerHTML =
-      '<div class="drill-panel snapshot-panel">' +
-        '<div class="drill-head"><div>' +
-          '<h2>Top Items Snapshot</h2>' +
-          '<div id="snapshot-subtitle" class="drill-subtitle"></div>' +
-        '</div><button id="snapshot-close" class="drill-close" title="Close (Esc)">&times;</button></div>' +
-        '<div class="seg-control" id="snapshot-view-tabs" style="margin:14px 0 10px;">' +
-          '<button class="seg-btn active" data-view="top">Top Items</button>' +
-          '<button class="seg-btn" data-view="settings">&#9881; Settings</button>' +
-        '</div>' +
-        '<div id="snapshot-body-top">' +
-          '<div class="toolbar">' +
-            '<div class="seg-control inline" id="snapshot-period-btns">' +
-              '<button class="seg-btn active" data-p="thisweek">This week (Mon&ndash;Sun)</button>' +
-              '<button class="seg-btn" data-p="lastweek">Last week (Mon&ndash;Sun)</button>' +
-              '<button class="seg-btn" data-p="thismonth">This month</button>' +
-              '<button class="seg-btn" data-p="custom">Custom</button>' +
-            '</div>' +
-            '<span class="date-range-inline" id="snapshot-custom-range" style="display:none;">' +
-              '<span class="dr-label">From</span><input type="date" id="snapshot-from" class="text-input">' +
-              '<span class="dr-label">To</span><input type="date" id="snapshot-to" class="text-input">' +
-            '</span>' +
-          '</div>' +
-          '<div id="snapshot-total" class="drill-subtitle" style="margin-bottom:10px;"></div>' +
-          '<div id="snapshot-grid" class="snap-grid"></div>' +
-        '</div>' +
-        '<div id="snapshot-body-settings" style="display:none;"><div id="snapshot-settings-body"></div></div>' +
-      '</div>';
+    div.innerHTML = snapshotPanelHtml();
     document.body.appendChild(div);
+  } else if (!document.getElementById('snapshot-body-map')) {
+    // Markup purana hai (sirf cards wala) — poora andar ka hissa refresh kar dete hain.
+    document.getElementById('snapshot-overlay').innerHTML = snapshotPanelHtml();
   }
 
   if (!document.getElementById('btn-open-snapshot')) {
@@ -2645,14 +2688,66 @@ function ensureSnapshotDom() {
   }
 }
 
+function snapshotPanelHtml() {
+  return '<div class="drill-panel snapshot-panel">' +
+    '<div class="drill-head"><div>' +
+      '<h2>Top Items Snapshot</h2>' +
+      '<div id="snapshot-subtitle" class="drill-subtitle"></div>' +
+    '</div><button id="snapshot-close" class="drill-close" title="Close (Esc)">&times;</button></div>' +
+
+    '<div class="snapshot-controls">' +
+      '<div class="seg-control inline" id="snapshot-view-tabs">' +
+        '<button class="seg-btn active" data-view="map">\uD83C\uDF3F Mind Map</button>' +
+        '<button class="seg-btn" data-view="cards">\uD83D\uDCCB Top Lists</button>' +
+        '<button class="seg-btn" data-view="settings">\u2699 Settings</button>' +
+      '</div>' +
+      '<div class="seg-control inline" id="snapshot-period-btns">' +
+        '<button class="seg-btn active" data-p="thisweek">This week</button>' +
+        '<button class="seg-btn" data-p="lastweek">Last week</button>' +
+        '<button class="seg-btn" data-p="thismonth">This month</button>' +
+        '<button class="seg-btn" data-p="custom">Custom</button>' +
+      '</div>' +
+      '<span class="date-range-inline" id="snapshot-custom-range" style="display:none;">' +
+        '<span class="dr-label">From</span><input type="date" id="snapshot-from" class="text-input">' +
+        '<span class="dr-label">To</span><input type="date" id="snapshot-to" class="text-input">' +
+      '</span>' +
+    '</div>' +
+
+    '<div id="snapshot-total" class="drill-subtitle snapshot-total"></div>' +
+
+    '<div id="snapshot-body-map" class="snapshot-body">' +
+      '<div class="map-toolbar">' +
+        '<button class="ghost-btn small" id="snapmap-zoom-out">&minus;</button>' +
+        '<span id="snapmap-zoom-label" class="drill-count">100%</span>' +
+        '<button class="ghost-btn small" id="snapmap-zoom-in">+</button>' +
+        '<button class="ghost-btn small" id="snapmap-fit">Fit</button>' +
+        '<button class="ghost-btn small" id="snapmap-expand-all">Expand all</button>' +
+        '<button class="ghost-btn small" id="snapmap-collapse-all">Collapse</button>' +
+        '<span class="drill-count map-hint">Node par click = poori details \u00b7 drag = move \u00b7 scroll = zoom</span>' +
+      '</div>' +
+      '<div class="snapmap-wrap" id="snapmap-wrap"><svg id="snapmap-svg"></svg></div>' +
+    '</div>' +
+
+    '<div id="snapshot-body-cards" class="snapshot-body" style="display:none;">' +
+      '<div id="snapshot-grid" class="snap-grid"></div>' +
+    '</div>' +
+
+    '<div id="snapshot-body-settings" class="snapshot-body" style="display:none;">' +
+      '<div id="snapshot-settings-body"></div>' +
+    '</div>' +
+  '</div>';
+}
+
 function initSnapshot() {
   ensureSnapshotDom();
   loadSnapshotConfig();
+
   document.getElementById('snapshot-close').addEventListener('click', closeSnapshot);
   document.getElementById('snapshot-overlay').addEventListener('click', e => { if (e.target.id === 'snapshot-overlay') closeSnapshot(); });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && document.getElementById('snapshot-overlay').style.display !== 'none') closeSnapshot();
   });
+
   document.querySelectorAll('#snapshot-period-btns .seg-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#snapshot-period-btns .seg-btn').forEach(b => b.classList.remove('active'));
@@ -2669,71 +2764,295 @@ function initSnapshot() {
       if (Snapshot.from && Snapshot.to) renderSnapshot();
     });
   });
+
   document.querySelectorAll('#snapshot-view-tabs .seg-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#snapshot-view-tabs .seg-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       Snapshot.view = btn.dataset.view;
-      document.getElementById('snapshot-body-top').style.display = Snapshot.view === 'top' ? '' : 'none';
-      document.getElementById('snapshot-body-settings').style.display = Snapshot.view === 'settings' ? '' : 'none';
-      if (Snapshot.view === 'settings') renderSnapshotSettings();
+      showSnapshotView();
+      renderSnapshot();
     });
   });
-  // Event delegation — button kabhi re-render ho ya baad mein aaye, tab bhi chalega.
-  document.addEventListener('click', e => {
-    const btn = e.target.closest && e.target.closest('#btn-open-snapshot');
-    if (btn) { e.preventDefault(); openSnapshot(); }
-  });
+
+  document.getElementById('btn-open-snapshot').addEventListener('click', () => openSnapshot());
+  initSnapMapControls();
+}
+
+function showSnapshotView() {
+  const v = Snapshot.view;
+  document.getElementById('snapshot-body-map').style.display = v === 'map' ? '' : 'none';
+  document.getElementById('snapshot-body-cards').style.display = v === 'cards' ? '' : 'none';
+  document.getElementById('snapshot-body-settings').style.display = v === 'settings' ? '' : 'none';
+  document.getElementById('snapshot-total').style.display = v === 'settings' ? 'none' : '';
 }
 
 function openSnapshot() {
   document.getElementById('snapshot-overlay').style.display = 'flex';
+  showSnapshotView();
   renderSnapshot();
 }
 function closeSnapshot() {
   document.getElementById('snapshot-overlay').style.display = 'none';
 }
 
-/** Snapshot ke liye records — Sales pehli pasand, lekin agar file "sales" type
- *  mein import nahi hui to bhi kaam chalta rahe, isliye koi bhi dated dataset
- *  chal jayega. Warna popup chup-chaap kabhi khulta hi nahi. */
-function snapshotSourceRecords() {
-  const sales = salesRecords();
-  if (sales.length) return { recs: sales, label: 'sales' };
-  const dated = App.datasets
-    .filter(d => d.type !== 'stock' && d.fields.includes('Date') && d.fields.includes('Quantity'))
-    .flatMap(d => d.records);
-  if (dated.length) return { recs: dated, label: 'transactions' };
-  return { recs: [], label: '' };
-}
-
 function maybeAutoShowSnapshot() {
   if (Snapshot.shownThisSession) return;
   if (!Snapshot.config.autoShow) return;
-  if (!snapshotSourceRecords().recs.length) return;
+  if (!salesRecords().length) return;
   Snapshot.shownThisSession = true;
+  Snapshot.view = 'map';
+  document.querySelectorAll('#snapshot-view-tabs .seg-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === 'map'));
   openSnapshot();
+}
+
+function snapshotRecords() {
+  // range ko bahar nikalna zaroori hai — warna ye har record ke liye dobara
+  // calculate hota hai aur poora data baar-baar scan hota hai (bahut slow).
+  const range = snapshotRange();
+  return salesRecords().filter(r => inPeriod(r, range));
 }
 
 function renderSnapshot() {
   const range = snapshotRange();
   document.getElementById('snapshot-subtitle').textContent = range.label;
-  const src = snapshotSourceRecords();
-  const recs = src.recs.filter(r => inPeriod(r, range));
+  const recs = snapshotRecords();
   const totalSold = recs.reduce((s, r) => s + (typeof r.Quantity === 'number' ? r.Quantity : 0), 0);
+  document.getElementById('snapshot-total').textContent =
+    recs.length ? (fmtNum(totalSold) + ' pcs sold across ' + recs.length.toLocaleString('en-IN') + ' bill lines')
+                : 'Is period mein koi sale nahi mili.';
 
-  const totalEl = document.getElementById('snapshot-total');
-  if (!src.recs.length) {
-    totalEl.textContent = 'Abhi koi sale data load nahi hua — Import tab se Sales file daalo.';
-  } else if (!recs.length) {
-    const all = src.recs.map(r => r.Date).filter(Boolean);
-    const hint = all.length ? ' Aapke data ki range: ' + fmtDate(new Date(Math.min(...all))) + ' – ' + fmtDate(new Date(Math.max(...all))) + '.' : '';
-    totalEl.textContent = 'Is period mein koi sale nahi mili.' + hint + ' Upar se doosra period chuno.';
-  } else {
-    totalEl.textContent = fmtNum(totalSold) + ' pcs sold across ' + recs.length.toLocaleString('en-IN') + ' bill lines';
+  if (Snapshot.view === 'map') renderSnapMap(recs, totalSold);
+  else if (Snapshot.view === 'cards') renderSnapshotCards(recs);
+  else renderSnapshotSettings();
+}
+
+/* ---------- MIND MAP ---------- */
+
+/** Hierarchy banata hai: har level par top-N, aur unke andar agla level. */
+function buildSnapTree(recs, levels, topN, depth, pathFilters) {
+  if (depth >= levels.length) return [];
+  const dim = levels[depth];
+  if (!dim) return [];
+  const map = new Map();
+  recs.forEach(r => {
+    const k = dimKey(r, dim);
+    map.set(k, (map.get(k) || 0) + (typeof r.Quantity === 'number' ? r.Quantity : 0));
+  });
+  const top = [...map.entries()].filter(([k]) => k !== '(blank)').sort((a, b) => b[1] - a[1]).slice(0, topN);
+
+  return top.map(([key, qty]) => {
+    const subset = recs.filter(r => dimKey(r, dim) === key);
+    const filters = pathFilters.concat([{ field: dim, value: key }]);
+    const path = filters.map(f => f.field + '=' + f.value).join('|');
+    return {
+      dim, key, qty, lines: subset.length, filters, path,
+      children: buildSnapTree(subset, levels, topN, depth + 1, filters)
+    };
+  });
+}
+
+const SNAP_NODE_W = 210, SNAP_NODE_H = 30, SNAP_COL_W = 260, SNAP_ROW_H = 40;
+
+function layoutSnapTree(nodes, depth, state) {
+  nodes.forEach(node => {
+    node.depth = depth;
+    const expanded = SnapMap.expanded[node.path] !== false && node.children.length > 0
+                     && SnapMap.expanded[node.path] !== undefined ? true
+                     : (SnapMap.expanded[node.path] === true);
+    node.expanded = !!SnapMap.expanded[node.path];
+    node.x = depth * SNAP_COL_W;
+    if (node.expanded && node.children.length) {
+      layoutSnapTree(node.children, depth + 1, state);
+      const first = node.children[0], last = node.children[node.children.length - 1];
+      node.y = (first.y + last.y) / 2;
+    } else {
+      node.y = state.leaf * SNAP_ROW_H;
+      state.leaf++;
+    }
+    state.out.push(node);
+    state.maxDepth = Math.max(state.maxDepth, depth);
+  });
+}
+
+function renderSnapMap(recs, totalSold) {
+  const svg = document.getElementById('snapmap-svg');
+  const levels = (Snapshot.config.levels || []).filter(l => l);
+  if (!levels.length) {
+    svg.innerHTML = '<text x="20" y="30" class="snap-empty-text">Settings tab se levels chuno.</text>';
+    return;
+  }
+  if (!recs.length) {
+    svg.innerHTML = '<text x="20" y="30" class="snap-empty-text">Is period mein koi sale nahi mili.</text>';
+    return;
   }
 
-  const dims = Snapshot.config.dims.filter(d => SNAPSHOT_ALL_DIMS.includes(d));
+  const tree = buildSnapTree(recs, levels, Snapshot.config.topN || 5, 0, []);
+  // Pehli baar: level-1 nodes khule hue dikhein
+  tree.forEach(n => { if (SnapMap.expanded[n.path] === undefined) SnapMap.expanded[n.path] = true; });
+
+  const state = { leaf: 0, out: [], maxDepth: 0 };
+  layoutSnapTree(tree, 0, state);
+  SnapMap.nodes = state.out;
+
+  const rootY = tree.length ? (tree[0].y + tree[tree.length - 1].y) / 2 : 0;
+  const contentW = (state.maxDepth + 1) * SNAP_COL_W + SNAP_NODE_W + 220;
+  const contentH = Math.max(state.leaf * SNAP_ROW_H + 60, 200);
+  SnapMap.w = contentW; SnapMap.h = contentH;
+
+  // links
+  let links = '';
+  function drawLinks(nodes, parent) {
+    nodes.forEach(n => {
+      if (parent) {
+        const x1 = parent.x + SNAP_NODE_W + 200, y1 = parent.y + SNAP_NODE_H / 2;
+        const x2 = n.x + 200, y2 = n.y + SNAP_NODE_H / 2;
+        const mx = (x1 + x2) / 2;
+        links += '<path class="snap-link" d="M' + x1 + ',' + y1 + ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' + x2 + ',' + y2 + '"></path>';
+      }
+      if (n.expanded && n.children.length) drawLinks(n.children, n);
+    });
+  }
+  // root ko level-1 se jodna
+  tree.forEach(n => {
+    const x1 = 170, y1 = rootY + SNAP_NODE_H / 2;
+    const x2 = n.x + 200, y2 = n.y + SNAP_NODE_H / 2;
+    const mx = (x1 + x2) / 2;
+    links += '<path class="snap-link" d="M' + x1 + ',' + y1 + ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' + x2 + ',' + y2 + '"></path>';
+  });
+  drawLinks(tree, null);
+
+  // root node
+  let nodesHtml =
+    '<g class="snap-node snap-root" transform="translate(0,' + rootY + ')">' +
+      '<rect width="170" height="' + SNAP_NODE_H + '" rx="6"></rect>' +
+      '<text x="12" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-label">All sales</text>' +
+      '<text x="158" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-qty" text-anchor="end">' + fmtNum(totalSold) + '</text>' +
+    '</g>';
+
+  const maxQtyByDepth = {};
+  SnapMap.nodes.forEach(n => { maxQtyByDepth[n.depth] = Math.max(maxQtyByDepth[n.depth] || 0, n.qty); });
+
+  SnapMap.nodes.forEach(n => {
+    const share = maxQtyByDepth[n.depth] ? (n.qty / maxQtyByDepth[n.depth]) : 0;
+    const hasKids = n.children.length > 0;
+    nodesHtml +=
+      '<g class="snap-node depth-' + Math.min(n.depth, 3) + '" transform="translate(' + (n.x + 200) + ',' + n.y + ')" data-path="' + escapeHtml(n.path) + '">' +
+        '<rect class="snap-node-bar" width="' + Math.max(3, SNAP_NODE_W * share) + '" height="' + SNAP_NODE_H + '" rx="6"></rect>' +
+        '<rect class="snap-node-box" width="' + SNAP_NODE_W + '" height="' + SNAP_NODE_H + '" rx="6"></rect>' +
+        '<text x="10" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-label">' + escapeHtml(truncateLabel(n.key, 20)) + '</text>' +
+        '<text x="' + (SNAP_NODE_W - 10) + '" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-qty" text-anchor="end">' + fmtNum(n.qty) + '</text>' +
+        '<title>' + escapeHtml(n.dim + ': ' + n.key + ' — ' + fmtNum(n.qty) + ' pcs, ' + n.lines + ' bill lines') + '</title>' +
+      '</g>' +
+      (hasKids
+        ? '<g class="snap-toggle" transform="translate(' + (n.x + 200 + SNAP_NODE_W + 6) + ',' + (n.y + SNAP_NODE_H / 2) + ')" data-toggle="' + escapeHtml(n.path) + '">' +
+            '<circle r="9"></circle>' +
+            '<text y="4" text-anchor="middle">' + (n.expanded ? '\u2212' : '+') + '</text>' +
+          '</g>'
+        : '');
+  });
+
+  svg.setAttribute('viewBox', '0 0 ' + contentW + ' ' + contentH);
+  svg.innerHTML = '<g id="snapmap-viewport">' + links + nodesHtml + '</g>';
+  applySnapMapTransform();
+
+  svg.querySelectorAll('.snap-toggle').forEach(g => {
+    g.addEventListener('click', e => {
+      e.stopPropagation();
+      const p = g.dataset.toggle;
+      SnapMap.expanded[p] = !SnapMap.expanded[p];
+      renderSnapshot();
+    });
+  });
+  svg.querySelectorAll('.snap-node[data-path]').forEach(g => {
+    g.addEventListener('click', e => {
+      e.stopPropagation();
+      const node = SnapMap.nodes.find(n => n.path === g.dataset.path);
+      if (!node) return;
+      closeSnapshot();
+      openDrillPath(node.filters, snapshotRange());
+    });
+  });
+}
+
+function truncateLabel(s, max) {
+  s = String(s);
+  return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
+}
+
+function applySnapMapTransform() {
+  const vp = document.getElementById('snapmap-viewport');
+  if (vp) vp.setAttribute('transform', 'translate(' + SnapMap.panX + ',' + SnapMap.panY + ') scale(' + SnapMap.zoom + ')');
+  const lbl = document.getElementById('snapmap-zoom-label');
+  if (lbl) lbl.textContent = Math.round(SnapMap.zoom * 100) + '%';
+}
+
+function setSnapZoom(z) {
+  SnapMap.zoom = Math.max(0.25, Math.min(3, z));
+  applySnapMapTransform();
+}
+
+function fitSnapMap() {
+  const wrap = document.getElementById('snapmap-wrap');
+  if (!wrap || !SnapMap.w) return;
+  const availW = wrap.clientWidth || 900, availH = wrap.clientHeight || 500;
+  SnapMap.zoom = Math.max(0.25, Math.min(1.4, Math.min(availW / SnapMap.w, availH / SnapMap.h)));
+  SnapMap.panX = 20; SnapMap.panY = 20;
+  applySnapMapTransform();
+}
+
+function setAllSnapExpanded(val) {
+  function walk(nodes) {
+    nodes.forEach(n => { if (n.children.length) { SnapMap.expanded[n.path] = val; walk(n.children); } });
+  }
+  const recs = snapshotRecords();
+  const levels = (Snapshot.config.levels || []).filter(l => l);
+  walk(buildSnapTree(recs, levels, Snapshot.config.topN || 5, 0, []));
+  renderSnapshot();
+}
+
+function initSnapMapControls() {
+  const zi = document.getElementById('snapmap-zoom-in');
+  const zo = document.getElementById('snapmap-zoom-out');
+  const fit = document.getElementById('snapmap-fit');
+  const ea = document.getElementById('snapmap-expand-all');
+  const ca = document.getElementById('snapmap-collapse-all');
+  const wrap = document.getElementById('snapmap-wrap');
+  if (!wrap) return;
+
+  if (zi) zi.addEventListener('click', () => setSnapZoom(SnapMap.zoom * 1.2));
+  if (zo) zo.addEventListener('click', () => setSnapZoom(SnapMap.zoom / 1.2));
+  if (fit) fit.addEventListener('click', fitSnapMap);
+  if (ea) ea.addEventListener('click', () => setAllSnapExpanded(true));
+  if (ca) ca.addEventListener('click', () => setAllSnapExpanded(false));
+
+  wrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    setSnapZoom(SnapMap.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+
+  wrap.addEventListener('mousedown', e => {
+    if (e.target.closest('.snap-node') || e.target.closest('.snap-toggle')) return;
+    SnapMap.drag = { x: e.clientX, y: e.clientY, px: SnapMap.panX, py: SnapMap.panY };
+    wrap.classList.add('grabbing');
+  });
+  window.addEventListener('mousemove', e => {
+    if (!SnapMap.drag) return;
+    SnapMap.panX = SnapMap.drag.px + (e.clientX - SnapMap.drag.x);
+    SnapMap.panY = SnapMap.drag.py + (e.clientY - SnapMap.drag.y);
+    applySnapMapTransform();
+  });
+  window.addEventListener('mouseup', () => {
+    SnapMap.drag = null;
+    wrap.classList.remove('grabbing');
+  });
+}
+
+/* ---------- TOP LISTS (purana cards view) ---------- */
+
+function renderSnapshotCards(recs) {
+  const dims = (Snapshot.config.dims || []).filter(d => SNAPSHOT_ALL_DIMS.includes(d));
   const wrap = document.getElementById('snapshot-grid');
   if (!dims.length) {
     wrap.innerHTML = '<div class="empty-hint">Koi type chuni nahi hai — "Settings" tab se select karo.</div>';
@@ -2756,21 +3075,39 @@ function renderSnapshot() {
 
   wrap.querySelectorAll('.snap-row').forEach(tr => tr.addEventListener('click', () => {
     closeSnapshot();
-    openDrill(tr.dataset.dim, tr.dataset.value);
+    openDrillPath([{ field: tr.dataset.dim, value: tr.dataset.value }], snapshotRange());
   }));
 }
 
+/* ---------- SETTINGS ---------- */
+
 function renderSnapshotSettings() {
   const wrap = document.getElementById('snapshot-settings-body');
+  const levels = Snapshot.config.levels || [];
+  const levelSelect = (i) =>
+    '<select class="select snap-level" data-i="' + i + '">' +
+      (i > 0 ? '<option value="">— none —</option>' : '') +
+      SNAPSHOT_ALL_DIMS.map(d => '<option value="' + d + '"' + (levels[i] === d ? ' selected' : '') + '>' + d + '</option>').join('') +
+    '</select>';
+
   wrap.innerHTML =
-    '<p class="drill-subtitle" style="margin-bottom:12px;">Kaunse type "Top Items" mein dikhein, chuno:</p>' +
+    '<h3 class="snap-set-title">Mind Map hierarchy</h3>' +
+    '<p class="drill-subtitle">Upar se neeche kaunsa level kis ke andar khule. Jaise: Sub Section &rarr; Style &rarr; Colour.</p>' +
+    '<div class="snap-levels">' +
+      '<div><label class="toolbar-label">Level 1</label>' + levelSelect(0) + '</div>' +
+      '<div><label class="toolbar-label">Level 2</label>' + levelSelect(1) + '</div>' +
+      '<div><label class="toolbar-label">Level 3</label>' + levelSelect(2) + '</div>' +
+    '</div>' +
+
+    '<h3 class="snap-set-title">Top Lists mein kaunse types</h3>' +
     '<div class="snap-checklist">' +
       SNAPSHOT_ALL_DIMS.map(d =>
         '<label class="snap-check"><input type="checkbox" value="' + d + '"' +
-        (Snapshot.config.dims.includes(d) ? ' checked' : '') + '> ' + d + '</label>').join('') +
+        ((Snapshot.config.dims || []).includes(d) ? ' checked' : '') + '> ' + d + '</label>').join('') +
     '</div>' +
-    '<div class="connect-row" style="margin-top:14px;">' +
-      '<label class="toolbar-label">Har type mein top:</label>' +
+
+    '<div class="connect-row" style="margin-top:16px;">' +
+      '<label class="toolbar-label">Har level/type mein top:</label>' +
       '<input type="number" id="snap-topn" class="text-input narrow" min="3" max="15" value="' + (Snapshot.config.topN || 5) + '">' +
     '</div>' +
     '<label class="toolbar-checkbox" style="margin-top:10px;">' +
@@ -2782,12 +3119,17 @@ function renderSnapshotSettings() {
     '</div>';
 
   wrap.querySelector('#snap-save').addEventListener('click', () => {
-    const checked = [...wrap.querySelectorAll('.snap-check input:checked')].map(c => c.value);
-    Snapshot.config.dims = checked;
+    const lv = [...wrap.querySelectorAll('.snap-level')].map(s => s.value).filter(v => v);
+    Snapshot.config.levels = lv.length ? lv : ['Sub Section'];
+    Snapshot.config.dims = [...wrap.querySelectorAll('.snap-check input:checked')].map(c => c.value);
     Snapshot.config.topN = Math.max(3, Math.min(15, parseInt(wrap.querySelector('#snap-topn').value, 10) || 5));
     Snapshot.config.autoShow = wrap.querySelector('#snap-autoshow').checked;
+    SnapMap.expanded = {};
     pushSnapshotConfig();
-    document.querySelector('#snapshot-view-tabs .seg-btn[data-view="top"]').click();
+    Snapshot.view = 'map';
+    document.querySelectorAll('#snapshot-view-tabs .seg-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.view === 'map'));
+    showSnapshotView();
     renderSnapshot();
   });
 }
@@ -3291,7 +3633,7 @@ function loadSession(file) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v7';
+const BUILD_VERSION = 'v8';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
