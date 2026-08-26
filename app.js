@@ -620,10 +620,14 @@ function refreshAfterDataChange() {
   renderExplore();
   renderPivotFieldList();
   computePivot();
+  populateQuickSelects();
+  renderQuickFieldList();
+  renderQuickReport();
   renderDashboard();
   renderInsights();
   renderPerformance();
   renderRelations();
+  updateRangeNotes();
   if (Drill.open) renderDrill();
   maybeAutoShowSnapshot();
 }
@@ -686,7 +690,7 @@ function populateDatasetSelects() {
     .concat(['sales', 'purchase', 'stock'].filter(t => datasetsOfType(t).length).map(t =>
       '<option value="__type:' + t + '__">All ' + t + ' files</option>'))
     .concat(App.datasets.map(ds => '<option value="' + ds.id + '">' + escapeHtml(ds.name) + '</option>'));
-  ['explore-dataset-select', 'pivot-dataset-select'].forEach(id => {
+  ['explore-dataset-select', 'pivot-dataset-select', 'quick-dataset-select'].forEach(id => {
     const el = document.getElementById(id);
     const prev = el.value;
     el.innerHTML = opts.join('');
@@ -1592,6 +1596,38 @@ function dataAnchorDate() {
   return _anchorCache;
 }
 
+/** Jo data abhi dikh raha hai, wo asal mein kab se kab tak ka hai — ye batata hai.
+ *  Filter "Last 30 days" ho ya "All data", user ko exact tareekh dikhni chahiye. */
+function effectiveRange(range) {
+  const recs = salesRecords().concat(purchaseRecords()).filter(r => inPeriod(r, range));
+  const dates = recs.map(r => r.Date).filter(Boolean);
+  if (!dates.length) {
+    return { from: null, to: null, days: 0, rows: recs.length, text: 'is window mein koi dated row nahi' };
+  }
+  const mm = minMaxTime(dates);
+  const from = new Date(mm.min), to = new Date(mm.max);
+  const days = Math.max(1, Math.round((to - from) / 86400000) + 1);
+  return {
+    from, to, days, rows: recs.length,
+    text: fmtDate(from) + '  \u2192  ' + fmtDate(to)
+  };
+}
+
+/** Har toolbar ke neeche exact range likh deta hai. */
+function updateRangeNotes() {
+  const notes = document.querySelectorAll('.period-range-note');
+  if (!notes.length) return;
+  if (!App.datasets.length) {
+    notes.forEach(n => { n.textContent = ''; });
+    return;
+  }
+  const er = effectiveRange(periodRange());
+  const txt = er.from
+    ? 'Data: ' + er.text + '   \u00b7   ' + er.days + ' din   \u00b7   ' + er.rows.toLocaleString('en-IN') + ' rows'
+    : er.text;
+  notes.forEach(n => { n.textContent = txt; });
+}
+
 function periodRange() {
   const p = App.period;
   const anchor = dataAnchorDate();
@@ -1897,7 +1933,15 @@ function ensurePeriodCustomInputs() {
                        '<span class="dr-label">To</span><input type="date" class="text-input period-to">';
       sel.parentNode.insertBefore(span, sel.nextSibling);
     }
+    // exact date range note
+    const toolbar = sel.closest('.toolbar');
+    if (toolbar && !toolbar.querySelector('.period-range-note')) {
+      const note = document.createElement('div');
+      note.className = 'period-range-note';
+      toolbar.appendChild(note);
+    }
   });
+  updateRangeNotes();
 }
 
 function wirePeriodSelects() {
@@ -1929,10 +1973,290 @@ function wirePeriodSelects() {
 }
 
 function renderAllPeriodViews() {
+  updateRangeNotes();
   renderInsights();
   renderPerformance();
   renderDashboard();
   if (typeof Drill !== 'undefined' && Drill.open) renderDrill();
+}
+
+/* ---------------------------------------------------------------
+   7d. QUICK REPORT — checkbox se nested report (Google Sheet wale
+       R-Data pivot jaisa: tick karo, click ka order hi grouping order)
+   --------------------------------------------------------------- */
+const QuickReport = {
+  order: [],            // tick karne ka kram — yahi grouping ka kram hai
+  desc: true,
+  measure: 'Quantity',
+  agg: 'sum',
+  collapsed: {},
+  lastRows: null
+};
+
+// Date se nikle hue extra grouping options
+const DERIVED_DIMS = ['Year', 'Month', 'Transaction Date'];
+
+function quickReportFields() {
+  const base = currentQuickFields();
+  const out = [];
+  if (base.includes('Date')) DERIVED_DIMS.forEach(d => out.push(d));
+  base.forEach(f => {
+    if (f === 'Date') return;
+    if (FIELD_KIND[f] === 'number') return;   // measure hai, grouping nahi
+    out.push(f);
+  });
+  return out;
+}
+
+function currentQuickFields() {
+  const sel = document.getElementById('quick-dataset-select');
+  const v = sel ? sel.value : '__all__';
+  if (v === '__all__') return allLoadedFields();
+  if (v.startsWith('__type:')) {
+    const t = v.slice(7, -2); const set = new Set();
+    datasetsOfType(t).forEach(d => d.fields.forEach(f => set.add(f)));
+    return CANONICAL_FIELDS.filter(f => set.has(f));
+  }
+  const ds = App.datasets.find(d => d.id === v);
+  return ds ? ds.fields : [];
+}
+
+function quickGroupKey(rec, dim) {
+  if (dim === 'Year') return rec.Date ? String(rec.Date.getUTCFullYear()) : '(blank)';
+  if (dim === 'Month') return rec.Date ? dateKeyForGrain(rec.Date, 'month') : '(blank)';
+  if (dim === 'Transaction Date') return rec.Date ? fmtDate(rec.Date) : '(blank)';
+  return dimKey(rec, dim);
+}
+
+function quickSortValue(dim, key) {
+  if (dim === 'Month') return grainSort(key, 'month');
+  if (dim === 'Year') return parseInt(key, 10) || 0;
+  if (dim === 'Transaction Date') { const d = parseDateLoose(key); return d ? d.getTime() : 0; }
+  return null;
+}
+
+function initQuickReport() {
+  const modeBtns = document.querySelectorAll('#pivot-mode .seg-btn');
+  modeBtns.forEach(btn => btn.addEventListener('click', () => {
+    modeBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const quick = btn.dataset.mode === 'quick';
+    document.getElementById('pivot-body-builder').style.display = quick ? 'none' : '';
+    document.getElementById('pivot-body-quick').style.display = quick ? '' : 'none';
+    if (quick) renderQuickReport();
+  }));
+
+  document.getElementById('quick-dataset-select').addEventListener('change', () => {
+    QuickReport.order = []; renderQuickFieldList(); renderQuickReport();
+  });
+  document.getElementById('quick-measure').addEventListener('change', e => { QuickReport.measure = e.target.value; renderQuickReport(); });
+  document.getElementById('quick-agg').addEventListener('change', e => { QuickReport.agg = e.target.value; renderQuickReport(); });
+  document.getElementById('quick-sort').addEventListener('change', e => { QuickReport.desc = e.target.value === 'desc'; renderQuickReport(); });
+  document.getElementById('quick-clear').addEventListener('click', () => {
+    QuickReport.order = []; QuickReport.collapsed = {}; renderQuickFieldList(); renderQuickReport();
+  });
+  document.getElementById('quick-export').addEventListener('click', exportQuickCSV);
+  const toSheet = document.getElementById('quick-to-sheet');
+  if (toSheet) toSheet.addEventListener('click', quickToSheet);
+}
+
+function populateQuickSelects() {
+  const el = document.getElementById('quick-dataset-select');
+  if (!el) return;
+  const opts = ['<option value="__all__">All files combined</option>']
+    .concat(['sales', 'purchase', 'stock'].filter(t => datasetsOfType(t).length).map(t =>
+      '<option value="__type:' + t + '__">All ' + t + ' files</option>'))
+    .concat(App.datasets.map(ds => '<option value="' + ds.id + '">' + escapeHtml(ds.name) + '</option>'));
+  const prev = el.value;
+  el.innerHTML = opts.join('');
+  if ([...el.options].some(o => o.value === prev)) el.value = prev;
+
+  // measures
+  const mEl = document.getElementById('quick-measure');
+  if (mEl) {
+    const nums = currentQuickFields().filter(f => FIELD_KIND[f] === 'number');
+    const list = nums.length ? nums : ['Quantity'];
+    const pm = mEl.value;
+    mEl.innerHTML = list.map(f => '<option value="' + f + '">' + f + '</option>').join('');
+    if (list.includes(pm)) mEl.value = pm;
+    QuickReport.measure = mEl.value;
+  }
+}
+
+function renderQuickFieldList() {
+  const wrap = document.getElementById('quick-field-list');
+  if (!wrap) return;
+  const fields = quickReportFields();
+  if (!fields.length) { wrap.innerHTML = '<div class="empty-hint">Pehle koi file load karo.</div>'; return; }
+
+  wrap.innerHTML = fields.map(f => {
+    const idx = QuickReport.order.indexOf(f);
+    const on = idx !== -1;
+    return '<label class="qr-check' + (on ? ' on' : '') + '">' +
+      '<input type="checkbox" value="' + escapeHtml(f) + '"' + (on ? ' checked' : '') + '>' +
+      '<span class="qr-name">' + escapeHtml(f) + '</span>' +
+      (on ? '<span class="qr-order">' + (idx + 1) + '</span>' : '') +
+    '</label>';
+  }).join('');
+
+  wrap.querySelectorAll('input').forEach(cb => cb.addEventListener('change', () => {
+    const f = cb.value;
+    if (cb.checked) { if (!QuickReport.order.includes(f)) QuickReport.order.push(f); }
+    else QuickReport.order = QuickReport.order.filter(x => x !== f);
+    QuickReport.collapsed = {};
+    renderQuickFieldList();
+    renderQuickReport();
+  }));
+}
+
+/** Nested groups + har level par subtotal — bilkul sheet wale pivot jaisa. */
+function buildQuickTree(recs, dims, depth, parentPath) {
+  if (depth >= dims.length) return null;
+  const dim = dims[depth];
+  const groups = new Map();
+  recs.forEach(r => {
+    const k = quickGroupKey(r, dim);
+    let g = groups.get(k);
+    if (!g) { g = { key: k, recs: [], total: 0, count: 0 }; groups.set(k, g); }
+    g.recs.push(r);
+    const v = r[QuickReport.measure];
+    if (typeof v === 'number') { g.total += v; g.count++; }
+    else if (v !== null && v !== undefined) g.count++;
+  });
+
+  let list = [...groups.values()].map(g => {
+    const path = parentPath ? parentPath + '|' + g.key : g.key;
+    let value = g.total;
+    if (QuickReport.agg === 'count') value = g.recs.length;
+    else if (QuickReport.agg === 'avg') value = g.count ? g.total / g.count : 0;
+    return {
+      dim, key: g.key, value, rows: g.recs.length, path, depth,
+      children: buildQuickTree(g.recs, dims, depth + 1, path)
+    };
+  });
+
+  const natural = quickSortValue(dim, list.length ? list[0].key : '');
+  if (natural !== null) {
+    list.sort((a, b) => (quickSortValue(dim, a.key) - quickSortValue(dim, b.key)) * (QuickReport.desc ? -1 : 1));
+  } else {
+    list.sort((a, b) => (a.value - b.value) * (QuickReport.desc ? -1 : 1));
+  }
+  return list;
+}
+
+function renderQuickReport() {
+  const table = document.getElementById('quick-table');
+  const head = document.getElementById('quick-heading');
+  if (!table) return;
+
+  if (!App.datasets.length) {
+    table.innerHTML = '<tr><td class="empty-hint">Pehle Import tab se data load karo.</td></tr>';
+    head.textContent = ''; QuickReport.lastRows = null; return;
+  }
+  const dims = QuickReport.order.slice();
+  if (!dims.length) {
+    table.innerHTML = '<tr><td class="empty-hint">Baayein taraf se column tick karo. Jis kram mein tick karoge, usi kram mein grouping hogi.</td></tr>';
+    head.textContent = ''; QuickReport.lastRows = null; return;
+  }
+
+  head.textContent = dims.join('  \u2794  ');
+
+  const sel = document.getElementById('quick-dataset-select').value;
+  const recs = getRecordsForSelection(sel);
+  const tree = buildQuickTree(recs, dims, 0, '') || [];
+
+  const label = AGG_LABELS[QuickReport.agg] + ' of ' + QuickReport.measure;
+  const grand = tree.reduce((s, n) => s + n.value, 0);
+
+  let body = '';
+  const flat = [];
+  const MAX_RENDER = 4000;   // bade reports mein browser hang na ho
+  let capped = false;
+  (function walk(nodes) {
+    nodes.forEach(n => {
+      if (flat.length >= MAX_RENDER) { capped = true; return; }
+      flat.push(n);
+      const hasKids = n.children && n.children.length;
+      const isCollapsed = QuickReport.collapsed[n.path];
+      const isLeaf = !hasKids;
+      body += '<tr class="qr-row depth-' + Math.min(n.depth, 4) + (isLeaf ? ' qr-leaf' : ' qr-group') + '" data-path="' + escapeHtml(n.path) + '">' +
+        '<td class="qr-cell" style="padding-left:' + (10 + n.depth * 22) + 'px">' +
+          (hasKids
+            ? '<span class="qr-toggle" data-toggle="' + escapeHtml(n.path) + '">' + (isCollapsed ? '\u25B8' : '\u25BE') + '</span>'
+            : '<span class="qr-bullet"></span>') +
+          escapeHtml(n.key) +
+          (hasKids ? ' <span class="qr-total-tag">Total</span>' : '') +
+        '</td>' +
+        '<td class="num qr-val">' + fmtNum(n.value) + '</td>' +
+        '<td class="num qr-share">' + (grand ? fmtNum(n.value / grand * 100, 1) + '%' : '') + '</td>' +
+        '<td class="num qr-rows">' + n.rows.toLocaleString('en-IN') + '</td>' +
+      '</tr>';
+      if (hasKids && !isCollapsed) walk(n.children);
+    });
+  })(tree);
+
+  QuickReport.lastRows = { flat, dims, label, grand };
+
+  table.innerHTML =
+    '<thead><tr>' +
+      '<th>' + dims.map(escapeHtml).join(' \u2794 ') + '</th>' +
+      '<th class="num">' + escapeHtml(label) + '</th>' +
+      '<th class="num">Share</th>' +
+      '<th class="num">Rows</th>' +
+    '</tr></thead><tbody>' + body + '</tbody>' +
+    '<tfoot><tr><td>Grand Total</td><td class="num">' + fmtNum(grand) + '</td><td class="num">100%</td>' +
+    '<td class="num">' + recs.length.toLocaleString('en-IN') + '</td></tr></tfoot>';
+
+  table.querySelectorAll('.qr-toggle').forEach(t => t.addEventListener('click', e => {
+    e.stopPropagation();
+    const p = t.dataset.toggle;
+    QuickReport.collapsed[p] = !QuickReport.collapsed[p];
+    renderQuickReport();
+  }));
+  table.querySelectorAll('.qr-row').forEach(tr => tr.addEventListener('click', () => {
+    const node = flat.find(n => n.path === tr.dataset.path);
+    if (!node) return;
+    const parts = node.path.split('|');
+    const filters = [];
+    for (let i = 0; i < parts.length && i < dims.length; i++) {
+      if (DERIVED_DIMS.includes(dims[i])) continue;   // drill sirf asli columns par
+      filters.push({ field: dims[i], value: parts[i] });
+    }
+    if (filters.length) openDrillPath(filters);
+  }));
+
+  document.getElementById('quick-count').textContent =
+    flat.length.toLocaleString('en-IN') + ' rows shown \u00b7 ' + recs.length.toLocaleString('en-IN') + ' source rows' +
+    (capped ? ' \u00b7 pehli ' + MAX_RENDER.toLocaleString('en-IN') + ' rows dikha rahe hain (poori list ke liye Export CSV)' : '');
+}
+
+function quickToGrid() {
+  if (!QuickReport.lastRows || !QuickReport.lastRows.flat.length) return null;
+  const { flat, dims, label } = QuickReport.lastRows;
+  const headers = dims.concat([label, 'Rows']);
+  const rows = flat.map(n => {
+    const parts = n.path.split('|');
+    const cells = dims.map((d, i) => (i < parts.length ? parts[i] : ''));
+    return cells.concat([n.value, n.rows]);
+  });
+  return { headers, rows };
+}
+
+function exportQuickCSV() {
+  const g = quickToGrid();
+  if (!g) { toast('Pehle column tick karo.'); return; }
+  downloadBlob(toCSV(g.headers, g.rows), 'quick-report.csv', 'text/csv');
+}
+
+function quickToSheet() {
+  const g = quickToGrid();
+  if (!g) { toast('Pehle column tick karo.'); return; }
+  const sheetName = prompt('Kis sheet mein likhein?', 'StockLedger Report');
+  if (!sheetName) return;
+  toast('Writing to sheet…');
+  gsPost({ action: 'write', sheet: sheetName, mode: 'replace', values: [g.headers].concat(g.rows) })
+    .then(res => toast('Ho gaya — "' + res.sheet + '" mein ' + res.rowsWritten + ' rows likhi gayi.'))
+    .catch(err => toast('Write failed: ' + err.message));
 }
 
 /* ---------------------------------------------------------------
@@ -1990,8 +2314,9 @@ function renderInsights() {
   const reorderCount = A.rows.filter(r => r.reorder).length;
   const reorderQty = A.rows.reduce((s, r) => s + (r.reorder ? r.suggested : 0), 0);
 
+  const erI = effectiveRange(A.range);
   kpiWrap.innerHTML = [
-    ['Analysis window', A.range.label, A.days + ' days · upto ' + fmtDate(A.anchor)],
+    ['Analysis window', erI.from ? erI.text : A.range.label, A.range.label + ' · ' + A.days + ' days'],
     ['Sold qty', fmtNum(totalSold), 'in this window'],
     ['Purchased qty', fmtNum(totalPurchased), 'in this window'],
     ['Stock on hand', fmtNum(totalStock), 'current snapshot'],
@@ -2082,8 +2407,9 @@ function renderPerformance() {
   const totalStock = A.rows.reduce((s, r) => s + r.stock, 0);
   const overallST = (A.totalSold + totalStock) > 0 ? (A.totalSold / (A.totalSold + totalStock)) * 100 : 0;
 
+  const erP = effectiveRange(A.range);
   kpiWrap.innerHTML = [
-    ['Window', A.range.label, A.days + ' days · upto ' + fmtDate(A.anchor)],
+    ['Window', erP.from ? erP.text : A.range.label, A.range.label + ' · ' + A.days + ' days'],
     ['Best sellers', best.length.toLocaleString('en-IN'), 'A-class, 80% of sales'],
     ['Dead / non-moving', dead.length.toLocaleString('en-IN'), fmtNum(deadQty) + ' pcs stuck'],
     ['Overstocked', over.length.toLocaleString('en-IN'), fmtNum(excessQty) + ' pcs excess'],
@@ -2395,8 +2721,10 @@ function renderDrill() {
   // title + breadcrumb
   const last = Drill.filters[Drill.filters.length - 1];
   document.getElementById('drill-title').textContent = last ? last.value : 'Details';
+  const erDr = effectiveRange(range);
   document.getElementById('drill-subtitle').textContent =
-    Drill.filters.map(f => f.field + ': ' + f.value).join('  ·  ');
+    Drill.filters.map(f => f.field + ': ' + f.value).join('  ·  ') +
+    (erDr.from ? '      |      Data: ' + erDr.text : '');
 
   document.getElementById('drill-breadcrumb').innerHTML =
     Drill.filters.map((f, i) =>
@@ -2574,6 +2902,7 @@ const SNAPSHOT_ALL_DIMS = ['Sub Section', 'Style', 'Section', 'Colour', 'Brand',
 const SNAPSHOT_DEFAULT_CONFIG = {
   levels: ['Sub Section', 'Style', 'Colour'],          // mind map ki hierarchy (upar se neeche)
   dims: ['Sub Section', 'Style', 'Colour', 'Supplier'], // purana "Top Lists" view
+  mapStyle: 'tree-h',
   autoShow: true,
   topN: 5
 };
@@ -2717,13 +3046,20 @@ function snapshotPanelHtml() {
 
     '<div id="snapshot-body-map" class="snapshot-body">' +
       '<div class="map-toolbar">' +
+        '<label class="toolbar-label">Design:</label>' +
+        '<select id="snapmap-style" class="select">' +
+          SNAP_STYLES.map(function (st) {
+            return '<option value="' + st.id + '"' + ((Snapshot.config.mapStyle || 'tree-h') === st.id ? ' selected' : '') + '>' + st.name + '</option>';
+          }).join('') +
+        '</select>' +
+        '<span class="map-sep"></span>' +
         '<button class="ghost-btn small" id="snapmap-zoom-out">&minus;</button>' +
         '<span id="snapmap-zoom-label" class="drill-count">100%</span>' +
         '<button class="ghost-btn small" id="snapmap-zoom-in">+</button>' +
         '<button class="ghost-btn small" id="snapmap-fit">Fit</button>' +
         '<button class="ghost-btn small" id="snapmap-expand-all">Expand all</button>' +
         '<button class="ghost-btn small" id="snapmap-collapse-all">Collapse</button>' +
-        '<span class="drill-count map-hint">Node par click = poori details \u00b7 drag = move \u00b7 scroll = zoom</span>' +
+        '<span class="drill-count map-hint">Click = details \u00b7 drag = move \u00b7 Ctrl+scroll = zoom</span>' +
       '</div>' +
       '<div class="snapmap-wrap" id="snapmap-wrap"><svg id="snapmap-svg"></svg></div>' +
     '</div>' +
@@ -2828,7 +3164,18 @@ function renderSnapshot() {
   else renderSnapshotSettings();
 }
 
-/* ---------- MIND MAP ---------- */
+/* ---------- MIND MAP — 5 designs ---------- */
+
+const SNAP_STYLES = [
+  { id: 'tree-h',   name: 'Horizontal Tree' },
+  { id: 'tree-v',   name: 'Vertical Org Chart' },
+  { id: 'radial',   name: 'Radial Burst' },
+  { id: 'sunburst', name: 'Sunburst Rings' },
+  { id: 'treemap',  name: 'Treemap Blocks' }
+];
+
+const SNAP_PALETTE = ['#A6402C', '#1F6F5C', '#B9862F', '#4A6FA5', '#7A4CA0', '#C6784B', '#3E8E7E', '#8C5B3F'];
+function snapColor(i) { return SNAP_PALETTE[i % SNAP_PALETTE.length]; }
 
 /** Hierarchy banata hai: har level par top-N, aur unke andar agla level. */
 function buildSnapTree(recs, levels, topN, depth, pathFilters) {
@@ -2853,29 +3200,21 @@ function buildSnapTree(recs, levels, topN, depth, pathFilters) {
   });
 }
 
-const SNAP_NODE_W = 210, SNAP_NODE_H = 30, SNAP_COL_W = 260, SNAP_ROW_H = 40;
-
-function layoutSnapTree(nodes, depth, state) {
-  nodes.forEach(node => {
-    node.depth = depth;
-    const expanded = SnapMap.expanded[node.path] !== false && node.children.length > 0
-                     && SnapMap.expanded[node.path] !== undefined ? true
-                     : (SnapMap.expanded[node.path] === true);
-    node.expanded = !!SnapMap.expanded[node.path];
-    node.x = depth * SNAP_COL_W;
-    if (node.expanded && node.children.length) {
-      layoutSnapTree(node.children, depth + 1, state);
-      const first = node.children[0], last = node.children[node.children.length - 1];
-      node.y = (first.y + last.y) / 2;
-    } else {
-      node.y = state.leaf * SNAP_ROW_H;
-      state.leaf++;
-    }
-    state.out.push(node);
-    state.maxDepth = Math.max(state.maxDepth, depth);
-  });
+/** Collapse state lagata hai (sirf tree/radial designs mein kaam ka hai). */
+function visibleChildren(node) {
+  return SnapMap.expanded[node.path] ? node.children : [];
 }
 
+function truncateLabel(s, max) {
+  s = String(s);
+  return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
+}
+
+function snapTooltip(n) {
+  return escapeHtml(n.dim + ': ' + n.key + ' \u2014 ' + fmtNum(n.qty) + ' pcs, ' + n.lines + ' bill lines');
+}
+
+/** Har design ek {body, w, h} lautata hai; sizing yahin ek jagah hoti hai. */
 function renderSnapMap(recs, totalSold) {
   const svg = document.getElementById('snapmap-svg');
   const levels = (Snapshot.config.levels || []).filter(l => l);
@@ -2889,75 +3228,42 @@ function renderSnapMap(recs, totalSold) {
   }
 
   const tree = buildSnapTree(recs, levels, Snapshot.config.topN || 5, 0, []);
-  // Pehli baar: level-1 nodes khule hue dikhein
+  // pehli baar level-1 khula rakhte hain
   tree.forEach(n => { if (SnapMap.expanded[n.path] === undefined) SnapMap.expanded[n.path] = true; });
 
-  const state = { leaf: 0, out: [], maxDepth: 0 };
-  layoutSnapTree(tree, 0, state);
-  SnapMap.nodes = state.out;
+  const style = Snapshot.config.mapStyle || 'tree-h';
+  let out;
+  if (style === 'tree-v') out = layoutTreeV(tree, totalSold);
+  else if (style === 'radial') out = layoutRadial(tree, totalSold);
+  else if (style === 'sunburst') out = layoutSunburst(tree, totalSold);
+  else if (style === 'treemap') out = layoutTreemap(tree, totalSold);
+  else out = layoutTreeH(tree, totalSold);
 
-  const rootY = tree.length ? (tree[0].y + tree[tree.length - 1].y) / 2 : 0;
-  const contentW = (state.maxDepth + 1) * SNAP_COL_W + SNAP_NODE_W + 220;
-  const contentH = Math.max(state.leaf * SNAP_ROW_H + 60, 200);
-  SnapMap.w = contentW; SnapMap.h = contentH;
-
-  // links
-  let links = '';
-  function drawLinks(nodes, parent) {
-    nodes.forEach(n => {
-      if (parent) {
-        const x1 = parent.x + SNAP_NODE_W + 200, y1 = parent.y + SNAP_NODE_H / 2;
-        const x2 = n.x + 200, y2 = n.y + SNAP_NODE_H / 2;
-        const mx = (x1 + x2) / 2;
-        links += '<path class="snap-link" d="M' + x1 + ',' + y1 + ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' + x2 + ',' + y2 + '"></path>';
-      }
-      if (n.expanded && n.children.length) drawLinks(n.children, n);
-    });
-  }
-  // root ko level-1 se jodna
-  tree.forEach(n => {
-    const x1 = 170, y1 = rootY + SNAP_NODE_H / 2;
-    const x2 = n.x + 200, y2 = n.y + SNAP_NODE_H / 2;
-    const mx = (x1 + x2) / 2;
-    links += '<path class="snap-link" d="M' + x1 + ',' + y1 + ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' + x2 + ',' + y2 + '"></path>';
-  });
-  drawLinks(tree, null);
-
-  // root node
-  let nodesHtml =
-    '<g class="snap-node snap-root" transform="translate(0,' + rootY + ')">' +
-      '<rect width="170" height="' + SNAP_NODE_H + '" rx="6"></rect>' +
-      '<text x="12" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-label">All sales</text>' +
-      '<text x="158" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-qty" text-anchor="end">' + fmtNum(totalSold) + '</text>' +
-    '</g>';
-
-  const maxQtyByDepth = {};
-  SnapMap.nodes.forEach(n => { maxQtyByDepth[n.depth] = Math.max(maxQtyByDepth[n.depth] || 0, n.qty); });
-
-  SnapMap.nodes.forEach(n => {
-    const share = maxQtyByDepth[n.depth] ? (n.qty / maxQtyByDepth[n.depth]) : 0;
-    const hasKids = n.children.length > 0;
-    nodesHtml +=
-      '<g class="snap-node depth-' + Math.min(n.depth, 3) + '" transform="translate(' + (n.x + 200) + ',' + n.y + ')" data-path="' + escapeHtml(n.path) + '">' +
-        '<rect class="snap-node-bar" width="' + Math.max(3, SNAP_NODE_W * share) + '" height="' + SNAP_NODE_H + '" rx="6"></rect>' +
-        '<rect class="snap-node-box" width="' + SNAP_NODE_W + '" height="' + SNAP_NODE_H + '" rx="6"></rect>' +
-        '<text x="10" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-label">' + escapeHtml(truncateLabel(n.key, 20)) + '</text>' +
-        '<text x="' + (SNAP_NODE_W - 10) + '" y="' + (SNAP_NODE_H / 2 + 4) + '" class="snap-node-qty" text-anchor="end">' + fmtNum(n.qty) + '</text>' +
-        '<title>' + escapeHtml(n.dim + ': ' + n.key + ' — ' + fmtNum(n.qty) + ' pcs, ' + n.lines + ' bill lines') + '</title>' +
-      '</g>' +
-      (hasKids
-        ? '<g class="snap-toggle" transform="translate(' + (n.x + 200 + SNAP_NODE_W + 6) + ',' + (n.y + SNAP_NODE_H / 2) + ')" data-toggle="' + escapeHtml(n.path) + '">' +
-            '<circle r="9"></circle>' +
-            '<text y="4" text-anchor="middle">' + (n.expanded ? '\u2212' : '+') + '</text>' +
-          '</g>'
-        : '');
-  });
-
-  svg.setAttribute('viewBox', '0 0 ' + contentW + ' ' + contentH);
-  svg.innerHTML = '<g id="snapmap-viewport">' + links + nodesHtml + '</g>';
+  SnapMap.w = out.w; SnapMap.h = out.h;
+  // viewBox ki jagah asli pixel size — warna expand karne par sab kuch
+  // itna chhota ho jata tha ki dikhta hi nahi tha.
+  svg.removeAttribute('viewBox');
+  svg.innerHTML = '<g id="snapmap-viewport">' + out.body + '</g>';
   applySnapMapTransform();
+  wireSnapMapNodes();
+}
 
-  svg.querySelectorAll('.snap-toggle').forEach(g => {
+function applySnapMapTransform() {
+  const svg = document.getElementById('snapmap-svg');
+  const vp = document.getElementById('snapmap-viewport');
+  const z = SnapMap.zoom;
+  if (vp) vp.setAttribute('transform', 'scale(' + z + ')');
+  if (svg) {
+    svg.setAttribute('width', Math.max(10, Math.round(SnapMap.w * z)));
+    svg.setAttribute('height', Math.max(10, Math.round(SnapMap.h * z)));
+  }
+  const lbl = document.getElementById('snapmap-zoom-label');
+  if (lbl) lbl.textContent = Math.round(z * 100) + '%';
+}
+
+function wireSnapMapNodes() {
+  const svg = document.getElementById('snapmap-svg');
+  svg.querySelectorAll('[data-toggle]').forEach(g => {
     g.addEventListener('click', e => {
       e.stopPropagation();
       const p = g.dataset.toggle;
@@ -2965,10 +3271,10 @@ function renderSnapMap(recs, totalSold) {
       renderSnapshot();
     });
   });
-  svg.querySelectorAll('.snap-node[data-path]').forEach(g => {
+  svg.querySelectorAll('[data-path]').forEach(g => {
     g.addEventListener('click', e => {
       e.stopPropagation();
-      const node = SnapMap.nodes.find(n => n.path === g.dataset.path);
+      const node = findSnapNode(g.dataset.path);
       if (!node) return;
       closeSnapshot();
       openDrillPath(node.filters, snapshotRange());
@@ -2976,29 +3282,336 @@ function renderSnapMap(recs, totalSold) {
   });
 }
 
-function truncateLabel(s, max) {
-  s = String(s);
-  return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
+let _snapIndex = {};
+function indexNodes(nodes) {
+  nodes.forEach(n => { _snapIndex[n.path] = n; indexNodes(n.children); });
+}
+function findSnapNode(path) { return _snapIndex[path]; }
+
+/* ===== 1. HORIZONTAL TREE ===== */
+function layoutTreeH(tree, totalSold) {
+  _snapIndex = {}; indexNodes(tree);
+  const NODE_W = 210, NODE_H = 30, COL_W = 268, ROW_H = 40, ROOT_W = 150, PAD = 24;
+  const state = { leaf: 0, maxDepth: 0, all: [] };
+
+  (function walk(nodes, depth) {
+    nodes.forEach(n => {
+      n.depth = depth;
+      n.x = PAD + ROOT_W + 60 + depth * COL_W;
+      const kids = visibleChildren(n);
+      if (kids.length) {
+        walk(kids, depth + 1);
+        n.y = (kids[0].y + kids[kids.length - 1].y) / 2;
+      } else {
+        n.y = PAD + state.leaf * ROW_H; state.leaf++;
+      }
+      state.maxDepth = Math.max(state.maxDepth, depth);
+      state.all.push(n);
+    });
+  })(tree, 0);
+
+  const rootY = tree.length ? (tree[0].y + tree[tree.length - 1].y) / 2 : PAD;
+  let links = '', nodes = '';
+
+  function link(x1, y1, x2, y2, color) {
+    const mx = (x1 + x2) / 2;
+    return '<path class="snap-link" style="stroke:' + color + '" d="M' + x1 + ',' + y1 +
+           ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' + x2 + ',' + y2 + '"></path>';
+  }
+
+  tree.forEach(n => { links += link(PAD + ROOT_W, rootY + NODE_H / 2, n.x, n.y + NODE_H / 2, snapColor(0)); });
+  (function walkLinks(nodes2) {
+    nodes2.forEach(p => {
+      visibleChildren(p).forEach(c => {
+        links += link(p.x + NODE_W, p.y + NODE_H / 2, c.x, c.y + NODE_H / 2, snapColor(c.depth));
+      });
+      walkLinks(visibleChildren(p));
+    });
+  })(tree);
+
+  nodes += '<g class="snap-node snap-root" transform="translate(' + PAD + ',' + rootY + ')">' +
+    '<rect width="' + ROOT_W + '" height="' + NODE_H + '" rx="7"></rect>' +
+    '<text x="12" y="' + (NODE_H / 2 + 4) + '" class="snap-node-label">All sales</text>' +
+    '<text x="' + (ROOT_W - 12) + '" y="' + (NODE_H / 2 + 4) + '" class="snap-node-qty" text-anchor="end">' + fmtNum(totalSold) + '</text></g>';
+
+  const maxByDepth = {};
+  state.all.forEach(n => { maxByDepth[n.depth] = Math.max(maxByDepth[n.depth] || 0, n.qty); });
+
+  state.all.forEach(n => {
+    const share = maxByDepth[n.depth] ? n.qty / maxByDepth[n.depth] : 0;
+    const col = snapColor(n.depth);
+    nodes += '<g class="snap-node" transform="translate(' + n.x + ',' + n.y + ')" data-path="' + escapeHtml(n.path) + '">' +
+      '<rect class="snap-node-bar" style="fill:' + col + '" width="' + Math.max(4, NODE_W * share) + '" height="' + NODE_H + '" rx="6"></rect>' +
+      '<rect class="snap-node-box" width="' + NODE_W + '" height="' + NODE_H + '" rx="6"></rect>' +
+      '<text x="10" y="' + (NODE_H / 2 + 4) + '" class="snap-node-label">' + escapeHtml(truncateLabel(n.key, 20)) + '</text>' +
+      '<text x="' + (NODE_W - 10) + '" y="' + (NODE_H / 2 + 4) + '" class="snap-node-qty" text-anchor="end">' + fmtNum(n.qty) + '</text>' +
+      '<title>' + snapTooltip(n) + '</title></g>';
+    if (n.children.length) {
+      nodes += '<g class="snap-toggle" transform="translate(' + (n.x + NODE_W + 9) + ',' + (n.y + NODE_H / 2) + ')" data-toggle="' + escapeHtml(n.path) + '">' +
+        '<circle r="9"></circle><text y="4" text-anchor="middle">' + (SnapMap.expanded[n.path] ? '\u2212' : '+') + '</text></g>';
+    }
+  });
+
+  return {
+    body: links + nodes,
+    w: PAD * 2 + ROOT_W + 60 + (state.maxDepth + 1) * COL_W + 40,
+    h: Math.max(PAD * 2 + state.leaf * ROW_H, 240)
+  };
 }
 
-function applySnapMapTransform() {
-  const vp = document.getElementById('snapmap-viewport');
-  if (vp) vp.setAttribute('transform', 'translate(' + SnapMap.panX + ',' + SnapMap.panY + ') scale(' + SnapMap.zoom + ')');
-  const lbl = document.getElementById('snapmap-zoom-label');
-  if (lbl) lbl.textContent = Math.round(SnapMap.zoom * 100) + '%';
+/* ===== 2. VERTICAL ORG CHART ===== */
+function layoutTreeV(tree, totalSold) {
+  _snapIndex = {}; indexNodes(tree);
+  const NODE_W = 150, NODE_H = 44, COL_W = 168, ROW_H = 108, PAD = 30;
+  const state = { leaf: 0, maxDepth: 0, all: [] };
+
+  (function walk(nodes, depth) {
+    nodes.forEach(n => {
+      n.depth = depth;
+      n.y = PAD + 70 + depth * ROW_H;
+      const kids = visibleChildren(n);
+      if (kids.length) {
+        walk(kids, depth + 1);
+        n.x = (kids[0].x + kids[kids.length - 1].x) / 2;
+      } else {
+        n.x = PAD + state.leaf * COL_W; state.leaf++;
+      }
+      state.maxDepth = Math.max(state.maxDepth, depth);
+      state.all.push(n);
+    });
+  })(tree, 0);
+
+  const rootX = tree.length ? (tree[0].x + tree[tree.length - 1].x) / 2 : PAD;
+  const rootY = PAD;
+  let links = '', nodes = '';
+
+  function elbow(x1, y1, x2, y2, color) {
+    const my = (y1 + y2) / 2;
+    return '<path class="snap-link" style="stroke:' + color + '" d="M' + x1 + ',' + y1 + ' V' + my + ' H' + x2 + ' V' + y2 + '"></path>';
+  }
+
+  tree.forEach(n => { links += elbow(rootX + NODE_W / 2, rootY + NODE_H, n.x + NODE_W / 2, n.y, snapColor(0)); });
+  (function walkLinks(ns) {
+    ns.forEach(p => {
+      visibleChildren(p).forEach(c => {
+        links += elbow(p.x + NODE_W / 2, p.y + NODE_H, c.x + NODE_W / 2, c.y, snapColor(c.depth));
+      });
+      walkLinks(visibleChildren(p));
+    });
+  })(tree);
+
+  nodes += '<g class="snap-node snap-root" transform="translate(' + rootX + ',' + rootY + ')">' +
+    '<rect width="' + NODE_W + '" height="' + NODE_H + '" rx="8"></rect>' +
+    '<text x="' + NODE_W / 2 + '" y="19" class="snap-node-label" text-anchor="middle">All sales</text>' +
+    '<text x="' + NODE_W / 2 + '" y="35" class="snap-node-qty" text-anchor="middle">' + fmtNum(totalSold) + '</text></g>';
+
+  state.all.forEach(n => {
+    const col = snapColor(n.depth);
+    nodes += '<g class="snap-node snap-card-node" transform="translate(' + n.x + ',' + n.y + ')" data-path="' + escapeHtml(n.path) + '">' +
+      '<rect class="snap-node-box" width="' + NODE_W + '" height="' + NODE_H + '" rx="8"></rect>' +
+      '<rect style="fill:' + col + '" width="5" height="' + NODE_H + '" rx="2.5"></rect>' +
+      '<text x="' + (NODE_W / 2 + 3) + '" y="19" class="snap-node-label" text-anchor="middle">' + escapeHtml(truncateLabel(n.key, 16)) + '</text>' +
+      '<text x="' + (NODE_W / 2 + 3) + '" y="35" class="snap-node-qty" text-anchor="middle">' + fmtNum(n.qty) + '</text>' +
+      '<title>' + snapTooltip(n) + '</title></g>';
+    if (n.children.length) {
+      nodes += '<g class="snap-toggle" transform="translate(' + (n.x + NODE_W / 2) + ',' + (n.y + NODE_H + 11) + ')" data-toggle="' + escapeHtml(n.path) + '">' +
+        '<circle r="9"></circle><text y="4" text-anchor="middle">' + (SnapMap.expanded[n.path] ? '\u2212' : '+') + '</text></g>';
+    }
+  });
+
+  return {
+    body: links + nodes,
+    w: Math.max(PAD * 2 + state.leaf * COL_W, 400),
+    h: PAD * 2 + 70 + (state.maxDepth + 1) * ROW_H
+  };
 }
 
-function setSnapZoom(z) {
-  SnapMap.zoom = Math.max(0.25, Math.min(3, z));
-  applySnapMapTransform();
+/* ===== 3. RADIAL BURST ===== */
+function layoutRadial(tree, totalSold) {
+  _snapIndex = {}; indexNodes(tree);
+  const RING = 165, PAD = 60;
+  const state = { leaf: 0, maxDepth: 0, all: [] };
+
+  (function count(nodes, depth) {
+    nodes.forEach(n => {
+      n.depth = depth;
+      const kids = visibleChildren(n);
+      if (kids.length) count(kids, depth + 1); else state.leaf++;
+      state.maxDepth = Math.max(state.maxDepth, depth);
+    });
+  })(tree, 0);
+
+  const totalLeaves = Math.max(1, state.leaf);
+  let leafIdx = 0;
+  (function place(nodes, depth) {
+    nodes.forEach(n => {
+      const kids = visibleChildren(n);
+      if (kids.length) {
+        place(kids, depth + 1);
+        n.angle = (kids[0].angle + kids[kids.length - 1].angle) / 2;
+      } else {
+        n.angle = (leafIdx + 0.5) / totalLeaves * Math.PI * 2;
+        leafIdx++;
+      }
+      n.r = (depth + 1) * RING;
+      state.all.push(n);
+    });
+  })(tree, 0);
+
+  const R = (state.maxDepth + 1) * RING + PAD + 90;
+  const cx = R, cy = R;
+  const px = n => cx + Math.cos(n.angle - Math.PI / 2) * n.r;
+  const py = n => cy + Math.sin(n.angle - Math.PI / 2) * n.r;
+
+  let links = '', nodes = '';
+  function curve(x1, y1, x2, y2, color) {
+    return '<path class="snap-link" style="stroke:' + color + '" d="M' + x1 + ',' + y1 +
+           ' Q' + ((x1 + x2) / 2 + (cx - (x1 + x2) / 2) * 0.25) + ',' + ((y1 + y2) / 2 + (cy - (y1 + y2) / 2) * 0.25) +
+           ' ' + x2 + ',' + y2 + '"></path>';
+  }
+  tree.forEach(n => { links += curve(cx, cy, px(n), py(n), snapColor(0)); });
+  (function walkLinks(ns) {
+    ns.forEach(p => {
+      visibleChildren(p).forEach(c => { links += curve(px(p), py(p), px(c), py(c), snapColor(c.depth)); });
+      walkLinks(visibleChildren(p));
+    });
+  })(tree);
+
+  nodes += '<g class="snap-node snap-root" transform="translate(' + (cx - 62) + ',' + (cy - 20) + ')">' +
+    '<rect width="124" height="40" rx="20"></rect>' +
+    '<text x="62" y="18" class="snap-node-label" text-anchor="middle">All sales</text>' +
+    '<text x="62" y="32" class="snap-node-qty" text-anchor="middle">' + fmtNum(totalSold) + '</text></g>';
+
+  const maxByDepth = {};
+  state.all.forEach(n => { maxByDepth[n.depth] = Math.max(maxByDepth[n.depth] || 0, n.qty); });
+
+  state.all.forEach(n => {
+    const x = px(n), y = py(n), col = snapColor(n.depth);
+    const share = maxByDepth[n.depth] ? n.qty / maxByDepth[n.depth] : 0;
+    const rad = 7 + share * 13;
+    const left = Math.cos(n.angle - Math.PI / 2) < 0;
+    nodes += '<g class="snap-node snap-radial-node" data-path="' + escapeHtml(n.path) + '">' +
+      '<circle cx="' + x + '" cy="' + y + '" r="' + rad + '" style="fill:' + col + '"></circle>' +
+      '<text x="' + (x + (left ? -(rad + 7) : rad + 7)) + '" y="' + (y - 1) + '" class="snap-node-label" text-anchor="' + (left ? 'end' : 'start') + '">' + escapeHtml(truncateLabel(n.key, 16)) + '</text>' +
+      '<text x="' + (x + (left ? -(rad + 7) : rad + 7)) + '" y="' + (y + 12) + '" class="snap-node-qty" text-anchor="' + (left ? 'end' : 'start') + '">' + fmtNum(n.qty) + '</text>' +
+      '<title>' + snapTooltip(n) + '</title></g>';
+    if (n.children.length) {
+      nodes += '<g class="snap-toggle" transform="translate(' + x + ',' + (y + rad + 13) + ')" data-toggle="' + escapeHtml(n.path) + '">' +
+        '<circle r="8"></circle><text y="4" text-anchor="middle">' + (SnapMap.expanded[n.path] ? '\u2212' : '+') + '</text></g>';
+    }
+  });
+
+  return { body: links + nodes, w: R * 2, h: R * 2 };
+}
+
+/* ===== 4. SUNBURST RINGS ===== */
+function layoutSunburst(tree, totalSold) {
+  _snapIndex = {}; indexNodes(tree);
+  const RING = 92, PAD = 40;
+  let maxDepth = 0;
+  (function d(ns, depth) { ns.forEach(n => { n.depth = depth; maxDepth = Math.max(maxDepth, depth); d(n.children, depth + 1); }); })(tree, 0);
+
+  const R = (maxDepth + 2) * RING + PAD;
+  const cx = R, cy = R;
+  let body = '';
+
+  function arcPath(a0, a1, r0, r1) {
+    const large = (a1 - a0) > Math.PI ? 1 : 0;
+    const p = (a, r) => [cx + Math.cos(a - Math.PI / 2) * r, cy + Math.sin(a - Math.PI / 2) * r];
+    const [x0, y0] = p(a0, r0), [x1, y1] = p(a1, r0), [x2, y2] = p(a1, r1), [x3, y3] = p(a0, r1);
+    return 'M' + x0 + ',' + y0 + ' A' + r0 + ',' + r0 + ' 0 ' + large + ' 1 ' + x1 + ',' + y1 +
+           ' L' + x2 + ',' + y2 + ' A' + r1 + ',' + r1 + ' 0 ' + large + ' 0 ' + x3 + ',' + y3 + ' Z';
+  }
+
+  (function draw(nodes, depth, startAngle, endAngle) {
+    const sum = nodes.reduce((s, n) => s + n.qty, 0) || 1;
+    let a = startAngle;
+    nodes.forEach((n, i) => {
+      const span = (endAngle - startAngle) * (n.qty / sum);
+      const a0 = a, a1 = a + span;
+      a = a1;
+      const r0 = (depth + 1) * RING, r1 = (depth + 2) * RING - 6;
+      const col = snapColor(depth === 0 ? i : n.depth + i);
+      body += '<g class="snap-node snap-arc" data-path="' + escapeHtml(n.path) + '">' +
+        '<path d="' + arcPath(a0, a1, r0, r1) + '" style="fill:' + col + '"></path>' +
+        '<title>' + snapTooltip(n) + '</title></g>';
+      // label agar segment kaafi bada ho
+      if (span > 0.16) {
+        const mid = (a0 + a1) / 2, rm = (r0 + r1) / 2;
+        const lx = cx + Math.cos(mid - Math.PI / 2) * rm;
+        const ly = cy + Math.sin(mid - Math.PI / 2) * rm;
+        let deg = mid * 180 / Math.PI - 90;
+        if (deg > 90 || deg < -90) deg += 180;
+        body += '<text class="snap-arc-label" x="' + lx + '" y="' + ly + '" text-anchor="middle" transform="rotate(' + deg + ',' + lx + ',' + ly + ')">' +
+          escapeHtml(truncateLabel(n.key, 14)) + '</text>' +
+          '<text class="snap-arc-qty" x="' + lx + '" y="' + (ly + 13) + '" text-anchor="middle" transform="rotate(' + deg + ',' + lx + ',' + ly + ')">' + fmtNum(n.qty) + '</text>';
+      }
+      if (n.children.length) draw(n.children, depth + 1, a0, a1);
+    });
+  })(tree, 0, 0, Math.PI * 2);
+
+  body += '<circle cx="' + cx + '" cy="' + cy + '" r="' + (RING - 6) + '" class="snap-sun-center"></circle>' +
+    '<text x="' + cx + '" y="' + (cy - 4) + '" class="snap-node-label snap-sun-text" text-anchor="middle">All sales</text>' +
+    '<text x="' + cx + '" y="' + (cy + 14) + '" class="snap-node-qty snap-sun-text" text-anchor="middle">' + fmtNum(totalSold) + '</text>';
+
+  return { body, w: R * 2, h: R * 2 };
+}
+
+/* ===== 5. TREEMAP BLOCKS ===== */
+function layoutTreemap(tree, totalSold) {
+  _snapIndex = {}; indexNodes(tree);
+  const W = 1180, H = 660, PAD = 16;
+  let body = '';
+
+  // slice-and-dice: har level par direction badalti hai
+  function draw(nodes, x, y, w, h, depth, horizontal) {
+    const sum = nodes.reduce((s, n) => s + n.qty, 0) || 1;
+    let off = 0;
+    nodes.forEach((n, i) => {
+      const frac = n.qty / sum;
+      const nw = horizontal ? w * frac : w;
+      const nh = horizontal ? h : h * frac;
+      const nx = horizontal ? x + off : x;
+      const ny = horizontal ? y : y + off;
+      off += horizontal ? nw : nh;
+
+      const gap = depth === 0 ? 4 : 2;
+      const bx = nx + gap, by = ny + gap, bw = Math.max(1, nw - gap * 2), bh = Math.max(1, nh - gap * 2);
+      const col = snapColor(depth === 0 ? i : depth + i);
+      const showLabel = bw > 62 && bh > 26;
+
+      body += '<g class="snap-node snap-block" data-path="' + escapeHtml(n.path) + '">' +
+        '<rect x="' + bx + '" y="' + by + '" width="' + bw + '" height="' + bh + '" rx="4" style="fill:' + col + ';fill-opacity:' + (depth === 0 ? 0.9 : 0.55) + '"></rect>' +
+        (showLabel
+          ? '<text x="' + (bx + 7) + '" y="' + (by + 16) + '" class="snap-block-label">' + escapeHtml(truncateLabel(n.key, Math.floor(bw / 8))) + '</text>' +
+            '<text x="' + (bx + 7) + '" y="' + (by + 30) + '" class="snap-block-qty">' + fmtNum(n.qty) + '</text>'
+          : '') +
+        '<title>' + snapTooltip(n) + '</title></g>';
+
+      // bachche andar, thoda header chhod kar
+      if (n.children.length && bw > 90 && bh > 60) {
+        const head = showLabel ? 34 : 4;
+        draw(n.children, bx + 3, by + head, bw - 6, bh - head - 3, depth + 1, !horizontal);
+      }
+    });
+  }
+  draw(tree, PAD, PAD, W - PAD * 2, H - PAD * 2, 0, true);
+
+  return { body, w: W, h: H };
 }
 
 function fitSnapMap() {
   const wrap = document.getElementById('snapmap-wrap');
   if (!wrap || !SnapMap.w) return;
-  const availW = wrap.clientWidth || 900, availH = wrap.clientHeight || 500;
-  SnapMap.zoom = Math.max(0.25, Math.min(1.4, Math.min(availW / SnapMap.w, availH / SnapMap.h)));
-  SnapMap.panX = 20; SnapMap.panY = 20;
+  const availW = (wrap.clientWidth || 1000) - 24, availH = (wrap.clientHeight || 520) - 24;
+  const z = Math.min(availW / SnapMap.w, availH / SnapMap.h);
+  SnapMap.zoom = Math.max(0.15, Math.min(2, z));
+  applySnapMapTransform();
+  wrap.scrollLeft = 0; wrap.scrollTop = 0;
+}
+
+function setSnapZoom(z) {
+  SnapMap.zoom = Math.max(0.15, Math.min(4, z));
   applySnapMapTransform();
 }
 
@@ -3006,9 +3619,8 @@ function setAllSnapExpanded(val) {
   function walk(nodes) {
     nodes.forEach(n => { if (n.children.length) { SnapMap.expanded[n.path] = val; walk(n.children); } });
   }
-  const recs = snapshotRecords();
   const levels = (Snapshot.config.levels || []).filter(l => l);
-  walk(buildSnapTree(recs, levels, Snapshot.config.topN || 5, 0, []));
+  walk(buildSnapTree(snapshotRecords(), levels, Snapshot.config.topN || 5, 0, []));
   renderSnapshot();
 }
 
@@ -3018,30 +3630,41 @@ function initSnapMapControls() {
   const fit = document.getElementById('snapmap-fit');
   const ea = document.getElementById('snapmap-expand-all');
   const ca = document.getElementById('snapmap-collapse-all');
+  const styleSel = document.getElementById('snapmap-style');
   const wrap = document.getElementById('snapmap-wrap');
   if (!wrap) return;
 
-  if (zi) zi.addEventListener('click', () => setSnapZoom(SnapMap.zoom * 1.2));
-  if (zo) zo.addEventListener('click', () => setSnapZoom(SnapMap.zoom / 1.2));
+  if (zi) zi.addEventListener('click', () => setSnapZoom(SnapMap.zoom * 1.25));
+  if (zo) zo.addEventListener('click', () => setSnapZoom(SnapMap.zoom / 1.25));
   if (fit) fit.addEventListener('click', fitSnapMap);
   if (ea) ea.addEventListener('click', () => setAllSnapExpanded(true));
   if (ca) ca.addEventListener('click', () => setAllSnapExpanded(false));
+  if (styleSel) {
+    styleSel.addEventListener('change', () => {
+      Snapshot.config.mapStyle = styleSel.value;
+      saveSnapshotConfigLocal();
+      renderSnapshot();
+      setTimeout(fitSnapMap, 0);
+    });
+  }
 
   wrap.addEventListener('wheel', e => {
+    if (!e.ctrlKey && !e.metaKey) return;   // normal scroll chalta rahe
     e.preventDefault();
-    setSnapZoom(SnapMap.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+    setSnapZoom(SnapMap.zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12));
   }, { passive: false });
 
+  // khaali jagah se drag karke scroll
   wrap.addEventListener('mousedown', e => {
-    if (e.target.closest('.snap-node') || e.target.closest('.snap-toggle')) return;
-    SnapMap.drag = { x: e.clientX, y: e.clientY, px: SnapMap.panX, py: SnapMap.panY };
+    if (e.target.closest('[data-path]') || e.target.closest('[data-toggle]')) return;
+    SnapMap.drag = { x: e.clientX, y: e.clientY, sl: wrap.scrollLeft, st: wrap.scrollTop };
     wrap.classList.add('grabbing');
+    e.preventDefault();
   });
   window.addEventListener('mousemove', e => {
     if (!SnapMap.drag) return;
-    SnapMap.panX = SnapMap.drag.px + (e.clientX - SnapMap.drag.x);
-    SnapMap.panY = SnapMap.drag.py + (e.clientY - SnapMap.drag.y);
-    applySnapMapTransform();
+    wrap.scrollLeft = SnapMap.drag.sl - (e.clientX - SnapMap.drag.x);
+    wrap.scrollTop = SnapMap.drag.st - (e.clientY - SnapMap.drag.y);
   });
   window.addEventListener('mouseup', () => {
     SnapMap.drag = null;
@@ -3084,20 +3707,32 @@ function renderSnapshotCards(recs) {
 function renderSnapshotSettings() {
   const wrap = document.getElementById('snapshot-settings-body');
   const levels = Snapshot.config.levels || [];
+  // Jitne columns available hain, utne hi level rakh sakte ho.
+  const maxLevels = SNAPSHOT_ALL_DIMS.length;
   const levelSelect = (i) =>
     '<select class="select snap-level" data-i="' + i + '">' +
-      (i > 0 ? '<option value="">— none —</option>' : '') +
+      (i > 0 ? '<option value="">\u2014 none \u2014</option>' : '') +
       SNAPSHOT_ALL_DIMS.map(d => '<option value="' + d + '"' + (levels[i] === d ? ' selected' : '') + '>' + d + '</option>').join('') +
     '</select>';
 
+  let levelRows = '';
+  for (let i = 0; i < maxLevels; i++) {
+    levelRows += '<div><label class="toolbar-label">Level ' + (i + 1) + '</label>' + levelSelect(i) + '</div>';
+  }
+
   wrap.innerHTML =
-    '<h3 class="snap-set-title">Mind Map hierarchy</h3>' +
-    '<p class="drill-subtitle">Upar se neeche kaunsa level kis ke andar khule. Jaise: Sub Section &rarr; Style &rarr; Colour.</p>' +
-    '<div class="snap-levels">' +
-      '<div><label class="toolbar-label">Level 1</label>' + levelSelect(0) + '</div>' +
-      '<div><label class="toolbar-label">Level 2</label>' + levelSelect(1) + '</div>' +
-      '<div><label class="toolbar-label">Level 3</label>' + levelSelect(2) + '</div>' +
+    '<h3 class="snap-set-title">Mind Map design</h3>' +
+    '<div class="snap-style-grid">' +
+      SNAP_STYLES.map(st =>
+        '<label class="snap-style-opt' + ((Snapshot.config.mapStyle || 'tree-h') === st.id ? ' active' : '') + '">' +
+          '<input type="radio" name="mapstyle" value="' + st.id + '"' + ((Snapshot.config.mapStyle || 'tree-h') === st.id ? ' checked' : '') + '>' +
+          '<span class="snap-style-name">' + st.name + '</span>' +
+        '</label>').join('') +
     '</div>' +
+
+    '<h3 class="snap-set-title">Mind Map hierarchy</h3>' +
+    '<p class="drill-subtitle">Upar se neeche kaunsa level kis ke andar khule. Jitne chaaho utne level chuno \u2014 jo nahi chahiye usko "none" rakh do.</p>' +
+    '<div class="snap-levels">' + levelRows + '</div>' +
 
     '<h3 class="snap-set-title">Top Lists mein kaunse types</h3>' +
     '<div class="snap-checklist">' +
@@ -3118,9 +3753,17 @@ function renderSnapshotSettings() {
       '<button class="ghost-btn primary small" id="snap-save">Save settings</button>' +
     '</div>';
 
+  wrap.querySelectorAll('input[name="mapstyle"]').forEach(r => r.addEventListener('change', () => {
+    wrap.querySelectorAll('.snap-style-opt').forEach(o => o.classList.toggle('active', o.querySelector('input').checked));
+  }));
+
   wrap.querySelector('#snap-save').addEventListener('click', () => {
     const lv = [...wrap.querySelectorAll('.snap-level')].map(s => s.value).filter(v => v);
-    Snapshot.config.levels = lv.length ? lv : ['Sub Section'];
+    // duplicate levels hatao, warna wahi cheez do baar khulegi
+    Snapshot.config.levels = lv.filter((v, i) => lv.indexOf(v) === i);
+    if (!Snapshot.config.levels.length) Snapshot.config.levels = ['Sub Section'];
+    const styleRadio = wrap.querySelector('input[name="mapstyle"]:checked');
+    if (styleRadio) Snapshot.config.mapStyle = styleRadio.value;
     Snapshot.config.dims = [...wrap.querySelectorAll('.snap-check input:checked')].map(c => c.value);
     Snapshot.config.topN = Math.max(3, Math.min(15, parseInt(wrap.querySelector('#snap-topn').value, 10) || 5));
     Snapshot.config.autoShow = wrap.querySelector('#snap-autoshow').checked;
@@ -3131,6 +3774,7 @@ function renderSnapshotSettings() {
       b.classList.toggle('active', b.dataset.view === 'map'));
     showSnapshotView();
     renderSnapshot();
+    setTimeout(fitSnapMap, 0);
   });
 }
 
@@ -3171,7 +3815,9 @@ function renderDashboard() {
   const A = App.datasets.length ? buildAnalysis('Item Code', 30) : null;
   const deadCount = A ? A.rows.filter(r => r.status === 'Dead stock').length : 0;
 
+  const erD = effectiveRange(range);
   document.getElementById('dashboard-kpis').innerHTML = [
+    ['Data range', erD.from ? erD.text : range.label, erD.from ? (range.label + ' · ' + erD.days + ' days') : 'no dated rows'],
     ['Sold qty', fmtNum(soldQty), salesRecs.length ? salesRecs.length.toLocaleString('en-IN') + ' bill lines' : 'no sales data'],
     ['Purchased qty', fmtNum(sumQty(purchaseRecs)), purchaseRecs.length ? purchaseRecs.length.toLocaleString('en-IN') + ' lines' : 'no purchase data'],
     ['Stock on hand', fmtNum(stockQty), stockRecs.length ? distinctItems(stockRecs).toLocaleString('en-IN') + ' SKUs' : 'no stock data'],
@@ -3633,7 +4279,7 @@ function loadSession(file) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v8';
+const BUILD_VERSION = 'v10';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -3652,6 +4298,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('sheets', initSheets);
   safeInit('explore', initExplore);
   safeInit('pivot', initPivot);
+  safeInit('quick-report', initQuickReport);
   safeInit('insights', initInsights);
   safeInit('performance', initPerformance);
   safeInit('dashboard', initDashboard);

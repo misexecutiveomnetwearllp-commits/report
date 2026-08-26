@@ -187,9 +187,55 @@
     <section class="tab-panel" id="tab-pivot">
       <header class="panel-head">
         <h1>Pivot builder</h1>
-        <p>Drag fields the way you would in Excel: into Filters, Rows, Columns and Values. Works across one file or several combined.</p>
+        <p>Do tareeke: columns ko tick karke turant nested report banao (Google Sheet wale pivot jaisa), ya Excel ki tarah fields drag karke apni marzi ka pivot banao.</p>
       </header>
 
+      <div class="seg-control" id="pivot-mode">
+        <button class="seg-btn active" data-mode="quick">&#9745; Quick Report (tick columns)</button>
+        <button class="seg-btn" data-mode="builder">&#9783; Drag &amp; Drop Builder</button>
+      </div>
+
+      <!-- ===== QUICK REPORT ===== -->
+      <div id="pivot-body-quick">
+        <div class="toolbar">
+          <label class="toolbar-label">Data:</label>
+          <select id="quick-dataset-select" class="select"></select>
+          <label class="toolbar-label">Value:</label>
+          <select id="quick-agg" class="select">
+            <option value="sum">Sum</option>
+            <option value="count">Count</option>
+            <option value="avg">Average</option>
+          </select>
+          <span class="toolbar-label">of</span>
+          <select id="quick-measure" class="select"></select>
+          <label class="toolbar-label">Order:</label>
+          <select id="quick-sort" class="select">
+            <option value="desc" selected>Descending</option>
+            <option value="asc">Ascending</option>
+          </select>
+          <span class="spacer"></span>
+          <span class="drill-count" id="quick-count"></span>
+          <button id="quick-clear" class="ghost-btn small">Clear</button>
+          <button id="quick-export" class="ghost-btn small">&#11015; Export CSV</button>
+          <button id="quick-to-sheet" class="ghost-btn small gs-only" style="display:none;">&#8599; Send to Sheet</button>
+        </div>
+
+        <div class="quick-layout">
+          <div class="quick-fieldlist">
+            <div class="pivot-fieldlist-head">Columns &mdash; tick karne ka kram hi grouping ka kram hai</div>
+            <div id="quick-field-list" class="qr-check-list"></div>
+          </div>
+          <div class="quick-result">
+            <div id="quick-heading" class="quick-heading"></div>
+            <div class="table-scroll">
+              <table class="data-table quick-table" id="quick-table"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== DRAG & DROP BUILDER ===== -->
+      <div id="pivot-body-builder" style="display:none;">
       <div class="toolbar" id="pivot-toolbar">
         <label class="toolbar-label">Data:</label>
         <select id="pivot-dataset-select" class="select"></select>
@@ -240,6 +286,7 @@
       <div id="pivot-chart-holder" class="chart-holder" style="display:none;">
         <canvas id="pivot-chart-canvas"></canvas>
         <button class="chip-remove-btn" id="pivot-chart-close">✕</button>
+      </div>
       </div>
     </section>
 
