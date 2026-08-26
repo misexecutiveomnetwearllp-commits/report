@@ -1990,19 +1990,24 @@ const QuickReport = {
   measure: 'Quantity',
   agg: 'sum',
   collapsed: {},
-  lastRows: null
+  lastRows: null,
+  dateGrain: 'none',    // none | day | week | month | quarter | year
+  period: { mode: 'all', from: null, to: null },
+  filters: {},          // column -> Set(values)  (Excel jaisa column filter)
+  search: ''
 };
 
-// Date se nikle hue extra grouping options
-const DERIVED_DIMS = ['Year', 'Month', 'Transaction Date'];
+// Date se nikle hue extra grouping options — ab ye tick-list mein nahi,
+// alag "Date grouping" dropdown se aate hain.
+const DERIVED_DIMS = ['Year', 'Quarter', 'Month', 'Week', 'Transaction Date'];
+const GRAIN_TO_DIM = { day: 'Transaction Date', week: 'Week', month: 'Month', quarter: 'Quarter', year: 'Year' };
 
 function quickReportFields() {
   const base = currentQuickFields();
   const out = [];
-  if (base.includes('Date')) DERIVED_DIMS.forEach(d => out.push(d));
   base.forEach(f => {
-    if (f === 'Date') return;
-    if (FIELD_KIND[f] === 'number') return;   // measure hai, grouping nahi
+    if (f === 'Date' || f === 'Purchase Bill Date') return;  // date ab alag dropdown se
+    if (FIELD_KIND[f] === 'number') return;                  // measure hai, grouping nahi
     out.push(f);
   });
   return out;
@@ -2021,9 +2026,17 @@ function currentQuickFields() {
   return ds ? ds.fields : [];
 }
 
+function weekKeyOf(d) {
+  const mon = mondayOfWeekUTC(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())));
+  const sun = new Date(mon.getTime() + 6 * 86400000);
+  return fmtDate(mon) + ' \u2013 ' + fmtDate(sun);
+}
+
 function quickGroupKey(rec, dim) {
   if (dim === 'Year') return rec.Date ? String(rec.Date.getUTCFullYear()) : '(blank)';
+  if (dim === 'Quarter') return rec.Date ? dateKeyForGrain(rec.Date, 'quarter') : '(blank)';
   if (dim === 'Month') return rec.Date ? dateKeyForGrain(rec.Date, 'month') : '(blank)';
+  if (dim === 'Week') return rec.Date ? weekKeyOf(rec.Date) : '(blank)';
   if (dim === 'Transaction Date') return rec.Date ? fmtDate(rec.Date) : '(blank)';
   return dimKey(rec, dim);
 }
@@ -2031,6 +2044,8 @@ function quickGroupKey(rec, dim) {
 function quickSortValue(dim, key) {
   if (dim === 'Month') return grainSort(key, 'month');
   if (dim === 'Year') return parseInt(key, 10) || 0;
+  if (dim === 'Quarter') { const m = key.match(/^(\d{4}) Q(\d)$/); return m ? parseInt(m[1],10)*10 + parseInt(m[2],10) : 0; }
+  if (dim === 'Week') { const d = parseDateLoose(key.split(' \u2013 ')[0]); return d ? d.getTime() : 0; }
   if (dim === 'Transaction Date') { const d = parseDateLoose(key); return d ? d.getTime() : 0; }
   return null;
 }
@@ -2053,8 +2068,38 @@ function initQuickReport() {
   document.getElementById('quick-agg').addEventListener('change', e => { QuickReport.agg = e.target.value; renderQuickReport(); });
   document.getElementById('quick-sort').addEventListener('change', e => { QuickReport.desc = e.target.value === 'desc'; renderQuickReport(); });
   document.getElementById('quick-clear').addEventListener('click', () => {
-    QuickReport.order = []; QuickReport.collapsed = {}; renderQuickFieldList(); renderQuickReport();
+    QuickReport.order = []; QuickReport.collapsed = {}; QuickReport.filters = {};
+    QuickReport.search = '';
+    const si = document.getElementById('quick-search'); if (si) si.value = '';
+    renderQuickFieldList(); renderQuickReport();
   });
+  const grainSel = document.getElementById('quick-date-grain');
+  if (grainSel) grainSel.addEventListener('change', e => {
+    QuickReport.dateGrain = e.target.value; QuickReport.collapsed = {}; renderQuickReport();
+  });
+  const perSel = document.getElementById('quick-period');
+  if (perSel) perSel.addEventListener('change', e => {
+    QuickReport.period.mode = e.target.value;
+    const cr = document.getElementById('quick-custom-range');
+    if (cr) cr.style.display = e.target.value === 'custom' ? '' : 'none';
+    QuickReport.collapsed = {};
+    if (e.target.value !== 'custom' || (QuickReport.period.from && QuickReport.period.to)) renderQuickReport();
+  });
+  ['quick-from', 'quick-to'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      QuickReport.period.from = document.getElementById('quick-from').value || null;
+      QuickReport.period.to = document.getElementById('quick-to').value || null;
+      QuickReport.collapsed = {};
+      if (QuickReport.period.from && QuickReport.period.to) renderQuickReport();
+    });
+  });
+  const qs = document.getElementById('quick-search');
+  if (qs) qs.addEventListener('input', debounce(e => {
+    QuickReport.search = e.target.value; QuickReport.collapsed = {}; renderQuickReport();
+  }, 220));
+
   document.getElementById('quick-export').addEventListener('click', exportQuickCSV);
   const toSheet = document.getElementById('quick-to-sheet');
   if (toSheet) toSheet.addEventListener('click', quickToSheet);
@@ -2144,6 +2189,178 @@ function buildQuickTree(recs, dims, depth, parentPath) {
   return list;
 }
 
+/** Quick Report ka apna date window — dashboard wale filter se alag rehta hai. */
+function quickPeriodRange() {
+  const p = QuickReport.period;
+  const anchor = dataAnchorDate();
+  const mid = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate()));
+  const mk = (from, to, label) => ({ from, to, label });
+
+  if (p.mode === 'all') return mk(null, null, 'All data');
+  if (p.mode === 'custom') {
+    const from = p.from ? parseDateLoose(p.from) : null;
+    const to = p.to ? parseDateLoose(p.to) : null;
+    return mk(from, to, (from && to) ? (fmtDate(from) + ' \u2192 ' + fmtDate(to)) : 'Custom range');
+  }
+  if (p.mode === 'thisweek') {
+    const mon = mondayOfWeekUTC(mid), sun = new Date(mon.getTime() + 6 * 86400000);
+    return mk(mon, sun, 'This week: ' + fmtDate(mon) + ' \u2192 ' + fmtDate(sun));
+  }
+  if (p.mode === 'lastweek') {
+    const cur = mondayOfWeekUTC(mid);
+    const mon = new Date(cur.getTime() - 7 * 86400000), sun = new Date(cur.getTime() - 86400000);
+    return mk(mon, sun, 'Last week: ' + fmtDate(mon) + ' \u2192 ' + fmtDate(sun));
+  }
+  if (p.mode === 'thismonth') {
+    const from = new Date(Date.UTC(mid.getUTCFullYear(), mid.getUTCMonth(), 1));
+    return mk(from, mid, 'This month: ' + fmtDate(from) + ' \u2192 ' + fmtDate(mid));
+  }
+  if (p.mode === 'lastmonth') {
+    const from = new Date(Date.UTC(mid.getUTCFullYear(), mid.getUTCMonth() - 1, 1));
+    const to = new Date(Date.UTC(mid.getUTCFullYear(), mid.getUTCMonth(), 0));
+    return mk(from, to, 'Last month: ' + fmtDate(from) + ' \u2192 ' + fmtDate(to));
+  }
+  if (p.mode === 'thisyear') {
+    const from = new Date(Date.UTC(mid.getUTCFullYear(), 0, 1));
+    return mk(from, mid, 'This year: ' + fmtDate(from) + ' \u2192 ' + fmtDate(mid));
+  }
+  const days = parseInt(p.mode, 10);
+  if (!isNaN(days)) {
+    const from = new Date(mid.getTime() - (days - 1) * 86400000);
+    return mk(from, mid, 'Last ' + days + ' days: ' + fmtDate(from) + ' \u2192 ' + fmtDate(mid));
+  }
+  return mk(null, null, 'All data');
+}
+
+/** Source rows par date window + column filters + search lagata hai. */
+function quickFilteredRecords() {
+  const sel = document.getElementById('quick-dataset-select');
+  let recs = getRecordsForSelection(sel ? sel.value : '__all__');
+
+  const range = quickPeriodRange();
+  if (range.from || range.to) recs = recs.filter(r => (r.Date ? inPeriod(r, range) : false));
+
+  const cols = Object.keys(QuickReport.filters);
+  if (cols.length) {
+    recs = recs.filter(r => cols.every(c => QuickReport.filters[c].has(quickGroupKey(r, c))));
+  }
+
+  const q = (QuickReport.search || '').trim().toLowerCase();
+  if (q) {
+    const dims = QuickReport.order.slice();
+    recs = recs.filter(r => dims.some(d => quickGroupKey(r, d).toLowerCase().includes(q)));
+  }
+  return recs;
+}
+
+/** Kisi column ke saare values (count ke saath) — filter popup ke liye. */
+function quickColumnValues(dim) {
+  const sel = document.getElementById('quick-dataset-select');
+  let recs = getRecordsForSelection(sel ? sel.value : '__all__');
+  const range = quickPeriodRange();
+  if (range.from || range.to) recs = recs.filter(r => (r.Date ? inPeriod(r, range) : false));
+  // baaki columns ke filters lagey rahen taaki list relevant rahe
+  Object.keys(QuickReport.filters).forEach(c => {
+    if (c === dim) return;
+    recs = recs.filter(r => QuickReport.filters[c].has(quickGroupKey(r, c)));
+  });
+  const counts = new Map();
+  recs.forEach(r => { const k = quickGroupKey(r, dim); counts.set(k, (counts.get(k) || 0) + 1); });
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+/** Excel jaisa column filter popup — search box ke saath. */
+function openQuickColumnFilter(dim, anchorEl) {
+  const values = quickColumnValues(dim);
+  const active = QuickReport.filters[dim];
+
+  const pop = document.createElement('div');
+  pop.className = 'modal-backdrop';
+  pop.innerHTML = '<div class="modal-box qcf-box">' +
+    '<h3>Filter: ' + escapeHtml(dim) + '</h3>' +
+    '<input type="search" id="qcf-search" class="text-input" placeholder="Type to search values\u2026" style="width:100%;margin-bottom:8px;">' +
+    '<div class="qcf-actions">' +
+    '<button class="ghost-btn small primary" id="qcf-only" title="Sirf search se mile values rakho, baaki sab hata do">Only these</button>' +
+    '<button class="ghost-btn small" id="qcf-all">Select all</button>' +
+    '<button class="ghost-btn small" id="qcf-none">Clear</button>' +
+    '<span class="qcf-count" id="qcf-count"></span></div>' +
+    '<div id="qcf-list" class="efp-values"></div>' +
+    '<div class="modal-actions"><button class="ghost-btn primary small" id="qcf-apply">Apply</button>' +
+    '<button class="ghost-btn small" id="qcf-clear">Remove filter</button>' +
+    '<span class="spacer"></span><button class="ghost-btn small" id="qcf-cancel">Cancel</button></div></div>';
+  document.body.appendChild(pop);
+
+  const listEl = pop.querySelector('#qcf-list');
+  const searchEl = pop.querySelector('#qcf-search');
+  const checkedNow = new Set(active ? [...active] : values.map(v => v[0]));
+
+  function paint() {
+    const q = searchEl.value.trim().toLowerCase();
+    const shown = q ? values.filter(([v]) => v.toLowerCase().includes(q)) : values;
+    pop.querySelector('#qcf-count').textContent = shown.length.toLocaleString('en-IN') + ' of ' + values.length.toLocaleString('en-IN') + ' values';
+    listEl.innerHTML = shown.slice(0, 800).map(([v, c]) =>
+      '<label class="efp-row"><input type="checkbox" value="' + escapeHtml(v) + '"' + (checkedNow.has(v) ? ' checked' : '') + '>' +
+      '<span>' + escapeHtml(v) + '</span><span class="efp-count">' + c.toLocaleString('en-IN') + '</span></label>').join('') +
+      (shown.length > 800 ? '<div class="empty-hint">Top 800 dikha rahe hain \u2014 search se aur chhota karo.</div>' : '');
+    listEl.querySelectorAll('input').forEach(cb => cb.addEventListener('change', () => {
+      if (cb.checked) checkedNow.add(cb.value); else checkedNow.delete(cb.value);
+    }));
+  }
+  paint();
+  searchEl.addEventListener('input', debounce(paint, 150));
+  searchEl.focus();
+
+  // "Only these" — bade data mein sabse kaam ka: search karo, ek click,
+  // sirf wahi values rah jaati hain.
+  pop.querySelector('#qcf-only').onclick = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    const shown = q ? values.filter(([v]) => v.toLowerCase().includes(q)) : values;
+    checkedNow.clear();
+    shown.forEach(([v]) => checkedNow.add(v));
+    paint();
+  };
+  pop.querySelector('#qcf-all').onclick = () => { values.forEach(([v]) => checkedNow.add(v)); paint(); };
+  pop.querySelector('#qcf-none').onclick = () => { checkedNow.clear(); paint(); };
+  pop.querySelector('#qcf-cancel').onclick = () => pop.remove();
+  pop.addEventListener('click', e => { if (e.target === pop) pop.remove(); });
+  pop.querySelector('#qcf-clear').onclick = () => {
+    delete QuickReport.filters[dim];
+    pop.remove(); QuickReport.collapsed = {}; renderQuickReport();
+  };
+  pop.querySelector('#qcf-apply').onclick = () => {
+    if (checkedNow.size === 0) { toast('Kam se kam ek value chuno.'); return; }
+    if (checkedNow.size === values.length) delete QuickReport.filters[dim];
+    else QuickReport.filters[dim] = new Set(checkedNow);
+    pop.remove(); QuickReport.collapsed = {}; renderQuickReport();
+  };
+}
+
+/** Active column filters ko chips ki tarah dikhata hai. */
+function renderQuickFilterChips() {
+  const wrap = document.getElementById('quick-filter-chips');
+  if (!wrap) return;
+  const cols = Object.keys(QuickReport.filters);
+  if (!cols.length && !QuickReport.search) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML =
+    (QuickReport.search ? '<span class="filter-chip">Search: "' + escapeHtml(QuickReport.search) + '"<button data-clear="__search">&times;</button></span>' : '') +
+    cols.map(c => '<span class="filter-chip">' + escapeHtml(c) + ': ' + QuickReport.filters[c].size +
+      ' selected<button data-clear="' + escapeHtml(c) + '">&times;</button></span>').join('') +
+    (cols.length > 1 ? '<button class="ghost-btn small" id="qr-clear-filters">Clear all filters</button>' : '');
+
+  wrap.querySelectorAll('[data-clear]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.clear === '__search') {
+      QuickReport.search = '';
+      const si = document.getElementById('quick-search'); if (si) si.value = '';
+    } else delete QuickReport.filters[b.dataset.clear];
+    QuickReport.collapsed = {};
+    renderQuickReport();
+  }));
+  const clearAll = wrap.querySelector('#qr-clear-filters');
+  if (clearAll) clearAll.addEventListener('click', () => {
+    QuickReport.filters = {}; QuickReport.collapsed = {}; renderQuickReport();
+  });
+}
+
 function renderQuickReport() {
   const table = document.getElementById('quick-table');
   const head = document.getElementById('quick-heading');
@@ -2153,17 +2370,27 @@ function renderQuickReport() {
     table.innerHTML = '<tr><td class="empty-hint">Pehle Import tab se data load karo.</td></tr>';
     head.textContent = ''; QuickReport.lastRows = null; return;
   }
+  // Date grouping dropdown se aaya level hamesha sabse pehle lagta hai
   const dims = QuickReport.order.slice();
+  const grainDim = GRAIN_TO_DIM[QuickReport.dateGrain];
+  if (grainDim) dims.unshift(grainDim);
+
+  const range = quickPeriodRange();
+  const noteEl = document.getElementById('quick-range-note');
+  if (noteEl) noteEl.textContent = 'Showing: ' + range.label;
+
   if (!dims.length) {
-    table.innerHTML = '<tr><td class="empty-hint">Baayein taraf se column tick karo. Jis kram mein tick karoge, usi kram mein grouping hogi.</td></tr>';
-    head.textContent = ''; QuickReport.lastRows = null; return;
+    table.innerHTML = '<tr><td class="empty-hint">Baayein taraf se column tick karo, ya upar se "Date grouping" chuno. Jis kram mein tick karoge, usi kram mein grouping hogi.</td></tr>';
+    head.textContent = ''; QuickReport.lastRows = null;
+    renderQuickFilterChips();
+    return;
   }
 
   head.textContent = dims.join('  \u2794  ');
 
-  const sel = document.getElementById('quick-dataset-select').value;
-  const recs = getRecordsForSelection(sel);
+  const recs = quickFilteredRecords();
   const tree = buildQuickTree(recs, dims, 0, '') || [];
+  renderQuickFilterChips();
 
   const label = AGG_LABELS[QuickReport.agg] + ' of ' + QuickReport.measure;
   const grand = tree.reduce((s, n) => s + n.value, 0);
@@ -2197,15 +2424,26 @@ function renderQuickReport() {
 
   QuickReport.lastRows = { flat, dims, label, grand };
 
+  const colHead = dims.map(d => {
+    const on = !!QuickReport.filters[d];
+    return '<span class="qr-colchip' + (on ? ' on' : '') + '" data-col="' + escapeHtml(d) + '" title="' + escapeHtml(d) + ' par filter lagao">' +
+      escapeHtml(d) + '<span class="qr-funnel">\u25BE</span></span>';
+  }).join('<span class="qr-arrow">\u2794</span>');
+
   table.innerHTML =
     '<thead><tr>' +
-      '<th>' + dims.map(escapeHtml).join(' \u2794 ') + '</th>' +
+      '<th class="qr-th-main">' + colHead + '</th>' +
       '<th class="num">' + escapeHtml(label) + '</th>' +
       '<th class="num">Share</th>' +
       '<th class="num">Rows</th>' +
     '</tr></thead><tbody>' + body + '</tbody>' +
     '<tfoot><tr><td>Grand Total</td><td class="num">' + fmtNum(grand) + '</td><td class="num">100%</td>' +
     '<td class="num">' + recs.length.toLocaleString('en-IN') + '</td></tr></tfoot>';
+
+  table.querySelectorAll('.qr-colchip').forEach(chip => chip.addEventListener('click', e => {
+    e.stopPropagation();
+    openQuickColumnFilter(chip.dataset.col, chip);
+  }));
 
   table.querySelectorAll('.qr-toggle').forEach(t => t.addEventListener('click', e => {
     e.stopPropagation();
@@ -2980,12 +3218,13 @@ function snapshotRange() {
     return { from: lastMon, to: lastSun, label: 'Last week (' + fmtDate(lastMon) + ' – ' + fmtDate(lastSun) + ')' };
   }
   if (Snapshot.periodMode === 'thismonth') {
-    return { from: new Date(Date.UTC(anchorMid.getUTCFullYear(), anchorMid.getUTCMonth(), 1)), to: anchorMid, label: 'This month' };
+    const from = new Date(Date.UTC(anchorMid.getUTCFullYear(), anchorMid.getUTCMonth(), 1));
+    return { from, to: anchorMid, label: 'This month (' + fmtDate(from) + ' \u2013 ' + fmtDate(anchorMid) + ')' };
   }
   if (Snapshot.periodMode === 'custom') {
     const from = Snapshot.from ? parseDateLoose(Snapshot.from) : null;
     const to = Snapshot.to ? parseDateLoose(Snapshot.to) : null;
-    return { from, to, label: (from && to) ? (fmtDate(from) + ' – ' + fmtDate(to)) : 'Custom range' };
+    return { from, to, label: (from && to) ? ('Custom (' + fmtDate(from) + ' \u2013 ' + fmtDate(to) + ')') : 'Custom range \u2014 dono dates chuno' };
   }
   const mon = mondayOfWeekUTC(anchorMid);
   const sun = new Date(mon.getTime() + 6 * 86400000);
@@ -4279,7 +4518,7 @@ function loadSession(file) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v10';
+const BUILD_VERSION = 'v11';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

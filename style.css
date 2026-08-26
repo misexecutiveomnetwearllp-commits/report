@@ -275,22 +275,47 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 .simple-table tr:last-child td { border-bottom: none; }
 
 /* ---- data table (explore / pivot / insights) ---- */
-.table-scroll { max-height: 62vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-raised); }
-.data-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.table-scroll {
+  max-height: 64vh; overflow: auto;
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--paper-raised);
+  box-shadow: inset 0 -14px 14px -14px rgba(22,33,44,.12);
+}
+.data-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+
+/* --- header: taller, clearer, doesn't blend into rows --- */
 .data-table thead th {
-  position: sticky; top: 0; background: var(--ink); color: var(--text-on-ink);
-  padding: 9px 11px; text-align: left; font-weight: 500; white-space: nowrap;
-  cursor: pointer; user-select: none; border-right: 1px solid rgba(237,230,214,0.1);
-  font-size: 11.5px;
+  position: sticky; top: 0; z-index: 3;
+  background: var(--ink); color: var(--text-on-ink);
+  padding: 12px 14px; text-align: left; font-weight: 600; white-space: nowrap;
+  cursor: pointer; user-select: none;
+  font-family: var(--font-body); font-size: 11.5px;
+  letter-spacing: .5px; text-transform: uppercase;
+  border-bottom: 2px solid var(--rust);
 }
 .data-table thead th:hover { background: var(--ink-soft); }
-.data-table thead th .sort-arrow { opacity: .55; margin-left: 4px; font-size: 10px; }
-.data-table tbody td { padding: 7px 11px; border-bottom: 1px solid var(--line); white-space: nowrap; font-family: var(--font-mono); font-size: 12px; }
-.data-table tbody tr:nth-child(even) { background: #FBF7EC; }
-.data-table tbody tr:hover { background: #FCEFE2; }
-.data-table td.num, .data-table th.num { text-align: right; }
-.data-table tfoot td { position: sticky; bottom: 0; background: #EFE6CE; font-weight: 600; border-top: 2px solid var(--line-strong); font-family: var(--font-mono); }
-.data-table .row-flag { color: var(--rust); font-weight: 600; }
+.data-table thead th .sort-arrow { opacity: .7; margin-left: 5px; font-size: 10px; }
+
+/* --- rows: more air, softer separators, strong hover --- */
+.data-table tbody td {
+  padding: 10px 14px; border-bottom: 1px solid var(--line);
+  white-space: nowrap; font-family: var(--font-mono); font-size: 12.5px;
+  color: var(--text);
+}
+.data-table tbody tr:nth-child(even) > td { background: #FCF9F0; }
+.data-table tbody tr:hover > td { background: #FBE7D2; }
+
+/* focus row: jis row par ho wo poori tarah highlight ho */
+.data-table tbody tr:hover > td:first-child { box-shadow: inset 3px 0 0 var(--rust); }
+
+.data-table td.num, .data-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table tfoot td {
+  position: sticky; bottom: 0; z-index: 2;
+  background: var(--ink); color: var(--text-on-ink);
+  font-weight: 700; border-top: 2px solid var(--rust);
+  font-family: var(--font-mono); padding: 11px 14px; font-size: 12.5px;
+}
+.data-table .row-flag { color: var(--rust); font-weight: 700; }
 
 .pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12.5px; color: var(--text-soft); }
 .pager button { all: unset; cursor: pointer; padding: 5px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--paper-raised); }
@@ -655,3 +680,55 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 .date-range-inline { display: inline-flex; align-items: center; gap: 6px; }
 .date-range-inline .dr-label { font-size: 11.5px; color: var(--text-soft); font-weight: 500; }
 .date-range-inline input[type="date"] { padding: 7px 8px; font-family: var(--font-mono); font-size: 12px; min-width: 140px; }
+
+/* ============ QUICK REPORT — column filters & layout ============ */
+.toolbar-2 { margin-top: -8px; }
+.quick-chips { margin-bottom: 10px; }
+.quick-chips:empty { display: none; }
+.quick-range-note {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--rust-dark);
+  background: #FFF3E4; border: 1px solid var(--gold); padding: 5px 11px; border-radius: 20px;
+}
+
+/* header column chips = clickable filter buttons */
+.qr-th-main { white-space: normal !important; }
+.qr-colchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; margin: 1px 0; border-radius: 20px; cursor: pointer;
+  background: rgba(255,255,255,.13); border: 1px solid rgba(237,230,214,.28);
+  text-transform: none; letter-spacing: 0; font-size: 11.5px;
+  transition: background .12s, border-color .12s;
+}
+.qr-colchip:hover { background: rgba(255,255,255,.26); border-color: var(--text-on-ink); }
+.qr-colchip.on { background: var(--rust); border-color: var(--rust); color: #fff; }
+.qr-funnel { opacity: .7; font-size: 9px; }
+.qr-arrow { opacity: .5; margin: 0 5px; font-size: 10px; }
+
+/* group / leaf rows */
+.quick-table tbody tr.qr-group > td { background: #F4EEDF; font-weight: 600; }
+.quick-table tbody tr.qr-group:hover > td { background: #F7E3CC; }
+.quick-table tbody tr.qr-group.depth-0 > td { background: #EDE5D2; }
+.quick-table .qr-cell { font-family: var(--font-body); white-space: nowrap; }
+.quick-table .qr-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-right: 7px; border-radius: 4px;
+  background: var(--paper-raised); border: 1px solid var(--line-strong);
+  cursor: pointer; font-size: 10px; color: var(--ink);
+}
+.quick-table .qr-toggle:hover { border-color: var(--rust); background: #FFF3E4; }
+.quick-table .qr-bullet {
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--line-strong); margin: 0 14px 2px 7px;
+}
+.quick-table .qr-total-tag {
+  font-family: var(--font-body); font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: .5px; color: var(--text-soft); margin-left: 7px;
+  border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 4px;
+}
+.quick-table .qr-val { font-weight: 600; }
+.quick-table .qr-share, .quick-table .qr-rows { color: var(--text-soft); }
+
+/* column filter popup */
+.qcf-box { max-width: 460px; }
+.qcf-actions { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+.qcf-count { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-soft); }

@@ -220,6 +220,42 @@
           <button id="quick-to-sheet" class="ghost-btn small gs-only" style="display:none;">&#8599; Send to Sheet</button>
         </div>
 
+        <div class="toolbar toolbar-2">
+          <label class="toolbar-label">Date grouping:</label>
+          <select id="quick-date-grain" class="select">
+            <option value="none" selected>None</option>
+            <option value="day">Day wise</option>
+            <option value="week">Week wise (Mon&ndash;Sun)</option>
+            <option value="month">Month wise</option>
+            <option value="quarter">Quarter wise</option>
+            <option value="year">Year wise</option>
+          </select>
+
+          <label class="toolbar-label">Show data of:</label>
+          <select id="quick-period" class="select">
+            <option value="all" selected>All dates</option>
+            <option value="thisweek">This week (Mon&ndash;Sun)</option>
+            <option value="lastweek">Last week (Mon&ndash;Sun)</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="thismonth">This month</option>
+            <option value="lastmonth">Last month</option>
+            <option value="thisyear">This year</option>
+            <option value="custom">Custom date range&hellip;</option>
+          </select>
+          <span class="date-range-inline" id="quick-custom-range" style="display:none;">
+            <span class="dr-label">From</span><input type="date" id="quick-from" class="text-input">
+            <span class="dr-label">To</span><input type="date" id="quick-to" class="text-input">
+          </span>
+
+          <input type="search" id="quick-search" class="text-input" placeholder="Search in report&hellip;">
+          <span class="spacer"></span>
+          <span class="quick-range-note" id="quick-range-note"></span>
+        </div>
+
+        <div id="quick-filter-chips" class="filter-chip-row quick-chips"></div>
+
         <div class="quick-layout">
           <div class="quick-fieldlist">
             <div class="pivot-fieldlist-head">Columns &mdash; tick karne ka kram hi grouping ka kram hai</div>
