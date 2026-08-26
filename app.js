@@ -1994,7 +1994,8 @@ const QuickReport = {
   dateGrain: 'none',    // none | day | week | month | quarter | year
   period: { mode: 'all', from: null, to: null },
   filters: {},          // column -> Set(values)  (Excel jaisa column filter)
-  search: ''
+  search: '',
+  sourcePicked: false   // user ne khud data source chuna hai ya nahi
 };
 
 // Date se nikle hue extra grouping options — ab ye tick-list mein nahi,
@@ -2062,7 +2063,9 @@ function initQuickReport() {
   }));
 
   document.getElementById('quick-dataset-select').addEventListener('change', () => {
-    QuickReport.order = []; renderQuickFieldList(); renderQuickReport();
+    QuickReport.sourcePicked = true;
+    QuickReport.order = []; QuickReport.filters = {};
+    renderQuickFieldList(); renderQuickReport();
   });
   document.getElementById('quick-measure').addEventListener('change', e => { QuickReport.measure = e.target.value; renderQuickReport(); });
   document.getElementById('quick-agg').addEventListener('change', e => { QuickReport.agg = e.target.value; renderQuickReport(); });
@@ -2108,13 +2111,21 @@ function initQuickReport() {
 function populateQuickSelects() {
   const el = document.getElementById('quick-dataset-select');
   if (!el) return;
-  const opts = ['<option value="__all__">All files combined</option>']
+  const opts = ['<option value="__all__">\u26A0 All files combined (mixed)</option>']
     .concat(['sales', 'purchase', 'stock'].filter(t => datasetsOfType(t).length).map(t =>
-      '<option value="__type:' + t + '__">All ' + t + ' files</option>'))
+      '<option value="__type:' + t + '__">' + t.charAt(0).toUpperCase() + t.slice(1) + ' data</option>'))
     .concat(App.datasets.map(ds => '<option value="' + ds.id + '">' + escapeHtml(ds.name) + '</option>'));
   const prev = el.value;
   el.innerHTML = opts.join('');
-  if ([...el.options].some(o => o.value === prev)) el.value = prev;
+  // User ne khud choose kiya ho to wahi rakho. Warna auto-pick — "All combined"
+  // default NEVER, kyunki wo Sales+Purchase+Stock ki qty jod deta hai jiska
+  // koi business matlab nahi banta.
+  if (QuickReport.sourcePicked && prev && [...el.options].some(o => o.value === prev)) {
+    el.value = prev;
+  } else if (datasetsOfType('sales').length) el.value = '__type:sales__';
+  else if (datasetsOfType('purchase').length) el.value = '__type:purchase__';
+  else if (datasetsOfType('stock').length) el.value = '__type:stock__';
+  else if (App.datasets.length) el.value = App.datasets[0].id;
 
   // measures
   const mEl = document.getElementById('quick-measure');
@@ -2361,6 +2372,49 @@ function renderQuickFilterChips() {
   });
 }
 
+/** Abhi kaunsa data dikh raha hai — Sales / Purchase / Stock — aur agar
+ *  mixed hai to saaf warning, kyunki alag-alag type ki qty jodna galat hai. */
+function quickSourceInfo() {
+  const sel = document.getElementById('quick-dataset-select');
+  const v = sel ? sel.value : '__all__';
+  let types = [], label = '';
+
+  if (v === '__all__') {
+    types = [...new Set(App.datasets.map(d => d.type))];
+    label = 'All files combined';
+  } else if (v.startsWith('__type:')) {
+    const t = v.slice(7, -2);
+    types = [t];
+    label = t.charAt(0).toUpperCase() + t.slice(1) + ' data';
+  } else {
+    const ds = App.datasets.find(d => d.id === v);
+    if (ds) { types = [ds.type]; label = ds.name; }
+  }
+  return { types, label, mixed: types.length > 1 };
+}
+
+function renderQuickSourceNote(rowCount) {
+  const el = document.getElementById('quick-source-note');
+  if (!el) return;
+  const info = quickSourceInfo();
+  const cls = { sales: 'tag-sales', purchase: 'tag-purchase', stock: 'tag-stock' }[info.types[0]] || 'tag-other';
+
+  el.innerHTML =
+    '<span class="qsrc-label">Showing:</span> ' +
+    '<span class="sd-type-tag ' + (info.mixed ? 'tag-other' : cls) + '">' + escapeHtml(info.label) + '</span> ' +
+    '<span class="qsrc-count">' + rowCount.toLocaleString('en-IN') + ' rows</span>';
+
+  const warn = document.getElementById('quick-mixed-warning');
+  if (warn) {
+    if (info.mixed) {
+      warn.style.display = '';
+      warn.textContent = 'Dhyan do: ye "All files combined" hai \u2014 Sales, Purchase aur Stock ki quantity ek saath jud rahi hai, ' +
+        'jiska business matlab nahi banta (bika hua + mangaya hua + pada hua sab ek number mein). ' +
+        'Upar "Data" dropdown se Sales / Purchase / Stock alag chuno.';
+    } else warn.style.display = 'none';
+  }
+}
+
 function renderQuickReport() {
   const table = document.getElementById('quick-table');
   const head = document.getElementById('quick-heading');
@@ -2382,6 +2436,7 @@ function renderQuickReport() {
   if (!dims.length) {
     table.innerHTML = '<tr><td class="empty-hint">Baayein taraf se column tick karo, ya upar se "Date grouping" chuno. Jis kram mein tick karoge, usi kram mein grouping hogi.</td></tr>';
     head.textContent = ''; QuickReport.lastRows = null;
+    renderQuickSourceNote(quickFilteredRecords().length);
     renderQuickFilterChips();
     return;
   }
@@ -2389,10 +2444,13 @@ function renderQuickReport() {
   head.textContent = dims.join('  \u2794  ');
 
   const recs = quickFilteredRecords();
+  renderQuickSourceNote(recs.length);
   const tree = buildQuickTree(recs, dims, 0, '') || [];
   renderQuickFilterChips();
 
-  const label = AGG_LABELS[QuickReport.agg] + ' of ' + QuickReport.measure;
+  const srcInfo = quickSourceInfo();
+  const label = AGG_LABELS[QuickReport.agg] + ' of ' + QuickReport.measure +
+                (srcInfo.mixed ? '' : ' (' + srcInfo.types[0] + ')');
   const grand = tree.reduce((s, n) => s + n.value, 0);
 
   let body = '';
@@ -4518,7 +4576,7 @@ function loadSession(file) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v11';
+const BUILD_VERSION = 'v12';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
