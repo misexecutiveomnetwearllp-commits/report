@@ -1854,7 +1854,7 @@ function buildAnalysis(dim, targetDays) {
   function slot(key) {
     let s = map.get(key);
     if (!s) {
-      s = { key, sold: 0, purchased: 0, stock: 0, saleLines: 0,
+      s = { key, sold: 0, purchased: 0, stock: 0, opening: 0, hasOpening: false, saleLines: 0,
             firstSale: null, lastSale: null, oldestStock: null, newestStock: null,
             meta: {} };
       map.set(key, s);
@@ -1882,7 +1882,9 @@ function buildAnalysis(dim, targetDays) {
   stock.forEach(r => {
     const s = slot(dimKey(r, dim));
     const q = recQty(r);
-    s.stock += q;
+    s.stock += q;                                  // CBS = closing balance
+    const ob = recOpeningQty(r);
+    if (ob !== null) { s.opening += ob; s.hasOpening = true; }   // OBS
     const bd = r['Purchase Bill Date'];
     if (bd) {
       if (!s.oldestStock || bd < s.oldestStock) s.oldestStock = bd;
@@ -1905,7 +1907,9 @@ function buildAnalysis(dim, targetDays) {
       ? Math.round((anchor - (s.ageWeighted / s.ageQtySum)) / 86400000)
       : (s.oldestStock ? Math.round((anchor - s.oldestStock) / 86400000) : null);
     const oldestAgeDays = s.oldestStock ? Math.round((anchor - s.oldestStock) / 86400000) : null;
-    return Object.assign({}, s, { avgDaily, daysCover, suggested, sellThrough, daysSinceLastSale, stockAgeDays, oldestAgeDays });
+    // OBS - CBS = is period mein stock kitna ghata (ya badha)
+    const movement = s.hasOpening ? (s.opening - s.stock) : null;
+    return Object.assign({}, s, { avgDaily, daysCover, suggested, sellThrough, daysSinceLastSale, stockAgeDays, oldestAgeDays, movement });
   });
 
   // ABC classification — Pareto on quantity sold
@@ -2794,13 +2798,23 @@ function renderPerformance() {
   });
   lastPerfRows = { rows, dim };
 
+  // OBS/CBS report load hui ho to opening balance aur movement bhi dikhao,
+  // aur "Stock" ko साफ likho ki wo closing balance (CBS) hai.
+  const hasOBS = A.rows.some(r => r.hasOpening);
+  const stockLabel = hasOBS ? 'Closing (CBS)' : 'Stock';
   const cols = [
-    ['key', dim, false], ['sold', 'Sold', true], ['stock', 'Stock', true],
+    ['key', dim, false], ['sold', 'Sold', true]
+  ]
+  .concat(hasOBS ? [['opening', 'Opening (OBS)', true]] : [])
+  .concat([['stock', stockLabel, true]])
+  .concat(hasOBS ? [['movement', 'Moved (OBS\u2212CBS)', true]] : [])
+  .concat([
     ['sellThrough', 'Sell-through', true], ['daysCover', 'Days cover', true],
     ['lastSale', 'Last sold', false], ['daysSinceLastSale', 'Days since', true],
     ['stockAgeDays', 'Stock age', true], ['excessQty', 'Excess', true],
     ['abc', 'ABC', false], ['status', 'Status', false]
-  ];
+  ]);
+  PerfState.cols = cols;
   const head = '<thead><tr>' + cols.map(([k, label, isNum]) =>
     '<th data-key="' + k + '" class="' + (isNum ? 'num' : '') + '">' + label +
     (sk === k ? '<span class="sort-arrow">' + (sd === 1 ? '▲' : '▼') + '</span>' : '') + '</th>').join('') + '</tr></thead>';
@@ -2824,6 +2838,7 @@ function renderPerformance() {
   }));
   wirePerfRowEvents(tableEl, dim);
 
+  renderPerfLegend(hasOBS);
   document.getElementById('perf-count').textContent =
     rows.length.toLocaleString('en-IN') + ' rows' + (rows.length > 800 ? ' (showing first 800 — export for full list)' : '');
 }
@@ -2839,6 +2854,83 @@ function perfChildDim(usedFields) {
   return PERF_CHILD_CHAIN.find(d => have.has(d) && usedFields.indexOf(d) === -1) || null;
 }
 
+/** Metric cells — PerfState.cols ke hisaab se, taaki OBS/CBS columns
+ *  hone par header aur rows hamesha match karein. */
+/** Har column aur status ka matlab — taaki table dekhte hi samajh aaye. */
+function renderPerfLegend(hasOBS) {
+  const el = document.getElementById('perf-legend');
+  if (!el) return;
+  const open = el.dataset.open === '1';
+  const metricRows = []
+    .concat(hasOBS ? [
+      ['Opening (OBS)', 'Period ke shuru mein kitna stock tha \u2014 OBS Qty column se'],
+      ['Closing (CBS)', 'Period ke aakhir mein kitna bacha \u2014 CBS Qty column se'],
+      ['Moved (OBS\u2212CBS)', '\u2193 matlab stock ghata (nikla), \u2191 matlab badha (aaya)']
+    ] : [['Stock', 'Abhi kitna maal pada hai']])
+    .concat([
+      ['Sold', 'Chuni hui window mein kitna bika'],
+      ['Sell-through', 'bika \u00f7 (bika + stock) \u2014 kitna maal nikal gaya'],
+      ['Days cover', 'stock \u00f7 average daily sale \u2014 itne din ka maal pada hai'],
+      ['Days since', 'Aakhri bikri ko kitne din ho gaye'],
+      ['Stock age', 'Purchase bill date se weighted average umar'],
+      ['Excess', 'Target cover se zyada pada hua maal'],
+      ['ABC', 'A = top items jo 80% sale banate hain, B = agle 15%, C = baaki']
+    ]);
+
+  const statusRows = [
+    ['Best seller', 'A-class \u2014 sabse zyada bikne wale'],
+    ['Steady', 'B-class \u2014 theek-thaak chal rahe hain'],
+    ['Slow mover', 'C-class \u2014 bik to rahe hain par bahut kam'],
+    ['Dead stock', 'Stock pada hai lekin is window mein zero sale, ya 90+ din se koi bikri nahi'],
+    ['Out of stock', 'Bika to hai lekin ab balance zero \u2014 mangwana pad sakta hai'],
+    ['Overstocked', 'Days cover target se 3 guna zyada'],
+    ['No activity', 'Na bika, na stock hai']
+  ];
+
+  el.innerHTML =
+    '<button class="legend-toggle" id="perf-legend-toggle">' + (open ? '\u25BE' : '\u25B8') +
+      ' Column aur status ka matlab</button>' +
+    (open ? '<div class="legend-body">' +
+      '<div class="legend-col"><h4>Columns</h4>' +
+        metricRows.map(([k, v]) => '<div class="legend-item"><strong>' + k + '</strong><span>' + v + '</span></div>').join('') +
+      '</div>' +
+      '<div class="legend-col"><h4>Status</h4>' +
+        statusRows.map(([k, v]) => '<div class="legend-item">' +
+          '<span class="status-tag st-' + k.replace(/\s+/g, '-').toLowerCase() + '">' + k + '</span>' +
+          '<span>' + v + '</span></div>').join('') +
+      '</div></div>' : '');
+
+  const t = document.getElementById('perf-legend-toggle');
+  if (t) t.addEventListener('click', () => {
+    el.dataset.open = open ? '0' : '1';
+    renderPerfLegend(hasOBS);
+  });
+}
+
+function perfMetricCells(r) {
+  const cols = PerfState.cols || [];
+  let out = '';
+  cols.forEach(([k]) => {
+    if (k === 'key') return;
+    if (k === 'sold') out += '<td class="num">' + fmtNum(r.sold) + '</td>';
+    else if (k === 'opening') out += '<td class="num obs-col">' + (r.hasOpening ? fmtNum(r.opening) : '\u2014') + '</td>';
+    else if (k === 'stock') out += '<td class="num cbs-col">' + fmtNum(r.stock) + '</td>';
+    else if (k === 'movement') out += '<td class="num ' + (r.movement > 0 ? 'mv-down' : (r.movement < 0 ? 'mv-up' : '')) + '">' +
+        (r.movement === null || r.movement === undefined ? '\u2014'
+          : (r.movement > 0 ? '\u2193 ' : (r.movement < 0 ? '\u2191 ' : '')) + fmtNum(Math.abs(r.movement))) + '</td>';
+    else if (k === 'sellThrough') out += '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>';
+    else if (k === 'daysCover') out += '<td class="num">' + (r.daysCover === Infinity ? '\u221E' : fmtNum(r.daysCover, 0)) + '</td>';
+    else if (k === 'lastSale') out += '<td>' + (r.lastSale ? fmtDate(r.lastSale) : '\u2014') + '</td>';
+    else if (k === 'daysSinceLastSale') out += '<td class="num">' + (r.daysSinceLastSale === null || r.daysSinceLastSale === undefined ? '\u2014' : r.daysSinceLastSale) + '</td>';
+    else if (k === 'stockAgeDays') out += '<td class="num">' + (r.stockAgeDays === null || r.stockAgeDays === undefined ? '\u2014' : r.stockAgeDays) + '</td>';
+    else if (k === 'excessQty') out += '<td class="num">' + (r.excessQty ? fmtNum(r.excessQty) : '\u2014') + '</td>';
+    else if (k === 'abc') out += '<td><span class="abc-tag abc-' + (r.abc || '\u2014') + '">' + (r.abc || '\u2014') + '</span></td>';
+    else if (k === 'status') out += '<td><span class="status-tag st-' + String(r.status || '').replace(/\s+/g, '-').toLowerCase() + '">' + escapeHtml(r.status || '') + '</span></td>';
+    else out += '<td></td>';
+  });
+  return out;
+}
+
 function perfRowHtml(r, dim, depth, path) {
   const key = path.map(p => p.field + '=' + p.value).join('|');
   const open = !!PerfState.open[depth === 0 ? r.key : key];
@@ -2851,16 +2943,7 @@ function perfRowHtml(r, dim, depth, path) {
       '<span class="perf-key" title="' + escapeHtml(Object.values(r.meta || {}).join(' \u00b7 ')) + '">' + escapeHtml(r.key) + '</span>' +
       '<button class="perf-popout" title="Poori details alag window mein kholo">\u29C9</button>' +
     '</td>' +
-    '<td class="num">' + fmtNum(r.sold) + '</td>' +
-    '<td class="num">' + fmtNum(r.stock) + '</td>' +
-    '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>' +
-    '<td class="num">' + (r.daysCover === Infinity ? '\u221E' : fmtNum(r.daysCover, 0)) + '</td>' +
-    '<td>' + (r.lastSale ? fmtDate(r.lastSale) : '\u2014') + '</td>' +
-    '<td class="num">' + (r.daysSinceLastSale === null ? '\u2014' : r.daysSinceLastSale) + '</td>' +
-    '<td class="num">' + (r.stockAgeDays === null ? '\u2014' : r.stockAgeDays) + '</td>' +
-    '<td class="num">' + (r.excessQty ? fmtNum(r.excessQty) : '\u2014') + '</td>' +
-    '<td><span class="abc-tag abc-' + r.abc + '">' + r.abc + '</span></td>' +
-    '<td><span class="status-tag st-' + String(r.status).replace(/\s+/g, '-').toLowerCase() + '">' + r.status + '</span></td>' +
+    perfMetricCells(r) +
   '</tr>';
 }
 
@@ -2880,7 +2963,7 @@ function perfChildRowsHtml(path, depth, colCount) {
   const map = new Map();
   const slot = k => {
     let x = map.get(k);
-    if (!x) { x = { key: k, sold: 0, stock: 0, lastSale: null, meta: {} }; map.set(k, x); }
+    if (!x) { x = { key: k, sold: 0, stock: 0, opening: 0, hasOpening: false, lastSale: null, meta: {} }; map.set(k, x); }
     return x;
   };
   sales.forEach(r => {
@@ -2888,12 +2971,18 @@ function perfChildRowsHtml(path, depth, colCount) {
     x.sold += recQty(r);
     if (r.Date && (!x.lastSale || r.Date > x.lastSale)) x.lastSale = r.Date;
   });
-  stock.forEach(r => { slot(dimKey(r, childDim)).stock += recQty(r); });
+  stock.forEach(r => {
+    const x = slot(dimKey(r, childDim));
+    x.stock += recQty(r);
+    const ob = recOpeningQty(r);
+    if (ob !== null) { x.opening = (x.opening || 0) + ob; x.hasOpening = true; }
+  });
 
   let kids = [...map.values()].map(x => {
     const opening = x.sold + x.stock;
     const avgDaily = x.sold / days;
     return Object.assign(x, {
+      movement: x.hasOpening ? (x.opening - x.stock) : null,
       sellThrough: opening > 0 ? (x.sold / opening) * 100 : 0,
       daysCover: avgDaily > 0 ? x.stock / avgDaily : (x.stock > 0 ? Infinity : 0),
       daysSinceLastSale: x.lastSale ? Math.round((anchor - x.lastSale) / 86400000) : null,
@@ -5042,7 +5131,7 @@ function saveBehaviour() { Store.set('sl_behaviour', JSON.stringify(Behaviour));
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v13';
+const BUILD_VERSION = 'v14';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

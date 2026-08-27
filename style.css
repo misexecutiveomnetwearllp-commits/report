@@ -808,3 +808,28 @@ body.density-comfortable .data-table thead th { padding: 15px 16px; }
 body.no-zebra .data-table tbody tr:nth-child(even) > td { background: transparent; }
 body.no-gridlines .data-table tbody td { border-bottom: none; }
 body.no-gridlines .data-table tbody tr:nth-child(even) > td { background: #FCF9F0; }
+
+/* ============ OBS / CBS columns + legend ============ */
+.data-table .obs-col { color: #2C4E7A; }
+.data-table .cbs-col { font-weight: 600; }
+.data-table .mv-down { color: #14624F; }   /* stock ghata = maal nikla */
+.data-table .mv-up { color: #8C2E1B; }     /* stock badha = maal aaya */
+
+.perf-legend { margin: 14px 0 4px; }
+.legend-toggle {
+  all: unset; cursor: pointer; font-size: 12.5px; color: var(--rust);
+  padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 20px;
+  background: var(--paper-raised);
+}
+.legend-toggle:hover { border-color: var(--rust); background: #FFF3E4; }
+.legend-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+  margin-top: 10px; padding: 14px 16px;
+  background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.legend-col h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-soft); margin-bottom: 8px; }
+.legend-item { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; font-size: 12.5px; line-height: 1.45; }
+.legend-item strong { min-width: 128px; flex: 0 0 auto; font-family: var(--font-mono); font-size: 11.5px; }
+.legend-item .status-tag { min-width: 96px; flex: 0 0 auto; text-align: center; }
+.legend-item span:last-child { color: var(--text-soft); }
+@media (max-width: 900px) { .legend-body { grid-template-columns: 1fr; } }
