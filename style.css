@@ -741,3 +741,70 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 .quick-source-note .qsrc-label { color: var(--text-soft); font-weight: 500; }
 .quick-source-note .sd-type-tag { font-size: 11px; padding: 3px 10px; }
 .quick-source-note .qsrc-count { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-soft); }
+
+/* ============ PRODUCT PERFORMANCE — inline expand ============ */
+.perf-row { cursor: pointer; }
+.perf-name { font-family: var(--font-body) !important; }
+.perf-row.depth-1 > td, .perf-row.depth-2 > td, .perf-row.depth-3 > td { background: #FAF6EA; }
+.perf-row.depth-1 .perf-key { color: var(--text-soft); }
+.perf-row.is-open > td { background: #FBE7D2 !important; font-weight: 600; }
+
+.perf-caret {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-right: 8px; border-radius: 4px;
+  border: 1px solid var(--line-strong); background: var(--paper-raised);
+  font-size: 9px; color: var(--rust); transition: transform .15s, background .12s;
+}
+.perf-caret:hover { background: #FFF3E4; border-color: var(--rust); }
+.perf-caret.open { transform: rotate(90deg); background: var(--rust); color: #fff; border-color: var(--rust); }
+.perf-caret-spacer { display: inline-block; width: 18px; margin-right: 8px; }
+
+.perf-popout {
+  all: unset; cursor: pointer; margin-left: 9px; opacity: 0;
+  font-size: 12px; color: var(--text-soft); transition: opacity .12s, color .12s;
+}
+.perf-row:hover .perf-popout { opacity: .65; }
+.perf-popout:hover { opacity: 1 !important; color: var(--rust); }
+
+.perf-child-head > td {
+  background: #EFE7D5 !important; padding: 6px 14px !important;
+  font-family: var(--font-body) !important; font-size: 11px !important;
+  text-transform: uppercase; letter-spacing: .5px; color: var(--text-soft);
+  border-bottom: 1px solid var(--line-strong);
+}
+.perf-child-head .pch-label { color: var(--rust-dark); font-weight: 700; }
+.perf-child-note > td { background: #FAF6EA !important; color: var(--text-soft); font-family: var(--font-body) !important; }
+
+.rp-badge {
+  display: inline-block; font-family: var(--font-mono); font-size: 11px;
+  background: #DEE8F5; color: #2C4E7A; padding: 2px 8px; border-radius: 20px; margin-right: 6px;
+}
+
+/* ============ SETTINGS PANEL ============ */
+.settings-panel { max-width: 780px; width: 94vw; max-height: 90vh; display: flex; flex-direction: column; }
+.settings-body { flex: 1; overflow-y: auto; min-height: 0; }
+.settings-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.settings-row input[type="range"] { accent-color: var(--rust); }
+
+.swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 8px; }
+.swatch {
+  all: unset; cursor: pointer; display: flex; align-items: center; gap: 9px;
+  padding: 8px 11px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--paper-raised); font-size: 12.5px;
+}
+.swatch span { width: 18px; height: 18px; border-radius: 5px; flex: 0 0 auto; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+.swatch:hover { border-color: var(--rust); }
+.swatch.active { border-color: var(--rust); border-width: 2px; background: #FFF3E4; font-weight: 600; }
+
+.theme-preview { margin-top: 16px; border: 1px dashed var(--line-strong); border-radius: var(--radius); padding: 12px; }
+.theme-preview::before { content: 'Preview'; display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-soft); margin-bottom: 8px; }
+
+/* ---- theme-driven table density / options ---- */
+.data-table { font-size: var(--table-font-size, 13px); }
+body.density-compact .data-table tbody td { padding: 6px 11px; }
+body.density-compact .data-table thead th { padding: 8px 11px; }
+body.density-comfortable .data-table tbody td { padding: 14px 16px; }
+body.density-comfortable .data-table thead th { padding: 15px 16px; }
+body.no-zebra .data-table tbody tr:nth-child(even) > td { background: transparent; }
+body.no-gridlines .data-table tbody td { border-bottom: none; }
+body.no-gridlines .data-table tbody tr:nth-child(even) > td { background: #FCF9F0; }

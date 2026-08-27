@@ -11,13 +11,14 @@
 const CANONICAL_FIELDS = [
   'Date', 'Transaction Type', 'Item Code', 'Article No', 'Brand', 'Colour',
   'Style', 'Section', 'Sub Section', 'Supplier', 'Size', 'Item Type',
-  'Quantity', 'Price', 'Amount', 'HSN Code', 'City', 'Discount',
-  'Purchase Bill Date'
+  'Quantity', 'Opening Qty', 'Closing Qty', 'Price', 'Amount', 'HSN Code',
+  'City', 'Discount', 'Purchase Bill Date'
 ];
 
 const FIELD_KIND = {
   'Date': 'date', 'Purchase Bill Date': 'date',
-  'Quantity': 'number', 'Price': 'number', 'Amount': 'number'
+  'Quantity': 'number', 'Opening Qty': 'number', 'Closing Qty': 'number',
+  'Price': 'number', 'Amount': 'number'
 };
 
 const SYNONYMS = {
@@ -33,8 +34,14 @@ const SYNONYMS = {
   'subsectionname': 'Sub Section', 'subsection': 'Sub Section', 'subcategory': 'Sub Section',
   'suppliername': 'Supplier', 'supplier': 'Supplier', 'vendor': 'Supplier', 'vendorname': 'Supplier',
   'party': 'Supplier', 'partyname': 'Supplier',
-  'transactionquantity': 'Quantity', 'quantity': 'Quantity', 'qty': 'Quantity', 'cbsqty': 'Quantity',
-  'closingqty': 'Quantity', 'closingstock': 'Quantity', 'stockqty': 'Quantity', 'balanceqty': 'Quantity',
+  'transactionquantity': 'Quantity', 'quantity': 'Quantity', 'qty': 'Quantity',
+  'stockqty': 'Quantity', 'balanceqty': 'Quantity',
+  // OBS = opening balance, CBS = closing balance. Dono alag rakhte hain taaki
+  // ek hi report mein dono aa sakein aur movement nikala ja sake.
+  'cbsqty': 'Closing Qty', 'closingqty': 'Closing Qty', 'closingstock': 'Closing Qty',
+  'closingbalance': 'Closing Qty', 'closingbalanceqty': 'Closing Qty', 'cbs': 'Closing Qty',
+  'obsqty': 'Opening Qty', 'openingqty': 'Opening Qty', 'openingstock': 'Opening Qty',
+  'openingbalance': 'Opening Qty', 'openingbalanceqty': 'Opening Qty', 'obs': 'Opening Qty',
   'itemtype': 'Item Type', 'itype': 'Item Type',
   'discname': 'Discount', 'discount': 'Discount', 'discountname': 'Discount', 'disc': 'Discount',
   'purchasebilldate': 'Purchase Bill Date',
@@ -204,6 +211,25 @@ function isJunkRow(row) {
   return false;
 }
 
+/** ERP header rows mein "Reporting Period From : 01-08-2026 to 25-08-2026"
+ *  jaisi line hoti hai — usse report ka asli date range nikalte hain. */
+function extractReportPeriod(rows, headerIdx) {
+  const scanTo = Math.min(headerIdx >= 0 ? headerIdx : 12, rows.length);
+  const re = /reporting\s+period\s*(?:from)?\s*:?\s*([0-9]{1,2}[-\/][0-9]{1,2}[-\/][0-9]{2,4}|[0-9]{1,2}-[A-Za-z]{3,}-[0-9]{2,4})\s*(?:to|-|through|till)\s*([0-9]{1,2}[-\/][0-9]{1,2}[-\/][0-9]{2,4}|[0-9]{1,2}-[A-Za-z]{3,}-[0-9]{2,4})/i;
+  for (let i = 0; i < scanTo; i++) {
+    const row = rows[i] || [];
+    for (const cell of row) {
+      if (cell === null || cell === undefined) continue;
+      const m = String(cell).match(re);
+      if (m) {
+        const from = parseDateLoose(m[1]), to = parseDateLoose(m[2]);
+        if (from && to) return { from, to, raw: String(cell).trim() };
+      }
+    }
+  }
+  return null;
+}
+
 function detectHeaderRow(rows, maxScan) {
   maxScan = Math.min(maxScan || 25, rows.length);
   let best = { idx: 0, score: -1 };
@@ -227,7 +253,8 @@ function guessDatasetType(filename, columns, sampleRows) {
   if (/purchase/.test(fn)) return 'purchase';
   if (/sale/.test(fn)) return 'sales';
   const headers = columns.map(c => normKey(c.header));
-  if (headers.some(h => h.includes('cbsqty') || h.includes('closingstock') || h.includes('balanceqty'))) return 'stock';
+  if (headers.some(h => h.includes('cbsqty') || h.includes('obsqty') || h.includes('closingstock') ||
+                       h.includes('closingbalance') || h.includes('balanceqty'))) return 'stock';
   const typeCol = columns.find(c => c.suggested === 'Transaction Type');
   if (typeCol && sampleRows.length) {
     const vals = sampleRows.map(r => String(r[typeCol.colIdx] || '').toLowerCase()).join(' ');
@@ -505,10 +532,11 @@ function ingestRows(rows, sourceName, sheetName, origin) {
   }
 
   const guessedType = guessDatasetType(sourceName + ' ' + (sheetName || ''), columns, dataRows.slice(0, 30));
-  renderImportCard(sourceName, sheetName, columns, dataRows, guessedType, origin, headerIdx, droppedCount);
+  const reportPeriod = extractReportPeriod(rows, headerIdx);
+  renderImportCard(sourceName, sheetName, columns, dataRows, guessedType, origin, headerIdx, droppedCount, reportPeriod);
 }
 
-function renderImportCard(filename, sheetName, columns, dataRows, guessedType, origin, headerIdx, droppedCount) {
+function renderImportCard(filename, sheetName, columns, dataRows, guessedType, origin, headerIdx, droppedCount, reportPeriod) {
   const queue = document.getElementById('import-queue');
   const cardId = uid();
   const card = document.createElement('div');
@@ -533,7 +561,11 @@ function renderImportCard(filename, sheetName, columns, dataRows, guessedType, o
   card.innerHTML =
     '<div class="import-card-head">' +
       '<span class="fname">' + escapeHtml(filename) + (sheetName ? ' &middot; ' + escapeHtml(sheetName) : '') + '</span>' +
-      '<span>' + dataRows.length.toLocaleString('en-IN') + ' rows detected' +
+      '<span>' + (reportPeriod
+          ? '<span class="rp-badge" title="' + escapeHtml(reportPeriod.raw) + '">\uD83D\uDCC5 ' +
+            fmtDate(reportPeriod.from) + ' \u2192 ' + fmtDate(reportPeriod.to) + '</span> '
+          : '') +
+        dataRows.length.toLocaleString('en-IN') + ' rows detected' +
         (droppedCount ? ' <span class="drop-note" title="ERP total / footer rows hata diye gaye — warna har figure double ho jata">· ' + droppedCount + ' total/footer row' + (droppedCount > 1 ? 's' : '') + ' skipped</span>' : '') +
       '</span>' +
     '</div>' +
@@ -552,7 +584,7 @@ function renderImportCard(filename, sheetName, columns, dataRows, guessedType, o
 
   card.querySelector('.discard-import').addEventListener('click', () => card.remove());
   card.querySelector('.confirm-import').addEventListener('click', () => {
-    confirmImport(card, filename, columns, dataRows, origin, headerIdx);
+    confirmImport(card, filename, columns, dataRows, origin, headerIdx, reportPeriod);
   });
 }
 
@@ -577,7 +609,7 @@ function buildRecords(dataRows, mapping, dsId) {
   });
 }
 
-function confirmImport(card, filename, columns, dataRows, origin, headerIdx) {
+function confirmImport(card, filename, columns, dataRows, origin, headerIdx, reportPeriod) {
   const name = card.querySelector('.ds-name').value.trim() || filename;
   const type = card.querySelector('.ds-type').value;
   const mapRows = card.querySelectorAll('.map-table tbody tr');
@@ -600,7 +632,8 @@ function confirmImport(card, filename, columns, dataRows, origin, headerIdx) {
     colorIdx: App.nextDsColor++,
     origin: origin || null,     // {url, key, sheet} when pulled from Google Sheets
     mapping: mapping,           // remembered so Refresh needs no re-mapping
-    headerIdx: headerIdx || 0
+    headerIdx: headerIdx || 0,
+    reportPeriod: reportPeriod || null   // ERP header ki "Reporting Period" line
   };
   App.datasets.push(ds);
   card.remove();
@@ -652,6 +685,11 @@ function renderSidebarDatasets() {
 }
 
 function dateRangeOf(ds) {
+  // Stock / OBS-CBS reports mein Date column nahi hoti, unka period ERP ke
+  // header ki "Reporting Period" line se aata hai.
+  if (ds.reportPeriod) {
+    return fmtDate(ds.reportPeriod.from) + ' \u2192 ' + fmtDate(ds.reportPeriod.to);
+  }
   const dField = ds.fields.includes('Date') ? 'Date' : (ds.fields.includes('Purchase Bill Date') ? 'Purchase Bill Date' : null);
   if (!dField) return '—';
   let min = null, max = null;
@@ -1670,6 +1708,19 @@ function periodDayCount(range, recs) {
   return Math.max(1, Math.round((max - min) / 86400000) + 1);
 }
 
+/** Row ki quantity. OBS/CBS report mein "Quantity" nahi hoti — wahan
+ *  Closing Qty (CBS) hi asli balance hai, isliye uspar fallback karte hain. */
+function recQty(r) {
+  if (typeof r.Quantity === 'number') return r.Quantity;
+  if (typeof r['Closing Qty'] === 'number') return r['Closing Qty'];
+  return 0;
+}
+
+function recOpeningQty(r) {
+  if (typeof r['Opening Qty'] === 'number') return r['Opening Qty'];
+  return null;
+}
+
 function dimKey(rec, dim) {
   let key = rec[dim];
   if (key === null || key === undefined || key === '') key = resolveField(rec, dim);
@@ -1813,7 +1864,7 @@ function buildAnalysis(dim, targetDays) {
 
   sales.forEach(r => {
     const s = slot(dimKey(r, dim));
-    const q = typeof r.Quantity === 'number' ? r.Quantity : 0;
+    const q = recQty(r);
     s.sold += q; s.saleLines++;
     if (r.Date) {
       if (!s.firstSale || r.Date < s.firstSale) s.firstSale = r.Date;
@@ -1824,13 +1875,13 @@ function buildAnalysis(dim, targetDays) {
 
   purchases.forEach(r => {
     const s = slot(dimKey(r, dim));
-    s.purchased += typeof r.Quantity === 'number' ? r.Quantity : 0;
+    s.purchased += recQty(r);
     captureMeta(s, r);
   });
 
   stock.forEach(r => {
     const s = slot(dimKey(r, dim));
-    const q = typeof r.Quantity === 'number' ? r.Quantity : 0;
+    const q = recQty(r);
     s.stock += q;
     const bd = r['Purchase Bill Date'];
     if (bd) {
@@ -2569,7 +2620,7 @@ function aggregateByDimension(records, dim) {
   const map = new Map();
   records.forEach(r => {
     const key = dimKey(r, dim);
-    map.set(key, (map.get(key) || 0) + (typeof r.Quantity === 'number' ? r.Quantity : 0));
+    map.set(key, (map.get(key) || 0) + (recQty(r)));
   });
   return map;
 }
@@ -2659,12 +2710,12 @@ function exportInsightsCSV() {
 /* ---------------------------------------------------------------
    8b. PERFORMANCE — best sellers, dead stock, ABC, ageing
    --------------------------------------------------------------- */
-const PerfState = { view: 'all', search: '', sortKey: 'sold', sortDir: -1 };
+const PerfState = { view: 'all', search: '', sortKey: 'sold', sortDir: -1, open: {} };
 let perfCharts = {};
 let lastPerfRows = null;
 
 function initPerformance() {
-  document.getElementById('perf-groupby').addEventListener('change', renderPerformance);
+  document.getElementById('perf-groupby').addEventListener('change', () => { PerfState.open = {}; renderPerformance(); });
   document.getElementById('perf-search').addEventListener('input', debounce(e => { PerfState.search = e.target.value; renderPerformance(); }, 200));
   document.getElementById('perf-export').addEventListener('click', exportPerfCSV);
   document.querySelectorAll('#perf-view .seg-btn').forEach(btn => {
@@ -2754,20 +2805,15 @@ function renderPerformance() {
     '<th data-key="' + k + '" class="' + (isNum ? 'num' : '') + '">' + label +
     (sk === k ? '<span class="sort-arrow">' + (sd === 1 ? '▲' : '▼') + '</span>' : '') + '</th>').join('') + '</tr></thead>';
 
-  const body = '<tbody>' + rows.slice(0, 800).map(r =>
-    '<tr class="drillable" data-key="' + escapeHtml(r.key) + '">' +
-      '<td title="' + escapeHtml(Object.values(r.meta).join(' · ')) + '">' + escapeHtml(r.key) + ' <span class="drill-hint">▸</span></td>' +
-      '<td class="num">' + fmtNum(r.sold) + '</td>' +
-      '<td class="num">' + fmtNum(r.stock) + '</td>' +
-      '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>' +
-      '<td class="num">' + (r.daysCover === Infinity ? '∞' : fmtNum(r.daysCover, 0)) + '</td>' +
-      '<td>' + (r.lastSale ? fmtDate(r.lastSale) : '—') + '</td>' +
-      '<td class="num">' + (r.daysSinceLastSale === null ? '—' : r.daysSinceLastSale) + '</td>' +
-      '<td class="num">' + (r.stockAgeDays === null ? '—' : r.stockAgeDays) + '</td>' +
-      '<td class="num">' + (r.excessQty ? fmtNum(r.excessQty) : '—') + '</td>' +
-      '<td><span class="abc-tag abc-' + r.abc + '">' + r.abc + '</span></td>' +
-      '<td><span class="status-tag st-' + r.status.replace(/\s+/g, '-').toLowerCase() + '">' + r.status + '</span></td>' +
-    '</tr>').join('') + '</tbody>';
+  const bodyRows = [];
+  rows.slice(0, 800).forEach(r => {
+    bodyRows.push(perfRowHtml(r, dim, 0, [{ field: dim, value: r.key }]));
+    // Row khuli ho to uske andar ki details usi table mein, neeche.
+    if (PerfState.open[r.key]) {
+      bodyRows.push(perfChildRowsHtml([{ field: dim, value: r.key }], 1, cols.length));
+    }
+  });
+  const body = '<tbody>' + bodyRows.join('') + '</tbody>';
 
   tableEl.innerHTML = head + body;
   tableEl.querySelectorAll('thead th').forEach(th => th.addEventListener('click', () => {
@@ -2776,12 +2822,137 @@ function renderPerformance() {
     else { PerfState.sortKey = k; PerfState.sortDir = (k === 'key' || k === 'status' || k === 'abc') ? 1 : -1; }
     renderPerformance();
   }));
-  tableEl.querySelectorAll('tbody tr').forEach(tr => tr.addEventListener('click', () => {
-    if (tr.dataset.key) openDrill(dim, tr.dataset.key);
-  }));
+  wirePerfRowEvents(tableEl, dim);
 
   document.getElementById('perf-count').textContent =
     rows.length.toLocaleString('en-IN') + ' rows' + (rows.length > 800 ? ' (showing first 800 — export for full list)' : '');
+}
+
+/* ---- Inline expand: row ke neeche hi uski details, bina naya window khole ---- */
+
+const PERF_CHILD_CHAIN = ['Style', 'Colour', 'Size', 'Brand', 'Supplier', 'Sub Section', 'Item Code'];
+
+/** Kis level par kaunsa dimension khulega. */
+function perfChildDim(usedFields) {
+  const have = new Set();
+  App.datasets.forEach(d => d.fields.forEach(f => have.add(f)));
+  return PERF_CHILD_CHAIN.find(d => have.has(d) && usedFields.indexOf(d) === -1) || null;
+}
+
+function perfRowHtml(r, dim, depth, path) {
+  const key = path.map(p => p.field + '=' + p.value).join('|');
+  const open = !!PerfState.open[depth === 0 ? r.key : key];
+  const hasKids = !!perfChildDim(path.map(p => p.field));
+  return '<tr class="perf-row depth-' + depth + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(r.key) + '" data-path="' + escapeHtml(key) + '">' +
+    '<td class="perf-name" style="padding-left:' + (14 + depth * 18) + 'px">' +
+      (hasKids
+        ? '<button class="perf-caret' + (open ? ' open' : '') + '" title="Andar ki details kholo">\u25B8</button>'
+        : '<span class="perf-caret-spacer"></span>') +
+      '<span class="perf-key" title="' + escapeHtml(Object.values(r.meta || {}).join(' \u00b7 ')) + '">' + escapeHtml(r.key) + '</span>' +
+      '<button class="perf-popout" title="Poori details alag window mein kholo">\u29C9</button>' +
+    '</td>' +
+    '<td class="num">' + fmtNum(r.sold) + '</td>' +
+    '<td class="num">' + fmtNum(r.stock) + '</td>' +
+    '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>' +
+    '<td class="num">' + (r.daysCover === Infinity ? '\u221E' : fmtNum(r.daysCover, 0)) + '</td>' +
+    '<td>' + (r.lastSale ? fmtDate(r.lastSale) : '\u2014') + '</td>' +
+    '<td class="num">' + (r.daysSinceLastSale === null ? '\u2014' : r.daysSinceLastSale) + '</td>' +
+    '<td class="num">' + (r.stockAgeDays === null ? '\u2014' : r.stockAgeDays) + '</td>' +
+    '<td class="num">' + (r.excessQty ? fmtNum(r.excessQty) : '\u2014') + '</td>' +
+    '<td><span class="abc-tag abc-' + r.abc + '">' + r.abc + '</span></td>' +
+    '<td><span class="status-tag st-' + String(r.status).replace(/\s+/g, '-').toLowerCase() + '">' + r.status + '</span></td>' +
+  '</tr>';
+}
+
+/** Ek khuli row ke andar ki rows (aur unke andar ki, recursively). */
+function perfChildRowsHtml(path, depth, colCount) {
+  const usedFields = path.map(p => p.field);
+  const childDim = perfChildDim(usedFields);
+  if (!childDim) return '';
+
+  const range = periodRange();
+  const match = rec => path.every(p => dimKey(rec, p.field) === p.value);
+  const sales = salesRecords().filter(r => inPeriod(r, range)).filter(match);
+  const stock = stockRecords().filter(match);
+  const days = periodDayCount(range, sales);
+  const anchor = dataAnchorDate();
+
+  const map = new Map();
+  const slot = k => {
+    let x = map.get(k);
+    if (!x) { x = { key: k, sold: 0, stock: 0, lastSale: null, meta: {} }; map.set(k, x); }
+    return x;
+  };
+  sales.forEach(r => {
+    const x = slot(dimKey(r, childDim));
+    x.sold += recQty(r);
+    if (r.Date && (!x.lastSale || r.Date > x.lastSale)) x.lastSale = r.Date;
+  });
+  stock.forEach(r => { slot(dimKey(r, childDim)).stock += recQty(r); });
+
+  let kids = [...map.values()].map(x => {
+    const opening = x.sold + x.stock;
+    const avgDaily = x.sold / days;
+    return Object.assign(x, {
+      sellThrough: opening > 0 ? (x.sold / opening) * 100 : 0,
+      daysCover: avgDaily > 0 ? x.stock / avgDaily : (x.stock > 0 ? Infinity : 0),
+      daysSinceLastSale: x.lastSale ? Math.round((anchor - x.lastSale) / 86400000) : null,
+      stockAgeDays: null, excessQty: 0, abc: '\u2014',
+      status: x.sold === 0 && x.stock > 0 ? 'Dead stock' : (x.stock === 0 && x.sold > 0 ? 'Out of stock' : (x.sold > 0 ? 'Moving' : 'No activity'))
+    });
+  }).sort((a, b) => b.sold - a.sold);
+
+  const LIMIT = 25;
+  const shown = kids.slice(0, LIMIT);
+  if (!shown.length) {
+    return '<tr class="perf-child-note"><td colspan="' + colCount + '">Is selection ke andar ' + escapeHtml(childDim) + ' ka data nahi mila.</td></tr>';
+  }
+
+  let html = '<tr class="perf-child-head depth-' + depth + '"><td colspan="' + colCount + '">' +
+    '<span class="pch-label">' + escapeHtml(childDim) + '-wise</span> \u00b7 ' +
+    shown.length + ' of ' + kids.length + ' shown' +
+    '</td></tr>';
+
+  shown.forEach(k => {
+    const childPath = path.concat([{ field: childDim, value: k.key }]);
+    const key = childPath.map(p => p.field + '=' + p.value).join('|');
+    html += perfRowHtml(k, childDim, depth, childPath);
+    if (PerfState.open[key]) html += perfChildRowsHtml(childPath, depth + 1, colCount);
+  });
+  return html;
+}
+
+function wirePerfRowEvents(tableEl, dim) {
+  tableEl.querySelectorAll('.perf-caret').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const tr = btn.closest('tr');
+      const depth = parseInt((tr.className.match(/depth-(\d+)/) || [0, 0])[1], 10);
+      const id = depth === 0 ? tr.dataset.key : tr.dataset.path;
+      PerfState.open[id] = !PerfState.open[id];
+      renderPerformance();
+    });
+  });
+  tableEl.querySelectorAll('.perf-popout').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const tr = btn.closest('tr');
+      const path = (tr.dataset.path || '').split('|').filter(Boolean).map(seg => {
+        const i = seg.indexOf('=');
+        return { field: seg.slice(0, i), value: seg.slice(i + 1) };
+      });
+      if (path.length) openDrillPath(path);
+      else openDrill(dim, tr.dataset.key);
+    });
+  });
+  // poori row par click = expand/collapse (jahan possible ho)
+  tableEl.querySelectorAll('tr.perf-row').forEach(tr => {
+    tr.addEventListener('click', () => {
+      if (!Behaviour.inlineExpand) { tr.querySelector('.perf-popout').click(); return; }
+      const caret = tr.querySelector('.perf-caret');
+      if (caret) caret.click();
+    });
+  });
 }
 
 function destroyPerfChart(id) { if (perfCharts[id]) { perfCharts[id].destroy(); delete perfCharts[id]; } }
@@ -2928,6 +3099,7 @@ function openDrill(field, value) {
   const dims = availableDrillDims().filter(d => d !== field);
   Drill.dim = dims.includes('Colour') ? 'Colour' : (dims[0] || 'Style');
   document.getElementById('drill-overlay').style.display = 'flex';
+  modalOpen('drill-overlay', closeDrill);
   renderDrill();
 }
 
@@ -2961,6 +3133,7 @@ function openDrillPath(filters, range) {
   const dims = availableDrillDims().filter(d => used.indexOf(d) === -1);
   Drill.dim = dims[0] || 'Style';
   document.getElementById('drill-overlay').style.display = 'flex';
+  modalOpen('drill-overlay', closeDrill);
   renderDrill();
 }
 
@@ -2979,6 +3152,7 @@ function popDrillTo(idx) {
 
 function closeDrill() {
   Drill.open = false;
+  modalClose('drill-overlay');
   document.getElementById('drill-overlay').style.display = 'none';
   if (drillChart) { drillChart.destroy(); drillChart = null; }
 }
@@ -2986,9 +3160,8 @@ function closeDrill() {
 function initDrill() {
   document.getElementById('drill-close').addEventListener('click', closeDrill);
   document.getElementById('drill-overlay').addEventListener('click', e => {
-    if (e.target.id === 'drill-overlay') closeDrill();
+    if (e.target.id === 'drill-overlay' && modalIsTop('drill-overlay')) closeDrill();
   });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && Drill.open) closeDrill(); });
   document.getElementById('drill-dim').addEventListener('change', e => { Drill.dim = e.target.value; renderDrill(); });
   document.getElementById('drill-raw-toggle').addEventListener('click', () => {
     Drill.showRaw = !Drill.showRaw; renderDrill();
@@ -3006,7 +3179,7 @@ function renderDrill() {
   const days = periodDayCount(range, sales.length ? sales : purch);
   const anchor = dataAnchorDate();
 
-  const sumQ = rs => rs.reduce((s, r) => s + (typeof r.Quantity === 'number' ? r.Quantity : 0), 0);
+  const sumQ = rs => rs.reduce((s, r) => s + (recQty(r)), 0);
   const sold = sumQ(sales), purchased = sumQ(purch), inStock = sumQ(stock);
   const sellThrough = (sold + inStock) > 0 ? (sold / (sold + inStock)) * 100 : 0;
   const avgDaily = sold / days;
@@ -3061,7 +3234,7 @@ function renderDrillTrend(sales) {
   sales.forEach(r => {
     if (!r.Date) return;
     const k = dateKeyForGrain(r.Date, 'month');
-    m.set(k, (m.get(k) || 0) + (typeof r.Quantity === 'number' ? r.Quantity : 0));
+    m.set(k, (m.get(k) || 0) + (recQty(r)));
   });
   const keys = [...m.keys()].sort((a, b) => grainSort(a, 'month') - grainSort(b, 'month'));
   const el = document.getElementById('drill-trend');
@@ -3088,11 +3261,11 @@ function renderDrillBreakdown(sales, purch, stock, days) {
 
   sales.forEach(r => {
     const s = slot(keyOf(r));
-    s.sold += typeof r.Quantity === 'number' ? r.Quantity : 0;
+    s.sold += recQty(r);
     if (r.Date && (!s.lastSale || r.Date > s.lastSale)) s.lastSale = r.Date;
   });
-  purch.forEach(r => { slot(keyOf(r)).purchased += typeof r.Quantity === 'number' ? r.Quantity : 0; });
-  stock.forEach(r => { slot(keyOf(r)).stock += typeof r.Quantity === 'number' ? r.Quantity : 0; });
+  purch.forEach(r => { slot(keyOf(r)).purchased += recQty(r); });
+  stock.forEach(r => { slot(keyOf(r)).stock += recQty(r); });
 
   let rows = [...map.values()].map(s => {
     const opening = s.sold + s.stock;
@@ -3376,9 +3549,8 @@ function initSnapshot() {
   loadSnapshotConfig();
 
   document.getElementById('snapshot-close').addEventListener('click', closeSnapshot);
-  document.getElementById('snapshot-overlay').addEventListener('click', e => { if (e.target.id === 'snapshot-overlay') closeSnapshot(); });
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && document.getElementById('snapshot-overlay').style.display !== 'none') closeSnapshot();
+  document.getElementById('snapshot-overlay').addEventListener('click', e => {
+    if (e.target.id === 'snapshot-overlay' && modalIsTop('snapshot-overlay')) closeSnapshot();
   });
 
   document.querySelectorAll('#snapshot-period-btns .seg-btn').forEach(btn => {
@@ -3422,11 +3594,13 @@ function showSnapshotView() {
 
 function openSnapshot() {
   document.getElementById('snapshot-overlay').style.display = 'flex';
+  modalOpen('snapshot-overlay', closeSnapshot);
   showSnapshotView();
   renderSnapshot();
 }
 function closeSnapshot() {
   document.getElementById('snapshot-overlay').style.display = 'none';
+  modalClose('snapshot-overlay');
 }
 
 function maybeAutoShowSnapshot() {
@@ -3451,7 +3625,7 @@ function renderSnapshot() {
   const range = snapshotRange();
   document.getElementById('snapshot-subtitle').textContent = range.label;
   const recs = snapshotRecords();
-  const totalSold = recs.reduce((s, r) => s + (typeof r.Quantity === 'number' ? r.Quantity : 0), 0);
+  const totalSold = recs.reduce((s, r) => s + (recQty(r)), 0);
   document.getElementById('snapshot-total').textContent =
     recs.length ? (fmtNum(totalSold) + ' pcs sold across ' + recs.length.toLocaleString('en-IN') + ' bill lines')
                 : 'Is period mein koi sale nahi mili.';
@@ -3482,7 +3656,7 @@ function buildSnapTree(recs, levels, topN, depth, pathFilters) {
   const map = new Map();
   recs.forEach(r => {
     const k = dimKey(r, dim);
-    map.set(k, (map.get(k) || 0) + (typeof r.Quantity === 'number' ? r.Quantity : 0));
+    map.set(k, (map.get(k) || 0) + (recQty(r)));
   });
   const top = [...map.entries()].filter(([k]) => k !== '(blank)').sort((a, b) => b[1] - a[1]).slice(0, topN);
 
@@ -4001,8 +4175,11 @@ function renderSnapshotCards(recs) {
 
 /* ---------- SETTINGS ---------- */
 
-function renderSnapshotSettings() {
-  const wrap = document.getElementById('snapshot-settings-body');
+function renderSnapshotSettings(hostId) {
+  // Ye settings do jagah dikhti hain — snapshot popup mein aur Settings panel
+  // mein. Isliye container ka id bahar se aata hai (duplicate id na bane).
+  const wrap = document.getElementById(hostId || 'snapshot-settings-body');
+  if (!wrap) return;
   const levels = Snapshot.config.levels || [];
   // Jitne columns available hain, utne hi level rakh sakte ho.
   const maxLevels = SNAPSHOT_ALL_DIMS.length;
@@ -4103,7 +4280,7 @@ function renderDashboard() {
   const purchaseRecs = purchaseRecords().filter(r => inPeriod(r, range));
   const stockRecs = stockRecords();
 
-  const sumQty = recs => recs.reduce((s, r) => s + (typeof r.Quantity === 'number' ? r.Quantity : 0), 0);
+  const sumQty = recs => recs.reduce((s, r) => s + (recQty(r)), 0);
   const distinctItems = recs => new Set(recs.map(r => r['Item Code']).filter(Boolean)).size;
 
   const soldQty = sumQty(salesRecs), stockQty = sumQty(stockRecs);
@@ -4153,7 +4330,7 @@ function renderTrendChart(salesRecs, purchaseRecs) {
     recs.forEach(r => {
       if (!r.Date) return;
       const key = grainKey(r.Date, grain);
-      m.set(key, (m.get(key) || 0) + (typeof r.Quantity === 'number' ? r.Quantity : 0));
+      m.set(key, (m.get(key) || 0) + (recQty(r)));
     });
     return m;
   };
@@ -4574,9 +4751,298 @@ function loadSession(file) {
 }
 
 /* ---------------------------------------------------------------
+   12. MODAL STACK — jo baad mein khula, wahi pehle band ho
+   ---------------------------------------------------------------
+   Pehle har overlay apne aap Esc par band ho jata tha, isliye do
+   window khuli hon to dono ek saath band ho jati thi. Ab stack
+   chalta hai: Esc / backdrop click sirf sabse upar wali band karta
+   hai, ulte kram mein (LIFO) — jaise browser mein hota hai.
+   --------------------------------------------------------------- */
+const ModalStack = { items: [] };
+
+function modalOpen(id, closeFn) {
+  // agar pehle se stack mein hai to usko upar le aao
+  ModalStack.items = ModalStack.items.filter(m => m.id !== id);
+  ModalStack.items.push({ id, close: closeFn });
+  updateModalDepths();
+}
+
+function modalClose(id) {
+  ModalStack.items = ModalStack.items.filter(m => m.id !== id);
+  updateModalDepths();
+}
+
+/** Sabse upar wali window band karta hai. Kuch khula ho to true. */
+function modalCloseTop() {
+  const top = ModalStack.items[ModalStack.items.length - 1];
+  if (!top) return false;
+  try { top.close(); } catch (e) { console.error(e); }
+  ModalStack.items = ModalStack.items.filter(m => m !== top);
+  updateModalDepths();
+  return true;
+}
+
+function modalIsTop(id) {
+  const top = ModalStack.items[ModalStack.items.length - 1];
+  return !!top && top.id === id;
+}
+
+/** Baad mein khuli window hamesha upar dikhe. */
+function updateModalDepths() {
+  ModalStack.items.forEach((m, i) => {
+    const el = typeof m.id === 'string' ? document.getElementById(m.id) : null;
+    if (el) el.style.zIndex = String(900 + i * 10);
+  });
+}
+
+function initModalStack() {
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (modalCloseTop()) { e.preventDefault(); e.stopPropagation(); }
+  }, true);   // capture phase — purane individual Esc handlers se pehle
+}
+
+/* ---------------------------------------------------------------
+   13. SETTINGS — ek jagah sab control (sidebar ke bottom se)
+   --------------------------------------------------------------- */
+const THEME_DEFAULT = {
+  accent: '#A6402C',
+  font: 'slab',        // slab | sans | serif | mono
+  density: 'normal',   // compact | normal | comfortable
+  fontSize: 13,        // table font size px
+  zebra: true,
+  gridLines: true
+};
+
+const ACCENT_CHOICES = [
+  ['#A6402C', 'Rust (default)'],
+  ['#1F6F5C', 'Teal'],
+  ['#4A6FA5', 'Indigo'],
+  ['#7A4CA0', 'Purple'],
+  ['#B9862F', 'Gold'],
+  ['#2F5D3A', 'Forest'],
+  ['#8C2E1B', 'Brick'],
+  ['#26303A', 'Charcoal']
+];
+
+const FONT_CHOICES = [
+  ['slab',  'Zilla Slab + IBM Plex', "'Zilla Slab', Georgia, serif", "'IBM Plex Sans', system-ui, sans-serif"],
+  ['sans',  'All Sans (clean)',      "'IBM Plex Sans', system-ui, sans-serif", "'IBM Plex Sans', system-ui, sans-serif"],
+  ['serif', 'Serif (classic)',       "Georgia, 'Times New Roman', serif", "Georgia, 'Times New Roman', serif"],
+  ['mono',  'Mono (data-heavy)',     "'IBM Plex Mono', monospace", "'IBM Plex Mono', monospace"]
+];
+
+const Theme = Object.assign({}, THEME_DEFAULT);
+
+function loadTheme() {
+  try {
+    const raw = Store.get('sl_theme');
+    if (raw) Object.assign(Theme, THEME_DEFAULT, JSON.parse(raw));
+  } catch (e) {}
+  applyTheme();
+}
+
+function saveTheme() {
+  Store.set('sl_theme', JSON.stringify(Theme));
+  applyTheme();
+}
+
+function applyTheme() {
+  const root = document.documentElement;
+  root.style.setProperty('--rust', Theme.accent);
+  root.style.setProperty('--rust-dark', shadeColor(Theme.accent, -18));
+
+  const f = FONT_CHOICES.find(x => x[0] === Theme.font) || FONT_CHOICES[0];
+  root.style.setProperty('--font-display', f[2]);
+  root.style.setProperty('--font-body', f[3]);
+  root.style.setProperty('--table-font-size', Theme.fontSize + 'px');
+
+  const b = document.body;
+  ['density-compact', 'density-normal', 'density-comfortable'].forEach(c => b.classList.remove(c));
+  b.classList.add('density-' + Theme.density);
+  b.classList.toggle('no-zebra', !Theme.zebra);
+  b.classList.toggle('no-gridlines', !Theme.gridLines);
+}
+
+/** Hex color ko halka/gehra karta hai. */
+function shadeColor(hex, percent) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return hex;
+  const adj = v => Math.max(0, Math.min(255, Math.round(parseInt(v, 16) * (100 + percent) / 100)));
+  const to2 = v => v.toString(16).padStart(2, '0');
+  return '#' + to2(adj(m[1])) + to2(adj(m[2])) + to2(adj(m[3]));
+}
+
+function ensureSettingsDom() {
+  if (!document.getElementById('settings-overlay')) {
+    const d = document.createElement('div');
+    d.id = 'settings-overlay';
+    d.className = 'drill-overlay settings-overlay';
+    d.style.display = 'none';
+    d.innerHTML =
+      '<div class="drill-panel settings-panel">' +
+        '<div class="drill-head"><div>' +
+          '<h2>Settings</h2>' +
+          '<div class="drill-subtitle">Look, snapshot aur behaviour \u2014 sab ek jagah</div>' +
+        '</div><button id="settings-close" class="drill-close" title="Close (Esc)">&times;</button></div>' +
+        '<div class="seg-control" id="settings-tabs" style="margin:14px 0 12px;">' +
+          '<button class="seg-btn active" data-stab="look">\uD83C\uDFA8 Look &amp; Feel</button>' +
+          '<button class="seg-btn" data-stab="snapshot">\uD83D\uDCCC Snapshot</button>' +
+          '<button class="seg-btn" data-stab="behaviour">\u2699 Behaviour</button>' +
+        '</div>' +
+        '<div id="settings-body" class="settings-body"></div>' +
+      '</div>';
+    document.body.appendChild(d);
+  }
+  if (!document.getElementById('btn-open-settings')) {
+    const btn = document.createElement('button');
+    btn.id = 'btn-open-settings';
+    btn.className = 'ghost-btn';
+    btn.innerHTML = '\u2699 Settings';
+    const footer = document.querySelector('.sidebar-footer');
+    if (footer) footer.appendChild(btn); else document.body.appendChild(btn);
+  }
+}
+
+let settingsTab = 'look';
+
+function initSettings() {
+  ensureSettingsDom();
+  loadTheme();
+
+  document.getElementById('btn-open-settings').addEventListener('click', openSettings);
+  document.getElementById('settings-close').addEventListener('click', closeSettings);
+  document.getElementById('settings-overlay').addEventListener('click', e => {
+    if (e.target.id === 'settings-overlay' && modalIsTop('settings-overlay')) closeSettings();
+  });
+  document.querySelectorAll('#settings-tabs .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#settings-tabs .seg-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      settingsTab = btn.dataset.stab;
+      renderSettingsBody();
+    });
+  });
+}
+
+function openSettings() {
+  document.getElementById('settings-overlay').style.display = 'flex';
+  modalOpen('settings-overlay', closeSettings);
+  renderSettingsBody();
+}
+function closeSettings() {
+  document.getElementById('settings-overlay').style.display = 'none';
+  modalClose('settings-overlay');
+}
+
+function renderSettingsBody() {
+  const wrap = document.getElementById('settings-body');
+  if (settingsTab === 'snapshot') {
+    wrap.innerHTML = '<div id="settings-snap-body"></div>';
+    renderSnapshotSettings('settings-snap-body');
+    return;
+  }
+  if (settingsTab === 'behaviour') {
+    wrap.innerHTML =
+      '<h3 class="snap-set-title">Windows</h3>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="set-autosnap"' +
+        (Snapshot.config.autoShow ? ' checked' : '') + '> Data upload hote hi Top Items Snapshot khud khule</label>' +
+      '<p class="drill-subtitle" style="margin-top:8px;">Ek se zyada window khuli ho to <strong>Esc</strong> ulte kram mein band karta hai \u2014 ' +
+      'jo sabse baad mein khuli, wahi pehle band hoti hai.</p>' +
+      '<h3 class="snap-set-title">Product Performance</h3>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="set-inline"' +
+        (Behaviour.inlineExpand ? ' checked' : '') + '> Row par click karne se details usi table mein neeche khulein ' +
+        '(band karoge to seedha alag window khulegi)</label>' +
+      '<h3 class="snap-set-title">Reset</h3>' +
+      '<button class="ghost-btn small" id="set-reset-theme">Look &amp; Feel default par le jao</button> ' +
+      '<button class="ghost-btn small" id="set-reset-all">Sab settings mitao</button>' +
+      '<p class="drill-subtitle" style="margin-top:10px;">Build ' + BUILD_VERSION + '</p>';
+
+    wrap.querySelector('#set-autosnap').addEventListener('change', e => {
+      Snapshot.config.autoShow = e.target.checked; saveSnapshotConfigLocal();
+    });
+    wrap.querySelector('#set-inline').addEventListener('change', e => {
+      Behaviour.inlineExpand = e.target.checked; saveBehaviour(); renderPerformance();
+    });
+    wrap.querySelector('#set-reset-theme').addEventListener('click', () => {
+      Object.assign(Theme, THEME_DEFAULT); saveTheme(); renderSettingsBody(); toast('Look & Feel reset ho gaya.');
+    });
+    wrap.querySelector('#set-reset-all').addEventListener('click', () => {
+      Store.remove('sl_theme'); Store.remove('sl_snapshot_config'); Store.remove('sl_behaviour');
+      Object.assign(Theme, THEME_DEFAULT); saveTheme();
+      toast('Sab settings mit gayi \u2014 page refresh karo.');
+    });
+    return;
+  }
+
+  // --- Look & Feel ---
+  wrap.innerHTML =
+    '<h3 class="snap-set-title">Accent colour</h3>' +
+    '<div class="swatch-grid">' +
+      ACCENT_CHOICES.map(([hex, name]) =>
+        '<button class="swatch' + (Theme.accent.toLowerCase() === hex.toLowerCase() ? ' active' : '') + '" ' +
+        'data-accent="' + hex + '" title="' + name + '"><span style="background:' + hex + '"></span>' + name + '</button>').join('') +
+    '</div>' +
+
+    '<h3 class="snap-set-title">Font style</h3>' +
+    '<div class="snap-style-grid">' +
+      FONT_CHOICES.map(([id, name, disp]) =>
+        '<label class="snap-style-opt' + (Theme.font === id ? ' active' : '') + '">' +
+        '<input type="radio" name="themefont" value="' + id + '"' + (Theme.font === id ? ' checked' : '') + '>' +
+        '<span class="snap-style-name" style="font-family:' + disp + '">' + name + '</span></label>').join('') +
+    '</div>' +
+
+    '<h3 class="snap-set-title">Table look</h3>' +
+    '<div class="settings-row">' +
+      '<label class="toolbar-label">Row height</label>' +
+      '<select id="set-density" class="select">' +
+        ['compact', 'normal', 'comfortable'].map(d =>
+          '<option value="' + d + '"' + (Theme.density === d ? ' selected' : '') + '>' + d.charAt(0).toUpperCase() + d.slice(1) + '</option>').join('') +
+      '</select>' +
+      '<label class="toolbar-label">Font size</label>' +
+      '<input type="range" id="set-fontsize" min="11" max="17" step="0.5" value="' + Theme.fontSize + '">' +
+      '<span class="drill-count" id="set-fontsize-val">' + Theme.fontSize + 'px</span>' +
+    '</div>' +
+    '<div class="settings-row">' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="set-zebra"' + (Theme.zebra ? ' checked' : '') + '> Alternate row shading</label>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="set-grid"' + (Theme.gridLines ? ' checked' : '') + '> Row separator lines</label>' +
+    '</div>' +
+
+    '<div class="theme-preview">' +
+      '<table class="data-table"><thead><tr><th>Article</th><th class="num">Sold</th><th class="num">Stock</th></tr></thead>' +
+      '<tbody><tr><td>T-SHIRT-M</td><td class="num">1,538</td><td class="num">2,828</td></tr>' +
+      '<tr><td>SHIRT-M</td><td class="num">656</td><td class="num">1,204</td></tr>' +
+      '<tr><td>TOP-L</td><td class="num">458</td><td class="num">903</td></tr></tbody></table>' +
+    '</div>';
+
+  wrap.querySelectorAll('.swatch').forEach(b => b.addEventListener('click', () => {
+    Theme.accent = b.dataset.accent; saveTheme(); renderSettingsBody();
+  }));
+  wrap.querySelectorAll('input[name="themefont"]').forEach(r => r.addEventListener('change', () => {
+    Theme.font = r.value; saveTheme(); renderSettingsBody();
+  }));
+  wrap.querySelector('#set-density').addEventListener('change', e => { Theme.density = e.target.value; saveTheme(); });
+  const fs = wrap.querySelector('#set-fontsize');
+  fs.addEventListener('input', e => {
+    Theme.fontSize = parseFloat(e.target.value);
+    wrap.querySelector('#set-fontsize-val').textContent = Theme.fontSize + 'px';
+    saveTheme();
+  });
+  wrap.querySelector('#set-zebra').addEventListener('change', e => { Theme.zebra = e.target.checked; saveTheme(); });
+  wrap.querySelector('#set-grid').addEventListener('change', e => { Theme.gridLines = e.target.checked; saveTheme(); });
+}
+
+/* Behaviour settings */
+const Behaviour = { inlineExpand: true };
+function loadBehaviour() {
+  try { const raw = Store.get('sl_behaviour'); if (raw) Object.assign(Behaviour, JSON.parse(raw)); } catch (e) {}
+}
+function saveBehaviour() { Store.set('sl_behaviour', JSON.stringify(Behaviour)); }
+
+/* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v12';
+const BUILD_VERSION = 'v13';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -4601,6 +5067,9 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('dashboard', initDashboard);
   safeInit('relations', initRelations);
   safeInit('drill', initDrill);
+  safeInit('behaviour', loadBehaviour);
+  safeInit('modal-stack', initModalStack);
+  safeInit('settings', initSettings);
   safeInit('snapshot', initSnapshot);
   safeInit('session', initSession);
   safeInit('period-selects', wirePeriodSelects);
