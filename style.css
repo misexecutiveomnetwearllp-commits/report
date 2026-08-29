@@ -24,6 +24,25 @@
   --xl-hover: #FBE7D2;
   --xl-foot-bg: #EDE9DD;
   --xl-foot-text: #241C14;
+  /* nesting levels in Product Performance */
+  --lvl0-bg: #FFFFFF;
+  --lvl0-open: #FBEFE0;
+  --lvl1-bg: #F1F5F9;
+  --lvl2-bg: #F2F7F1;
+  --lvl3-bg: #FAF3F7;
+  --lvl1-bar: #4A6FA5;
+  --lvl2-bar: #1F6F5C;
+  --lvl3-bar: #7A4CA0;
+  /* Product Performance nesting colours */
+  --lvl-0: #FFFFFF;
+  --lvl-1: #F4F7F5;
+  --lvl-2: #F7F4EC;
+  --lvl-3: #F3F1F7;
+  --lvl-4: #FAF6F2;
+  --lvl-open: #FBE7D2;
+  --lvl-rail-1: #1F6F5C;
+  --lvl-rail-2: #B9862F;
+  --lvl-rail-3: #4A6FA5;
   --font-display: 'Zilla Slab', Georgia, serif;
   --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', monospace;
@@ -141,6 +160,8 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 }
 .ghost-btn:hover { border-color: var(--rust); background: #fff; }
 .ghost-btn.small { padding: 6px 11px; font-size: 12px; }
+/* sidebar action buttons sit at half height to save vertical space */
+.sidebar-footer .ghost-btn { padding: 5px 12px; font-size: 12px; }
 .ghost-btn.primary { background: var(--rust); border-color: var(--rust); color: #fff; }
 .ghost-btn.primary:hover { background: var(--rust-dark); }
 .sidebar .ghost-btn { background: rgba(255,255,255,0.06); border-color: rgba(237,230,214,0.2); color: var(--text-on-ink); justify-content: center; }
@@ -315,7 +336,7 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 
 /* cells: thin gridlines on all sides */
 .data-table tbody td {
-  padding: 4px 10px;
+  padding: var(--row-pad, 4px) 10px;
   border-right: 1px solid var(--xl-border);
   border-bottom: 1px solid var(--xl-border);
   white-space: nowrap; font-family: var(--font-body); font-size: inherit;
@@ -769,11 +790,48 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 .quick-source-note .qsrc-count { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-soft); }
 
 /* ============ PRODUCT PERFORMANCE — inline expand ============ */
+/* No zebra here: every top-level row shares one colour, and each expanded
+   level gets its own shade so the nesting is obvious at a glance. */
+#perf-table tbody tr:nth-child(even) > td { background: inherit; }
+
 .perf-row { cursor: pointer; }
 .perf-name { font-family: var(--font-body) !important; }
-.perf-row.depth-1 > td, .perf-row.depth-2 > td, .perf-row.depth-3 > td { background: #FAF6EA; }
-.perf-row.depth-1 .perf-key { color: var(--text-soft); }
-.perf-row.is-open > td { background: #FBE7D2 !important; font-weight: 600; }
+
+/* level 0 — one flat colour for every parent row */
+.perf-row.depth-0 > td { background: var(--lvl0-bg); }
+/* level 1, 2, 3 — progressively tinted so each drop-down reads differently */
+.perf-row.depth-1 > td { background: var(--lvl1-bg); }
+.perf-row.depth-2 > td { background: var(--lvl2-bg); }
+.perf-row.depth-3 > td,
+.perf-row.depth-4 > td { background: var(--lvl3-bg); }
+
+/* a coloured spine on the left shows how deep you are */
+.perf-row.depth-1 > td:first-child { box-shadow: inset 3px 0 0 var(--lvl1-bar); }
+.perf-row.depth-2 > td:first-child { box-shadow: inset 3px 0 0 var(--lvl2-bar); }
+.perf-row.depth-3 > td:first-child,
+.perf-row.depth-4 > td:first-child { box-shadow: inset 3px 0 0 var(--lvl3-bar); }
+
+.perf-row:hover > td { background: var(--xl-hover) !important; }
+.perf-row.is-open > td { font-weight: 600; }
+.perf-row.depth-0.is-open > td { background: var(--lvl0-open); }
+
+.perf-row.depth-1 .perf-key,
+.perf-row.depth-2 .perf-key,
+.perf-row.depth-3 .perf-key { color: var(--text-soft); }
+
+.perf-popout {
+  all: unset; cursor: pointer; margin-left: 9px; opacity: 0;
+  font-size: 12px; color: var(--text-soft); transition: opacity .12s, color .12s;
+}
+.perf-row:hover .perf-popout { opacity: .65; }
+.perf-popout:hover { opacity: 1 !important; color: var(--rust); }
+
+.perf-child-note > td { background: var(--lvl1-bg) !important; color: var(--text-soft); font-family: var(--font-body) !important; }
+
+.rp-badge {
+  display: inline-block; font-family: var(--font-mono); font-size: 11px;
+  background: #DEE8F5; color: #2C4E7A; padding: 2px 8px; border-radius: 20px; margin-right: 6px;
+}
 
 .perf-caret {
   all: unset; cursor: pointer;
@@ -827,10 +885,6 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 
 /* ---- theme-driven table density / options ---- */
 .data-table { font-size: var(--table-font-size, 13px); }
-body.density-compact .data-table tbody td { padding: 2px 8px; }
-body.density-compact .data-table thead th { padding: 4px 8px; }
-body.density-comfortable .data-table tbody td { padding: 9px 14px; }
-body.density-comfortable .data-table thead th { padding: 10px 14px; }
 body.no-zebra .data-table tbody tr:nth-child(even) > td { background: #fff; }
 body.no-gridlines .data-table tbody td { border-right: none; border-bottom: 1px solid var(--xl-zebra); }
 body.no-gridlines .data-table thead th { border-right: none; }
@@ -868,3 +922,44 @@ body.no-gridlines .data-table thead th { border-right: none; }
 /* GIF-style dense grid: keep the first column tight and aligned */
 .data-table td.perf-name { display: flex; align-items: center; }
 .data-table td.perf-name .perf-key { overflow: hidden; text-overflow: ellipsis; }
+
+
+/* ===== Product Performance: one flat colour per level =====
+   No odd/even striping here - instead each depth gets its own shade so the
+   nesting is obvious at a glance. */
+#perf-table tbody tr.perf-row > td { background: var(--lvl-0); }
+#perf-table tbody tr.perf-row.depth-1 > td { background: var(--lvl-1); }
+#perf-table tbody tr.perf-row.depth-2 > td { background: var(--lvl-2); }
+#perf-table tbody tr.perf-row.depth-3 > td { background: var(--lvl-3); }
+#perf-table tbody tr.perf-row.depth-4 > td { background: var(--lvl-4); }
+
+/* the row you opened stays highlighted so you can see what you are inside of */
+#perf-table tbody tr.perf-row.is-open > td { background: var(--lvl-open); font-weight: 600; }
+
+/* left rail marks the nesting depth in the accent colour */
+#perf-table tbody tr.perf-row.depth-1 > td:first-child { box-shadow: inset 3px 0 0 var(--lvl-rail-1); }
+#perf-table tbody tr.perf-row.depth-2 > td:first-child { box-shadow: inset 6px 0 0 var(--lvl-rail-2); }
+#perf-table tbody tr.perf-row.depth-3 > td:first-child { box-shadow: inset 9px 0 0 var(--lvl-rail-3); }
+
+#perf-table tbody tr.perf-row:hover > td { background: var(--xl-hover); }
+
+/* ============ COLUMN RESIZING ============ */
+.data-table thead th { position: sticky; }
+.resizable-table thead th { position: sticky; }
+.col-resizer {
+  position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+  cursor: col-resize; user-select: none;
+  background: transparent;
+}
+.col-resizer:hover { background: var(--rust); opacity: .55; }
+.data-table thead th { position: sticky; top: 0; }
+.resizable-table thead th { padding-right: 14px; }
+body.col-resizing { cursor: col-resize !important; user-select: none; }
+body.col-resizing .col-resizer { background: var(--rust); opacity: .8; }
+
+/* header cells need a positioning context for the grip */
+.data-table thead th { box-sizing: border-box; }
+.resizable-table thead th { overflow: visible; }
+
+/* when a width is set, keep contents from forcing it wider */
+.resizable-table tbody td, .resizable-table tfoot td { overflow: hidden; text-overflow: ellipsis; }

@@ -26,23 +26,23 @@
     </div>
 
     <nav class="tabs" id="tab-nav">
-      <button class="tab-btn active" data-tab="import">
-        <span class="tab-no">01</span> Import Data
-      </button>
-      <button class="tab-btn" data-tab="dashboard">
-        <span class="tab-no">02</span> Dashboard
+      <button class="tab-btn active" data-tab="dashboard">
+        <span class="tab-no">01</span> Dashboard
       </button>
       <button class="tab-btn" data-tab="performance">
-        <span class="tab-no">03</span> Product Performance
+        <span class="tab-no">02</span> Product Performance
       </button>
       <button class="tab-btn" data-tab="insights">
-        <span class="tab-no">04</span> Reorder Planner
+        <span class="tab-no">03</span> Reorder Planner
       </button>
       <button class="tab-btn" data-tab="pivot">
-        <span class="tab-no">05</span> Pivot Builder
+        <span class="tab-no">04</span> Pivot Builder
       </button>
       <button class="tab-btn" data-tab="explore">
-        <span class="tab-no">06</span> Explore Rows
+        <span class="tab-no">05</span> Explore Rows
+      </button>
+      <button class="tab-btn" data-tab="import">
+        <span class="tab-no">06</span> Import Data
       </button>
     </nav>
 
@@ -69,7 +69,7 @@
     <div id="lib-error" class="lib-error" style="display:none;"></div>
 
     <!-- ---------- TAB: IMPORT ---------- -->
-    <section class="tab-panel active" id="tab-import">
+    <section class="tab-panel" id="tab-import">
       <header class="panel-head">
         <h1>Import your ERP exports</h1>
         <p>Bring data in two ways: drop the .xls / .xlsx / .csv files your ERP exports, or connect a Google Sheet once and pull straight from it every time. Column order and naming don't need to match between sources — StockLedger reads each one's own header row and lets you confirm what every column means.</p>
@@ -369,7 +369,6 @@
         <button id="perf-export" class="ghost-btn small">⬇ Export CSV</button>
       </div>
 
-      <div id="perf-kpis" class="kpi-row"></div>
 
       <div class="seg-control" id="perf-view">
         <button class="seg-btn active" data-view="all">All</button>
@@ -411,7 +410,7 @@
     </section>
 
     <!-- ---------- TAB: DASHBOARD ---------- -->
-    <section class="tab-panel" id="tab-dashboard">
+    <section class="tab-panel active" id="tab-dashboard">
       <header class="panel-head">
         <h1>Dashboard</h1>
         <p>The whole business at a glance - how much sold, how much came in, how much is sitting.</p>

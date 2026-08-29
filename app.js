@@ -1248,6 +1248,7 @@ function renderExplore() {
   ).join('') + '</tbody>';
 
   table.innerHTML = thead + tbody + exploreFootHtml(recs, fields, isNum);
+  makeTableResizable(table);
   table.querySelectorAll('thead th').forEach(th => th.addEventListener('click', () => {
     const f = th.dataset.field;
     if (ExploreState.sortField === f) ExploreState.sortDir *= -1; else { ExploreState.sortField = f; ExploreState.sortDir = 1; }
@@ -2681,6 +2682,7 @@ function renderQuickReport() {
     QuickReport.collapsed[p] = !QuickReport.collapsed[p];
     renderQuickReport();
   }));
+  makeTableResizable(table);
   table.querySelectorAll('.qr-row').forEach(tr => tr.addEventListener('click', () => {
     const node = flat.find(n => n.path === tr.dataset.path);
     if (!node) return;
@@ -2783,7 +2785,7 @@ function renderInsights() {
   const reorderQty = A.rows.reduce((s, r) => s + (r.reorder ? r.suggested : 0), 0);
 
   const erI = effectiveRange(A.range);
-  kpiWrap.innerHTML = [
+  if (kpiWrap) kpiWrap.innerHTML = [
     ['Analysis window', erI.from ? erI.text : A.range.label, A.range.label + ' · ' + A.days + ' days'],
     ['Sold qty', fmtNum(totalSold), 'in this window'],
     ['Purchased qty', fmtNum(totalPurchased), 'in this window'],
@@ -2815,6 +2817,7 @@ function renderInsights() {
     '</tr></tfoot>';
 
   wrap.innerHTML = head + body + foot;
+  makeTableResizable(wrap);
   wrap.querySelectorAll('tbody tr').forEach(tr => tr.addEventListener('click', () => {
     if (tr.dataset.key) openDrill(dim, tr.dataset.key);
   }));
@@ -2860,12 +2863,12 @@ function initPerformance() {
 function renderPerformance() {
   const dim = document.getElementById('perf-groupby').value;
   const tableEl = document.getElementById('perf-table');
-  const kpiWrap = document.getElementById('perf-kpis');
+  const kpiWrap = document.getElementById('perf-kpis');   // removed from the UI
   const chartsWrap = document.getElementById('perf-charts');
 
   if (!App.datasets.length) {
     tableEl.innerHTML = '<tr><td class="empty-hint">Load your data on the Import tab first.</td></tr>';
-    kpiWrap.innerHTML = ''; chartsWrap.style.display = 'none'; lastPerfRows = null;
+    if (kpiWrap) kpiWrap.innerHTML = ''; chartsWrap.style.display = 'none'; lastPerfRows = null;
     return;
   }
   chartsWrap.style.display = '';
@@ -2884,7 +2887,7 @@ function renderPerformance() {
   const overallST = (A.totalSold + totalStock) > 0 ? (A.totalSold / (A.totalSold + totalStock)) * 100 : 0;
 
   const erP = effectiveRange(A.range);
-  kpiWrap.innerHTML = [
+  if (kpiWrap) kpiWrap.innerHTML = [
     ['Window', erP.from ? erP.text : A.range.label, A.range.label + ' · ' + A.days + ' days'],
     ['Best sellers', best.length.toLocaleString('en-IN'), 'A-class, 80% of sales'],
     ['Dead / non-moving', dead.length.toLocaleString('en-IN'), fmtNum(deadQty) + ' pcs stuck'],
@@ -2962,6 +2965,7 @@ function renderPerformance() {
     renderPerformance();
   }));
   wirePerfRowEvents(tableEl, dim);
+  makeTableResizable(tableEl);
 
   renderPerfLegend(hasOBS);
   document.getElementById('perf-count').textContent =
@@ -2970,13 +2974,21 @@ function renderPerformance() {
 
 /* ---- Inline expand: row ke neeche hi uski details, bina naya window khole ---- */
 
-const PERF_CHILD_CHAIN = ['Style', 'Colour', 'Size', 'Brand', 'Supplier', 'Sub Section', 'Item Code'];
+const PERF_CHAIN_DEFAULT = ['Style', 'Colour', 'Size', 'Brand', 'Supplier', 'Sub Section', 'Item Code'];
+const PERF_CHAIN_CHOICES = ['Style', 'Colour', 'Size', 'Article No', 'Brand', 'Supplier',
+                            'Sub Section', 'Section', 'Item Code'];
+
+/** The expand order, set in Settings -> Behaviour (like the mind map levels). */
+function perfChain() {
+  const c = (Behaviour.perfChain && Behaviour.perfChain.length) ? Behaviour.perfChain : PERF_CHAIN_DEFAULT;
+  return c.filter(function (v, i) { return v && c.indexOf(v) === i; });
+}
 
 /** Kis level par kaunsa dimension khulega. */
 function perfChildDim(usedFields) {
   const have = new Set();
   App.datasets.forEach(d => d.fields.forEach(f => have.add(f)));
-  return PERF_CHILD_CHAIN.find(d => have.has(d) && usedFields.indexOf(d) === -1) || null;
+  return perfChain().find(d => have.has(d) && usedFields.indexOf(d) === -1) || null;
 }
 
 /** Metric cells — PerfState.cols ke hisaab se, taaki OBS/CBS columns
@@ -3056,9 +3068,18 @@ function perfMetricCells(r) {
   return out;
 }
 
-function perfRowHtml(r, dim, depth, path) {
+/** Open state for a row. The first child of any expanded parent opens by
+ *  default, so the top item shows its full detail straight away; every other
+ *  row stays closed until clicked. Once the user clicks, their choice wins. */
+function perfIsOpen(id, isFirstChild) {
+  const v = PerfState.open[id];
+  if (v !== undefined) return v;
+  return !!isFirstChild;
+}
+
+function perfRowHtml(r, dim, depth, path, isFirstChild) {
   const key = path.map(p => p.field + '=' + p.value).join('|');
-  const open = !!PerfState.open[depth === 0 ? r.key : key];
+  const open = perfIsOpen(depth === 0 ? r.key : key, isFirstChild);
   const hasKids = !!perfChildDim(path.map(p => p.field));
   return '<tr class="perf-row depth-' + depth + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(r.key) + '" data-path="' + escapeHtml(key) + '">' +
     '<td class="perf-name" style="padding-left:' + (14 + depth * 18) + 'px">' +
@@ -3125,13 +3146,39 @@ function perfChildRowsHtml(path, depth, colCount) {
   // No section heading row — child rows follow the parent directly.
   let html = '';
 
-  shown.forEach(k => {
+  shown.forEach((k, i) => {
     const childPath = path.concat([{ field: childDim, value: k.key }]);
     const key = childPath.map(p => p.field + '=' + p.value).join('|');
-    html += perfRowHtml(k, childDim, depth, childPath);
-    if (PerfState.open[key]) html += perfChildRowsHtml(childPath, depth + 1, colCount);
+    const isFirst = i === 0;
+    html += perfRowHtml(k, childDim, depth, childPath, isFirst);
+    if (perfIsOpen(key, isFirst)) html += perfChildRowsHtml(childPath, depth + 1, colCount);
   });
   return html;
+}
+
+/** Marks the first child of a path as open (one level), so expanding a row
+ *  immediately reveals the leading item's detail instead of an empty list. */
+function autoOpenFirstChild(pathStr) {
+  const path = String(pathStr).split('|').filter(Boolean).map(function (seg) {
+    const i = seg.indexOf('=');
+    return { field: seg.slice(0, i), value: seg.slice(i + 1) };
+  });
+  if (!path.length) return;
+  const childDim = perfChildDim(path.map(function (p) { return p.field; }));
+  if (!childDim) return;
+
+  const range = periodRange();
+  const match = function (rec) { return path.every(function (p) { return dimKey(rec, p.field) === p.value; }); };
+  const sales = salesRecords().filter(function (r) { return inPeriod(r, range); }).filter(match);
+  const stock = stockRecords().filter(match);
+
+  const totals = new Map();
+  sales.forEach(function (r) { const k = dimKey(r, childDim); totals.set(k, (totals.get(k) || 0) + recQty(r)); });
+  if (!totals.size) stock.forEach(function (r) { const k = dimKey(r, childDim); totals.set(k, (totals.get(k) || 0) + recQty(r)); });
+  if (!totals.size) return;
+
+  const first = [...totals.entries()].sort(function (a, b) { return b[1] - a[1]; })[0][0];
+  PerfState.open[pathStr + '|' + childDim + '=' + first] = true;
 }
 
 function wirePerfRowEvents(tableEl, dim) {
@@ -3141,7 +3188,11 @@ function wirePerfRowEvents(tableEl, dim) {
       const tr = btn.closest('tr');
       const depth = parseInt((tr.className.match(/depth-(\d+)/) || [0, 0])[1], 10);
       const id = depth === 0 ? tr.dataset.key : tr.dataset.path;
-      PerfState.open[id] = !PerfState.open[id];
+      const opening = !PerfState.open[id];
+      PerfState.open[id] = opening;
+      // When a row opens, show the top child's details straight away; the rest
+      // stay closed until clicked.
+      if (opening && Behaviour.autoOpenFirst) autoOpenFirstChild(tr.dataset.path || (dim + '=' + tr.dataset.key));
       renderPerformance();
     });
   });
@@ -3556,6 +3607,7 @@ function renderDrillBreakdown(sales, purch, stock, days) {
         '<td class="num"></td><td></td></tr></tfoot>';
     })();
 
+  makeTableResizable(document.getElementById('drill-breakdown'));
   document.querySelectorAll('#drill-breakdown thead th').forEach(th => th.addEventListener('click', () => {
     const k = th.dataset.key;
     if (Drill.sortKey === k) Drill.sortDir *= -1;
@@ -5070,7 +5122,8 @@ const THEME_DEFAULT = {
   fontSize: 13,        // table font size px
   zebra: true,
   gridLines: true,
-  caretSize: 20        // expand/collapse triangle size in px
+  caretSize: 20,       // expand/collapse triangle size in px
+  rowPad: 4            // table row padding in px (row height)
 };
 
 const ACCENT_CHOICES = [
@@ -5116,6 +5169,7 @@ function applyTheme() {
   root.style.setProperty('--font-body', f[3]);
   root.style.setProperty('--table-font-size', Theme.fontSize + 'px');
   root.style.setProperty('--caret-size', (Theme.caretSize || 20) + 'px');
+  root.style.setProperty('--row-pad', (Theme.rowPad === undefined ? 4 : Theme.rowPad) + 'px');
 
   const b = document.body;
   ['density-compact', 'density-normal', 'density-comfortable'].forEach(c => b.classList.remove(c));
@@ -5213,6 +5267,24 @@ function renderSettingsBody() {
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-inline"' +
         (Behaviour.inlineExpand ? ' checked' : '') + '> Clicking a row opens its details inside the same table ' +
         '(turn this off to open a separate window instead)</label>' +
+      '<h3 class="snap-set-title">Expand order (Product Performance)</h3>' +
+      '<p class="drill-subtitle">When you open a row, this is the order the levels open in \u2014 same idea as the mind map levels.</p>' +
+      '<div class="snap-levels">' +
+        PERF_CHAIN_CHOICES.map(function (_, i) {
+          const cur = perfChain();
+          return '<div><label class="toolbar-label">Level ' + (i + 1) + '</label>' +
+            '<select class="select perf-chain-level" data-i="' + i + '">' +
+              (i > 0 ? '<option value="">\u2014 none \u2014</option>' : '') +
+              PERF_CHAIN_CHOICES.map(function (d) {
+                return '<option value="' + d + '"' + (cur[i] === d ? ' selected' : '') + '>' + d + '</option>';
+              }).join('') +
+            '</select></div>';
+        }).join('') +
+      '</div>' +
+      '<label class="toolbar-checkbox" style="margin-top:10px;"><input type="checkbox" id="set-autofirst"' +
+        (Behaviour.autoOpenFirst ? ' checked' : '') + '> Opening a row also opens its top item, so full details show at once</label>' +
+      '<div style="margin-top:10px;"><button class="ghost-btn small" id="set-chain-save">Save expand order</button></div>' +
+
       '<h3 class="snap-set-title">Reset</h3>' +
       '<button class="ghost-btn small" id="set-reset-theme">Reset Look &amp; Feel to defaults</button> ' +
       '<button class="ghost-btn small" id="set-reset-all">Clear all settings</button>' +
@@ -5223,6 +5295,18 @@ function renderSettingsBody() {
     });
     wrap.querySelector('#set-inline').addEventListener('change', e => {
       Behaviour.inlineExpand = e.target.checked; saveBehaviour(); renderPerformance();
+    });
+    wrap.querySelector('#set-autofirst').addEventListener('change', e => {
+      Behaviour.autoOpenFirst = e.target.checked; saveBehaviour();
+    });
+    wrap.querySelector('#set-chain-save').addEventListener('click', () => {
+      const picked = [...wrap.querySelectorAll('.perf-chain-level')].map(x => x.value).filter(Boolean);
+      Behaviour.perfChain = picked.filter((v, i) => picked.indexOf(v) === i);
+      if (!Behaviour.perfChain.length) Behaviour.perfChain = PERF_CHAIN_DEFAULT.slice();
+      saveBehaviour();
+      PerfState.open = {};
+      renderPerformance();
+      toast('Expand order saved.');
     });
     wrap.querySelector('#set-reset-theme').addEventListener('click', () => {
       Object.assign(Theme, THEME_DEFAULT); saveTheme(); renderSettingsBody(); toast('Look & Feel has been reset.');
@@ -5255,10 +5339,8 @@ function renderSettingsBody() {
     '<h3 class="snap-set-title">Table look</h3>' +
     '<div class="settings-row">' +
       '<label class="toolbar-label">Row height</label>' +
-      '<select id="set-density" class="select">' +
-        ['compact', 'normal', 'comfortable'].map(d =>
-          '<option value="' + d + '"' + (Theme.density === d ? ' selected' : '') + '>' + d.charAt(0).toUpperCase() + d.slice(1) + '</option>').join('') +
-      '</select>' +
+      '<input type="range" id="set-rowpad" min="1" max="14" step="1" value="' + (Theme.rowPad === undefined ? 4 : Theme.rowPad) + '">' +
+      '<span class="drill-count" id="set-rowpad-val">' + (Theme.rowPad === undefined ? 4 : Theme.rowPad) + 'px</span>' +
       '<label class="toolbar-label">Font size</label>' +
       '<input type="range" id="set-fontsize" min="11" max="17" step="0.5" value="' + Theme.fontSize + '">' +
       '<span class="drill-count" id="set-fontsize-val">' + Theme.fontSize + 'px</span>' +
@@ -5287,7 +5369,12 @@ function renderSettingsBody() {
   wrap.querySelectorAll('input[name="themefont"]').forEach(r => r.addEventListener('change', () => {
     Theme.font = r.value; saveTheme(); renderSettingsBody();
   }));
-  wrap.querySelector('#set-density').addEventListener('change', e => { Theme.density = e.target.value; saveTheme(); });
+  const rp = wrap.querySelector('#set-rowpad');
+  if (rp) rp.addEventListener('input', e => {
+    Theme.rowPad = parseInt(e.target.value, 10);
+    wrap.querySelector('#set-rowpad-val').textContent = Theme.rowPad + 'px';
+    saveTheme();
+  });
   const fs = wrap.querySelector('#set-fontsize');
   fs.addEventListener('input', e => {
     Theme.fontSize = parseFloat(e.target.value);
@@ -5305,16 +5392,99 @@ function renderSettingsBody() {
 }
 
 /* Behaviour settings */
-const Behaviour = { inlineExpand: true };
+const Behaviour = { inlineExpand: true, perfChain: PERF_CHAIN_DEFAULT.slice(), autoOpenFirst: true };
 function loadBehaviour() {
   try { const raw = Store.get('sl_behaviour'); if (raw) Object.assign(Behaviour, JSON.parse(raw)); } catch (e) {}
 }
 function saveBehaviour() { Store.set('sl_behaviour', JSON.stringify(Behaviour)); }
 
 /* ---------------------------------------------------------------
+   14. COLUMN RESIZING — drag a header edge to widen/narrow a column
+   --------------------------------------------------------------- */
+const ColWidths = { map: {}, drag: null };
+
+function loadColWidths() {
+  try {
+    const raw = Store.get('sl_colwidths');
+    if (raw) ColWidths.map = JSON.parse(raw) || {};
+  } catch (e) { ColWidths.map = {}; }
+}
+function saveColWidths() { Store.set('sl_colwidths', JSON.stringify(ColWidths.map)); }
+
+function colKey(tableId, index) { return tableId + '#' + index; }
+
+/** Applies saved widths and adds a drag handle to every header cell. */
+function makeTableResizable(table) {
+  if (!table) return;
+  const tableId = table.id || 'tbl';
+  const ths = table.querySelectorAll('thead th');
+  if (!ths.length) return;
+
+  table.classList.add('resizable-table');
+
+  ths.forEach((th, i) => {
+    const saved = ColWidths.map[colKey(tableId, i)];
+    if (saved) {
+      th.style.width = saved + 'px';
+      th.style.minWidth = saved + 'px';
+      th.style.maxWidth = saved + 'px';
+    }
+    if (th.querySelector('.col-resizer')) return;
+    const grip = document.createElement('span');
+    grip.className = 'col-resizer';
+    grip.title = 'Drag to resize this column';
+    th.appendChild(grip);
+
+    grip.addEventListener('mousedown', e => {
+      e.preventDefault();
+      e.stopPropagation();           // don't trigger the header's sort handler
+      ColWidths.drag = {
+        tableId: tableId, index: i, th: th,
+        startX: e.clientX,
+        startW: th.getBoundingClientRect().width
+      };
+      document.body.classList.add('col-resizing');
+    });
+    // double-click resets this column to automatic width
+    grip.addEventListener('dblclick', e => {
+      e.preventDefault(); e.stopPropagation();
+      delete ColWidths.map[colKey(tableId, i)];
+      th.style.width = th.style.minWidth = th.style.maxWidth = '';
+      saveColWidths();
+    });
+  });
+}
+
+function initColResize() {
+  loadColWidths();
+  window.addEventListener('mousemove', e => {
+    const d = ColWidths.drag;
+    if (!d) return;
+    const w = Math.max(48, Math.round(d.startW + (e.clientX - d.startX)));
+    d.th.style.width = w + 'px';
+    d.th.style.minWidth = w + 'px';
+    d.th.style.maxWidth = w + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    const d = ColWidths.drag;
+    if (!d) return;
+    const w = parseInt(d.th.style.width, 10);
+    if (w) { ColWidths.map[colKey(d.tableId, d.index)] = w; saveColWidths(); }
+    ColWidths.drag = null;
+    document.body.classList.remove('col-resizing');
+  });
+}
+
+/** Called after any table re-render so grips and widths stay in place. */
+function refreshResizableTables() {
+  ['perf-table', 'insights-table', 'quick-table', 'explore-table', 'drill-breakdown', 'drill-raw-table']
+    .forEach(id => makeTableResizable(document.getElementById(id)));
+}
+
+/* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v17';
+const BUILD_VERSION = 'v18';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -5342,6 +5512,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('behaviour', loadBehaviour);
   safeInit('modal-stack', initModalStack);
   safeInit('settings', initSettings);
+  safeInit('col-resize', initColResize);
   safeInit('snapshot', initSnapshot);
   safeInit('session', initSession);
   safeInit('period-selects', wirePeriodSelects);
