@@ -5140,7 +5140,8 @@ const THEME_DEFAULT = {
   zebra: true,
   gridLines: true,
   caretSize: 20,       // expand/collapse triangle size in px
-  rowPad: 4            // table row padding in px (row height)
+  rowPad: 4,           // table row padding in px (row height)
+  childRowScale: 70    // drill-down row height as a % of the parent row
 };
 
 const ACCENT_CHOICES = [
@@ -5187,6 +5188,9 @@ function applyTheme() {
   root.style.setProperty('--table-font-size', Theme.fontSize + 'px');
   root.style.setProperty('--caret-size', (Theme.caretSize || 20) + 'px');
   root.style.setProperty('--row-pad', (Theme.rowPad === undefined ? 4 : Theme.rowPad) + 'px');
+  // Drill-down rows sit shorter than their parent row (default 70%).
+  const crs = (Theme.childRowScale === undefined ? 70 : Theme.childRowScale) / 100;
+  root.style.setProperty('--child-row-scale', String(crs));
 
   const b = document.body;
   ['density-compact', 'density-normal', 'density-comfortable'].forEach(c => b.classList.remove(c));
@@ -5541,6 +5545,13 @@ function renderSettingsBody() {
       '<span class="drill-count" id="set-fontsize-val">' + Theme.fontSize + 'px</span>' +
     '</div>' +
     '<div class="settings-row">' +
+      '<label class="toolbar-label">Drill-down row height</label>' +
+      '<input type="range" id="set-childrow" min="40" max="100" step="5" value="' +
+        (Theme.childRowScale === undefined ? 70 : Theme.childRowScale) + '">' +
+      '<span class="drill-count" id="set-childrow-val">' +
+        (Theme.childRowScale === undefined ? 70 : Theme.childRowScale) + '% of the parent row</span>' +
+    '</div>' +
+    '<div class="settings-row">' +
       '<label class="toolbar-label">Expand triangle size</label>' +
       '<input type="range" id="set-caret" min="12" max="30" step="1" value="' + (Theme.caretSize || 20) + '">' +
       '<span class="drill-count" id="set-caret-val">' + (Theme.caretSize || 20) + 'px</span>' +
@@ -5574,6 +5585,12 @@ function renderSettingsBody() {
   fs.addEventListener('input', e => {
     Theme.fontSize = parseFloat(e.target.value);
     wrap.querySelector('#set-fontsize-val').textContent = Theme.fontSize + 'px';
+    saveTheme();
+  });
+  const crEl = wrap.querySelector('#set-childrow');
+  if (crEl) crEl.addEventListener('input', function (e) {
+    Theme.childRowScale = parseInt(e.target.value, 10);
+    wrap.querySelector('#set-childrow-val').textContent = Theme.childRowScale + '% of the parent row';
     saveTheme();
   });
   const cs = wrap.querySelector('#set-caret');
@@ -5748,7 +5765,7 @@ function refreshResizableTables() {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v19';
+const BUILD_VERSION = 'v20';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

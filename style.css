@@ -969,3 +969,33 @@ body.col-resizing .col-resizer { background: var(--rust); opacity: .8; }
 
 /* when a width is set, keep contents from forcing it wider */
 .resizable-table tbody td, .resizable-table tfoot td { overflow: hidden; text-overflow: ellipsis; }
+
+/* ============ DRILL-DOWN ROW HEIGHT ============ */
+/* Child rows sit shorter than the parent row - controlled by
+   Settings -> Look & Feel -> "Drill-down row height". */
+.perf-row.depth-1 > td,
+.perf-row.depth-2 > td,
+.perf-row.depth-3 > td,
+.perf-row.depth-4 > td,
+.perf-row.depth-5 > td,
+.perf-row.depth-6 > td,
+.perf-row.depth-7 > td {
+  padding-top: calc(var(--row-pad, 4px) * var(--child-row-scale, .7));
+  padding-bottom: calc(var(--row-pad, 4px) * var(--child-row-scale, .7));
+  line-height: 1.25;
+}
+/* the expand triangle shrinks with the row so it stays centred */
+.perf-row.depth-1 .perf-caret,
+.perf-row.depth-2 .perf-caret,
+.perf-row.depth-3 .perf-caret,
+.perf-row.depth-4 .perf-caret,
+.perf-row.depth-5 .perf-caret,
+.perf-row.depth-6 .perf-caret,
+.perf-row.depth-7 .perf-caret,
+.perf-row.depth-1 .perf-caret-spacer,
+.perf-row.depth-2 .perf-caret-spacer,
+.perf-row.depth-3 .perf-caret-spacer {
+  width: calc(var(--caret-size, 20px) * var(--child-row-scale, .7));
+  height: calc(var(--caret-size, 20px) * var(--child-row-scale, .7));
+  font-size: calc(var(--caret-size, 20px) * var(--child-row-scale, .7) * 0.62);
+}
