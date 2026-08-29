@@ -1768,7 +1768,7 @@ function updateRangeNotes() {
   }
   const er = effectiveRange(periodRange());
   const txt = er.from
-    ? 'Data: ' + er.text + '   \u00b7   ' + er.days + ' din   \u00b7   ' + er.rows.toLocaleString('en-IN') + ' rows'
+    ? 'Data: ' + er.text + '   \u00b7   ' + er.days + ' days   \u00b7   ' + er.rows.toLocaleString('en-IN') + ' rows'
     : er.text;
   notes.forEach(n => { n.textContent = txt; });
 }
@@ -3122,10 +3122,8 @@ function perfChildRowsHtml(path, depth, colCount) {
     return '<tr class="perf-child-note"><td colspan="' + colCount + '">No ' + escapeHtml(childDim) + ' data found here.</td></tr>';
   }
 
-  let html = '<tr class="perf-child-head depth-' + depth + '"><td colspan="' + colCount + '">' +
-    '<span class="pch-label">' + escapeHtml(childDim) + '-wise</span> \u00b7 ' +
-    shown.length + ' of ' + kids.length + ' shown' +
-    '</td></tr>';
+  // No section heading row — child rows follow the parent directly.
+  let html = '';
 
   shown.forEach(k => {
     const childPath = path.concat([{ field: childDim, value: k.key }]);
@@ -3747,8 +3745,7 @@ function snapshotPanelHtml() {
         '<button class="seg-btn active" data-view="map">Mind Map</button>' +
         '<button class="seg-btn" data-view="cards">Top Lists</button>' +
       '</div>' +
-      // Snapshot settings now live only in the main Settings panel.
-      '<button class="ghost-btn small" id="snapshot-goto-settings" title="Open snapshot settings">\u2699 Settings</button>' +
+
       '<div class="seg-control inline" id="snapshot-period-btns">' +
         '<button class="seg-btn active" data-p="thisweek">This week</button>' +
         '<button class="seg-btn" data-p="lastweek">Last week</button>' +
@@ -4544,14 +4541,8 @@ function renderDashboard() {
   const deadCount = A ? A.rows.filter(r => r.status === 'Dead stock').length : 0;
 
   const erD = effectiveRange(range);
-  document.getElementById('dashboard-kpis').innerHTML = [
-    ['Data range', erD.from ? erD.text : range.label, erD.from ? (range.label + ' · ' + erD.days + ' days') : 'no dated rows'],
-    ['Sold qty', fmtNum(soldQty), salesRecs.length ? salesRecs.length.toLocaleString('en-IN') + ' bill lines' : 'no sales data'],
-    ['Purchased qty', fmtNum(sumQty(purchaseRecs)), purchaseRecs.length ? purchaseRecs.length.toLocaleString('en-IN') + ' lines' : 'no purchase data'],
-    ['Stock on hand', fmtNum(stockQty), stockRecs.length ? distinctItems(stockRecs).toLocaleString('en-IN') + ' SKUs' : 'no stock data'],
-    ['Sell-through', fmtNum(sellThrough, 1) + '%', 'sold ÷ (sold + stock)'],
-    ['Non-moving items', deadCount.toLocaleString('en-IN'), 'no sale in 90+ days']
-  ].map(([label, value, sub]) => '<div class="kpi-card"><div class="kpi-label">' + label + '</div><div class="kpi-value">' + value + '</div><div class="kpi-sub">' + sub + '</div></div>').join('');
+  // KPI boxes removed from the Dashboard on request.
+
 
   renderTrendChart(salesRecs, purchaseRecs);
   renderTopChart('chart-topbrands', salesRecs, 'Brand', 'Qty sold');
@@ -5079,7 +5070,7 @@ const THEME_DEFAULT = {
   fontSize: 13,        // table font size px
   zebra: true,
   gridLines: true,
-  caretSize: 22        // expand/collapse button size in px
+  caretSize: 20        // expand/collapse triangle size in px
 };
 
 const ACCENT_CHOICES = [
@@ -5124,7 +5115,7 @@ function applyTheme() {
   root.style.setProperty('--font-display', f[2]);
   root.style.setProperty('--font-body', f[3]);
   root.style.setProperty('--table-font-size', Theme.fontSize + 'px');
-  root.style.setProperty('--caret-size', (Theme.caretSize || 22) + 'px');
+  root.style.setProperty('--caret-size', (Theme.caretSize || 20) + 'px');
 
   const b = document.body;
   ['density-compact', 'density-normal', 'density-comfortable'].forEach(c => b.classList.remove(c));
@@ -5273,9 +5264,9 @@ function renderSettingsBody() {
       '<span class="drill-count" id="set-fontsize-val">' + Theme.fontSize + 'px</span>' +
     '</div>' +
     '<div class="settings-row">' +
-      '<label class="toolbar-label">Expand button size</label>' +
-      '<input type="range" id="set-caret" min="16" max="34" step="1" value="' + (Theme.caretSize || 22) + '">' +
-      '<span class="drill-count" id="set-caret-val">' + (Theme.caretSize || 22) + 'px</span>' +
+      '<label class="toolbar-label">Expand triangle size</label>' +
+      '<input type="range" id="set-caret" min="12" max="30" step="1" value="' + (Theme.caretSize || 20) + '">' +
+      '<span class="drill-count" id="set-caret-val">' + (Theme.caretSize || 20) + 'px</span>' +
       '<span class="caret-demo"><button class="perf-caret">\u25B8</button><button class="perf-caret open">\u25B8</button></span>' +
     '</div>' +
     '<div class="settings-row">' +
@@ -5323,7 +5314,7 @@ function saveBehaviour() { Store.set('sl_behaviour', JSON.stringify(Behaviour));
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v16';
+const BUILD_VERSION = 'v17';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
