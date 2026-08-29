@@ -2227,6 +2227,9 @@ function initQuickReport() {
   document.getElementById('quick-dataset-select').addEventListener('change', () => {
     QuickReport.sourcePicked = true;
     QuickReport.order = []; QuickReport.filters = {};
+    // The measure list depends on the chosen file: a stock/OBS-CBS report has
+    // Opening/Closing Qty but no "Quantity", so it must be rebuilt here.
+    refreshQuickMeasures();
     renderQuickFieldList(); renderQuickReport();
   });
   document.getElementById('quick-measure').addEventListener('change', e => { QuickReport.measure = e.target.value; renderQuickReport(); });
@@ -2289,16 +2292,23 @@ function populateQuickSelects() {
   else if (datasetsOfType('stock').length) el.value = '__type:stock__';
   else if (App.datasets.length) el.value = App.datasets[0].id;
 
-  // measures
+  refreshQuickMeasures();
+}
+
+/** Measure dropdown ko current data source ke hisaab se banata hai. */
+function refreshQuickMeasures() {
   const mEl = document.getElementById('quick-measure');
-  if (mEl) {
-    const nums = currentQuickFields().filter(f => FIELD_KIND[f] === 'number');
-    const list = nums.length ? nums : ['Quantity'];
-    const pm = mEl.value;
-    mEl.innerHTML = list.map(f => '<option value="' + f + '">' + f + '</option>').join('');
-    if (list.includes(pm)) mEl.value = pm;
-    QuickReport.measure = mEl.value;
-  }
+  if (!mEl) return;
+  const nums = currentQuickFields().filter(f => FIELD_KIND[f] === 'number');
+  const list = nums.length ? nums : ['Quantity'];
+  const pm = mEl.value;
+  mEl.innerHTML = list.map(f => '<option value="' + f + '">' + f + '</option>').join('');
+  // Keep the previous measure if it still exists; otherwise prefer the
+  // closing balance for stock reports, else the first available number.
+  if (list.indexOf(pm) !== -1) mEl.value = pm;
+  else if (list.indexOf('Closing Qty') !== -1) mEl.value = 'Closing Qty';
+  else if (list.indexOf('Quantity') !== -1) mEl.value = 'Quantity';
+  QuickReport.measure = mEl.value;
 }
 
 function renderQuickFieldList() {
@@ -3533,7 +3543,20 @@ function renderDrillBreakdown(sales, purch, stock, days) {
         '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>' +
         '<td class="num">' + (r.daysCover === Infinity ? '∞' : fmtNum(r.daysCover, 0)) + '</td>' +
         '<td>' + (r.lastSale ? fmtDate(r.lastSale) : '—') + '</td>' +
-      '</tr>').join('') + '</tbody>';
+      '</tr>').join('') + '</tbody>' +
+    // column-wise totals, matching the other tables
+    (function () {
+      const tSold = rows.reduce(function (a, x) { return a + x.sold; }, 0);
+      const tStock = rows.reduce(function (a, x) { return a + x.stock; }, 0);
+      const tST = (tSold + tStock) > 0 ? (tSold / (tSold + tStock)) * 100 : 0;
+      return '<tfoot><tr>' +
+        '<td>Total · ' + rows.length.toLocaleString('en-IN') + ' ' + escapeHtml(dim) + '</td>' +
+        '<td class="num">' + fmtNum(tSold) + '</td>' +
+        '<td class="num">100%</td>' +
+        '<td class="num">' + fmtNum(tStock) + '</td>' +
+        '<td class="num">' + fmtNum(tST, 1) + '%</td>' +
+        '<td class="num"></td><td></td></tr></tfoot>';
+    })();
 
   document.querySelectorAll('#drill-breakdown thead th').forEach(th => th.addEventListener('click', () => {
     const k = th.dataset.key;
@@ -3721,10 +3744,11 @@ function snapshotPanelHtml() {
 
     '<div class="snapshot-controls">' +
       '<div class="seg-control inline" id="snapshot-view-tabs">' +
-        '<button class="seg-btn active" data-view="map">\uD83C\uDF3F Mind Map</button>' +
-        '<button class="seg-btn" data-view="cards">\uD83D\uDCCB Top Lists</button>' +
-        '<button class="seg-btn" data-view="settings">\u2699 Settings</button>' +
+        '<button class="seg-btn active" data-view="map">Mind Map</button>' +
+        '<button class="seg-btn" data-view="cards">Top Lists</button>' +
       '</div>' +
+      // Snapshot settings now live only in the main Settings panel.
+      '<button class="ghost-btn small" id="snapshot-goto-settings" title="Open snapshot settings">\u2699 Settings</button>' +
       '<div class="seg-control inline" id="snapshot-period-btns">' +
         '<button class="seg-btn active" data-p="thisweek">This week</button>' +
         '<button class="seg-btn" data-p="lastweek">Last week</button>' +
@@ -3763,9 +3787,6 @@ function snapshotPanelHtml() {
       '<div id="snapshot-grid" class="snap-grid"></div>' +
     '</div>' +
 
-    '<div id="snapshot-body-settings" class="snapshot-body" style="display:none;">' +
-      '<div id="snapshot-settings-body"></div>' +
-    '</div>' +
   '</div>';
 }
 
@@ -3806,6 +3827,16 @@ function initSnapshot() {
   });
 
   document.getElementById('btn-open-snapshot').addEventListener('click', () => openSnapshot());
+  const gotoSet = document.getElementById('snapshot-goto-settings');
+  if (gotoSet) gotoSet.addEventListener('click', function (e) {
+    e.stopPropagation();
+    settingsTab = 'snapshot';
+    openSettings();
+    document.querySelectorAll('#settings-tabs .seg-btn').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.stab === 'snapshot');
+    });
+    renderSettingsBody();
+  });
   initSnapMapControls();
 }
 
@@ -3813,8 +3844,7 @@ function showSnapshotView() {
   const v = Snapshot.view;
   document.getElementById('snapshot-body-map').style.display = v === 'map' ? '' : 'none';
   document.getElementById('snapshot-body-cards').style.display = v === 'cards' ? '' : 'none';
-  document.getElementById('snapshot-body-settings').style.display = v === 'settings' ? '' : 'none';
-  document.getElementById('snapshot-total').style.display = v === 'settings' ? 'none' : '';
+  document.getElementById('snapshot-total').style.display = '';
 }
 
 function openSnapshot() {
@@ -5048,7 +5078,8 @@ const THEME_DEFAULT = {
   density: 'normal',   // compact | normal | comfortable
   fontSize: 13,        // table font size px
   zebra: true,
-  gridLines: true
+  gridLines: true,
+  caretSize: 22        // expand/collapse button size in px
 };
 
 const ACCENT_CHOICES = [
@@ -5093,6 +5124,7 @@ function applyTheme() {
   root.style.setProperty('--font-display', f[2]);
   root.style.setProperty('--font-body', f[3]);
   root.style.setProperty('--table-font-size', Theme.fontSize + 'px');
+  root.style.setProperty('--caret-size', (Theme.caretSize || 22) + 'px');
 
   const b = document.body;
   ['density-compact', 'density-normal', 'density-comfortable'].forEach(c => b.classList.remove(c));
@@ -5241,6 +5273,12 @@ function renderSettingsBody() {
       '<span class="drill-count" id="set-fontsize-val">' + Theme.fontSize + 'px</span>' +
     '</div>' +
     '<div class="settings-row">' +
+      '<label class="toolbar-label">Expand button size</label>' +
+      '<input type="range" id="set-caret" min="16" max="34" step="1" value="' + (Theme.caretSize || 22) + '">' +
+      '<span class="drill-count" id="set-caret-val">' + (Theme.caretSize || 22) + 'px</span>' +
+      '<span class="caret-demo"><button class="perf-caret">\u25B8</button><button class="perf-caret open">\u25B8</button></span>' +
+    '</div>' +
+    '<div class="settings-row">' +
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-zebra"' + (Theme.zebra ? ' checked' : '') + '> Alternate row shading</label>' +
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-grid"' + (Theme.gridLines ? ' checked' : '') + '> Row separator lines</label>' +
     '</div>' +
@@ -5265,6 +5303,12 @@ function renderSettingsBody() {
     wrap.querySelector('#set-fontsize-val').textContent = Theme.fontSize + 'px';
     saveTheme();
   });
+  const cs = wrap.querySelector('#set-caret');
+  if (cs) cs.addEventListener('input', e => {
+    Theme.caretSize = parseInt(e.target.value, 10);
+    wrap.querySelector('#set-caret-val').textContent = Theme.caretSize + 'px';
+    saveTheme();
+  });
   wrap.querySelector('#set-zebra').addEventListener('change', e => { Theme.zebra = e.target.checked; saveTheme(); });
   wrap.querySelector('#set-grid').addEventListener('change', e => { Theme.gridLines = e.target.checked; saveTheme(); });
 }
@@ -5279,7 +5323,7 @@ function saveBehaviour() { Store.set('sl_behaviour', JSON.stringify(Behaviour));
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v15';
+const BUILD_VERSION = 'v16';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

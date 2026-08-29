@@ -777,13 +777,15 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 
 .perf-caret {
   all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; margin-right: 8px; border-radius: 4px;
-  border: 1px solid var(--line-strong); background: var(--paper-raised);
-  font-size: 9px; color: var(--rust); transition: transform .15s, background .12s;
+  width: var(--caret-size, 22px); height: var(--caret-size, 22px);
+  margin-right: 9px; border-radius: 5px;
+  border: 1.5px solid var(--ink); background: var(--ink); color: #fff;
+  font-size: calc(var(--caret-size, 22px) * 0.5); line-height: 1;
+  flex: 0 0 auto; transition: transform .15s, background .12s, border-color .12s;
 }
-.perf-caret:hover { background: #FFF3E4; border-color: var(--rust); }
-.perf-caret.open { transform: rotate(90deg); background: var(--rust); color: #fff; border-color: var(--rust); }
-.perf-caret-spacer { display: inline-block; width: 18px; margin-right: 8px; }
+.perf-caret:hover { background: var(--rust); border-color: var(--rust); }
+.perf-caret.open { transform: rotate(90deg); background: var(--rust); border-color: var(--rust); color: #fff; }
+.perf-caret-spacer { display: inline-block; width: var(--caret-size, 22px); margin-right: 9px; flex: 0 0 auto; }
 
 .perf-popout {
   all: unset; cursor: pointer; margin-left: 9px; opacity: 0;
@@ -859,3 +861,12 @@ body.no-gridlines .data-table thead th { border-right: none; }
 .legend-item .status-tag { min-width: 96px; flex: 0 0 auto; text-align: center; }
 .legend-item span:last-child { color: var(--text-soft); }
 @media (max-width: 900px) { .legend-body { grid-template-columns: 1fr; } }
+
+
+/* expand-button size preview inside Settings */
+.caret-demo { display: inline-flex; align-items: center; gap: 8px; margin-left: 6px; }
+.caret-demo .perf-caret { cursor: default; }
+
+/* GIF-style dense grid: keep the first column tight and aligned */
+.data-table td.perf-name { display: flex; align-items: center; }
+.data-table td.perf-name .perf-key { overflow: hidden; text-overflow: ellipsis; }
