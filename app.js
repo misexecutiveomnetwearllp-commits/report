@@ -735,7 +735,7 @@ function refreshAfterDataChange() {
   clearLookups();
   clearAnchorCache();
   // dusri file aate hi connections khud detect kar lete hain
-  if (App.datasets.length > 1 && !App.relationships.length) autoDetectRelationships(true);
+  if (Prefs.autoDetectLinks !== false && App.datasets.length > 1 && !App.relationships.length) autoDetectRelationships(true);
   rescoreRelationships();
   renderSidebarDatasets();
   renderLoadedTable();
@@ -2947,7 +2947,7 @@ function renderPerformance() {
     (sk === k ? '<span class="sort-arrow">' + (sd === 1 ? '▲' : '▼') + '</span>' : '') + '</th>').join('') + '</tr></thead>';
 
   const bodyRows = [];
-  rows.slice(0, 800).forEach(r => {
+  rows.slice(0, Prefs.perfLimit || 800).forEach(r => {
     bodyRows.push(perfRowHtml(r, dim, 0, [{ field: dim, value: r.key }]));
     // Row khuli ho to uske andar ki details usi table mein, neeche.
     if (PerfState.open[r.key]) {
@@ -3068,13 +3068,13 @@ function perfMetricCells(r) {
   return out;
 }
 
-/** Open state for a row. The first child of any expanded parent opens by
- *  default, so the top item shows its full detail straight away; every other
- *  row stays closed until clicked. Once the user clicks, their choice wins. */
+/** Open state for a row. Nothing opens on its own: a row is open only if the
+ *  user clicked it. The "open the top item too" behaviour is optional and off
+ *  by default (Settings -> 02 Performance). */
 function perfIsOpen(id, isFirstChild) {
   const v = PerfState.open[id];
   if (v !== undefined) return v;
-  return !!isFirstChild;
+  return Behaviour.autoOpenFirst ? !!isFirstChild : false;
 }
 
 function perfRowHtml(r, dim, depth, path, isFirstChild) {
@@ -4619,6 +4619,22 @@ function grainSort(key, grain) {
   return parseInt(yr, 10) * 12 + MONTH_LABELS.indexOf(mon);
 }
 
+/** Chart heading me batata hai ki grouping kya hai aur kaunsi date se kaunsi tak. */
+function updateTrendHeading(labels) {
+  const el = document.getElementById('trend-heading');
+  if (!el) return;
+  const g = DashState.grain;
+  const word = g === 'day' ? 'day' : (g === 'year' ? 'year' : 'month');
+  if (!labels || !labels.length) {
+    el.innerHTML = 'Sales vs purchase trend <span class="h3-note">(no dated rows)</span>';
+    return;
+  }
+  el.innerHTML = 'Sales vs purchase trend ' +
+    '<span class="h3-note">by ' + word + ' \u00b7 ' +
+    escapeHtml(labels[0]) + ' \u2192 ' + escapeHtml(labels[labels.length - 1]) +
+    ' \u00b7 ' + labels.length + ' ' + word + (labels.length === 1 ? '' : 's') + '</span>';
+}
+
 function renderTrendChart(salesRecs, purchaseRecs) {
   destroyChart('chart-trend');
   const grain = DashState.grain;
@@ -4634,6 +4650,7 @@ function renderTrendChart(salesRecs, purchaseRecs) {
   const salesM = byGrain(salesRecs), purchM = byGrain(purchaseRecs);
   const allKeys = [...new Set([...salesM.keys(), ...purchM.keys()])]
     .sort((a, b) => grainSort(a, grain) - grainSort(b, grain));
+  updateTrendHeading(allKeys);
 
   const ctx = document.getElementById('chart-trend').getContext('2d');
   dashCharts['chart-trend'] = makeChart(ctx, {
@@ -5200,9 +5217,14 @@ function ensureSettingsDom() {
           '<div class="drill-subtitle">Appearance, snapshot and behaviour - all in one place</div>' +
         '</div><button id="settings-close" class="drill-close" title="Close (Esc)">&times;</button></div>' +
         '<div class="seg-control" id="settings-tabs" style="margin:14px 0 12px;">' +
-          '<button class="seg-btn active" data-stab="look">\uD83C\uDFA8 Look &amp; Feel</button>' +
-          '<button class="seg-btn" data-stab="snapshot">\uD83D\uDCCC Snapshot</button>' +
-          '<button class="seg-btn" data-stab="behaviour">\u2699 Behaviour</button>' +
+          '<button class="seg-btn active" data-stab="look">Look &amp; Feel</button>' +
+          '<button class="seg-btn" data-stab="dashboard">01 Dashboard</button>' +
+          '<button class="seg-btn" data-stab="performance">02 Performance</button>' +
+          '<button class="seg-btn" data-stab="reorder">03 Reorder</button>' +
+          '<button class="seg-btn" data-stab="pivot">04 Pivot</button>' +
+          '<button class="seg-btn" data-stab="explore">05 Explore</button>' +
+          '<button class="seg-btn" data-stab="import">06 Import</button>' +
+          '<button class="seg-btn" data-stab="snapshot">Snapshot</button>' +
         '</div>' +
         '<div id="settings-body" class="settings-body"></div>' +
       '</div>';
@@ -5256,18 +5278,53 @@ function renderSettingsBody() {
     renderSnapshotSettings('settings-snap-body');
     return;
   }
-  if (settingsTab === 'behaviour') {
+  // ---- 01 Dashboard ----
+  if (settingsTab === 'dashboard') {
     wrap.innerHTML =
-      '<h3 class="snap-set-title">Windows</h3>' +
-      '<label class="toolbar-checkbox"><input type="checkbox" id="set-autosnap"' +
-        (Snapshot.config.autoShow ? ' checked' : '') + '> Open the Top Items Snapshot automatically after data is loaded</label>' +
-      '<p class="drill-subtitle" style="margin-top:8px;">When several windows are open, <strong>Esc</strong> closes them in reverse order - ' +
-      'the most recently opened one closes first.</p>' +
-      '<h3 class="snap-set-title">Product Performance</h3>' +
+      '<h3 class="snap-set-title">Default trend grouping</h3>' +
+      '<p class="drill-subtitle">Which grouping the Dashboard trend chart opens with.</p>' +
+      '<div class="settings-row">' +
+        '<select id="set-dash-grain" class="select">' +
+          ['day', 'month', 'year'].map(function (g) {
+            return '<option value="' + g + '"' + ((Prefs.dashGrain || 'month') === g ? ' selected' : '') + '>' +
+              g.charAt(0).toUpperCase() + g.slice(1) + ' wise</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<h3 class="snap-set-title">Default sales window</h3>' +
+      '<div class="settings-row"><select id="set-dash-window" class="select">' +
+        PERIOD_CHOICES.map(function (o) {
+          return '<option value="' + o[0] + '"' + ((Prefs.defaultPeriod || 'all') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('') +
+      '</select></div>' +
+      '<p class="drill-subtitle" style="margin-top:10px;">The trend chart heading always shows the exact dates it covers, so Day / Month / Year is never ambiguous.</p>';
+
+    wrap.querySelector('#set-dash-grain').addEventListener('change', function (e) {
+      Prefs.dashGrain = e.target.value; savePrefs();
+      DashState.grain = Prefs.dashGrain;
+      document.querySelectorAll('#dash-grain .seg-btn').forEach(function (b) {
+        b.classList.toggle('active', b.dataset.grain === Prefs.dashGrain);
+      });
+      renderDashboard();
+    });
+    wrap.querySelector('#set-dash-window').addEventListener('change', function (e) {
+      Prefs.defaultPeriod = e.target.value; savePrefs();
+    });
+    return;
+  }
+
+  // ---- 02 Product Performance ----
+  if (settingsTab === 'performance') {
+    wrap.innerHTML =
+      '<h3 class="snap-set-title">How a row opens</h3>' +
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-inline"' +
         (Behaviour.inlineExpand ? ' checked' : '') + '> Clicking a row opens its details inside the same table ' +
         '(turn this off to open a separate window instead)</label>' +
-      '<h3 class="snap-set-title">Expand order (Product Performance)</h3>' +
+      '<label class="toolbar-checkbox" style="margin-top:8px;"><input type="checkbox" id="set-autofirst"' +
+        (Behaviour.autoOpenFirst ? ' checked' : '') + '> Also open the top item automatically ' +
+        '(off by default \u2014 rows open only when you click them)</label>' +
+
+      '<h3 class="snap-set-title">Expand order</h3>' +
       '<p class="drill-subtitle">When you open a row, this is the order the levels open in \u2014 same idea as the mind map levels.</p>' +
       '<div class="snap-levels">' +
         PERF_CHAIN_CHOICES.map(function (_, i) {
@@ -5281,38 +5338,176 @@ function renderSettingsBody() {
             '</select></div>';
         }).join('') +
       '</div>' +
-      '<label class="toolbar-checkbox" style="margin-top:10px;"><input type="checkbox" id="set-autofirst"' +
-        (Behaviour.autoOpenFirst ? ' checked' : '') + '> Opening a row also opens its top item, so full details show at once</label>' +
-      '<div style="margin-top:10px;"><button class="ghost-btn small" id="set-chain-save">Save expand order</button></div>' +
+      '<div style="margin-top:10px;"><button class="ghost-btn small primary" id="set-chain-save">Save expand order</button></div>' +
 
+      '<h3 class="snap-set-title">Default grouping</h3>' +
+      '<div class="settings-row"><select id="set-perf-group" class="select">' +
+        PERF_CHAIN_CHOICES.map(function (d) {
+          return '<option value="' + d + '"' + ((Prefs.perfGroupBy || 'Article No') === d ? ' selected' : '') + '>' + d + '</option>';
+        }).join('') +
+      '</select>' +
+      '<label class="toolbar-label">Rows shown</label>' +
+      '<input type="number" id="set-perf-limit" class="text-input narrow" min="100" max="5000" step="100" value="' + (Prefs.perfLimit || 800) + '"></div>';
+
+    wrap.querySelector('#set-inline').addEventListener('change', function (e) {
+      Behaviour.inlineExpand = e.target.checked; saveBehaviour(); renderPerformance();
+    });
+    wrap.querySelector('#set-autofirst').addEventListener('change', function (e) {
+      Behaviour.autoOpenFirst = e.target.checked; saveBehaviour();
+    });
+    wrap.querySelector('#set-chain-save').addEventListener('click', function () {
+      const picked = [...wrap.querySelectorAll('.perf-chain-level')].map(function (x) { return x.value; }).filter(Boolean);
+      Behaviour.perfChain = picked.filter(function (v, i) { return picked.indexOf(v) === i; });
+      if (!Behaviour.perfChain.length) Behaviour.perfChain = PERF_CHAIN_DEFAULT.slice();
+      saveBehaviour(); PerfState.open = {}; renderPerformance();
+      toast('Expand order saved.');
+    });
+    wrap.querySelector('#set-perf-group').addEventListener('change', function (e) {
+      Prefs.perfGroupBy = e.target.value; savePrefs();
+      const g = document.getElementById('perf-groupby');
+      if (g) { g.value = Prefs.perfGroupBy; PerfState.open = {}; renderPerformance(); }
+    });
+    wrap.querySelector('#set-perf-limit').addEventListener('change', function (e) {
+      Prefs.perfLimit = Math.max(100, Math.min(5000, parseInt(e.target.value, 10) || 800));
+      savePrefs(); renderPerformance();
+    });
+    return;
+  }
+
+  // ---- 03 Reorder Planner ----
+  if (settingsTab === 'reorder') {
+    wrap.innerHTML =
+      '<h3 class="snap-set-title">Defaults</h3>' +
+      '<div class="settings-row">' +
+        '<label class="toolbar-label">Group by</label>' +
+        '<select id="set-reo-group" class="select">' +
+          PERF_CHAIN_CHOICES.map(function (d) {
+            return '<option value="' + d + '"' + ((Prefs.reorderGroupBy || 'Article No') === d ? ' selected' : '') + '>' + d + '</option>';
+          }).join('') +
+        '</select>' +
+        '<label class="toolbar-label">Target cover</label>' +
+        '<input type="number" id="set-reo-days" class="text-input narrow" min="1" max="365" value="' + (Prefs.targetDays || 30) + '"> days' +
+      '</div>' +
+      '<label class="toolbar-checkbox" style="margin-top:10px;"><input type="checkbox" id="set-reo-flagged"' +
+        (Prefs.reorderOnlyFlagged !== false ? ' checked' : '') + '> Show only items that need reordering</label>';
+
+    wrap.querySelector('#set-reo-group').addEventListener('change', function (e) {
+      Prefs.reorderGroupBy = e.target.value; savePrefs();
+      const g = document.getElementById('insights-groupby');
+      if (g) { g.value = Prefs.reorderGroupBy; renderInsights(); }
+    });
+    wrap.querySelector('#set-reo-days').addEventListener('change', function (e) {
+      Prefs.targetDays = Math.max(1, Math.min(365, parseInt(e.target.value, 10) || 30));
+      savePrefs();
+      const d = document.getElementById('insights-target-days');
+      if (d) { d.value = Prefs.targetDays; renderInsights(); renderPerformance(); }
+    });
+    wrap.querySelector('#set-reo-flagged').addEventListener('change', function (e) {
+      Prefs.reorderOnlyFlagged = e.target.checked; savePrefs();
+      const c = document.getElementById('insights-only-flagged');
+      if (c) { c.checked = Prefs.reorderOnlyFlagged; renderInsights(); }
+    });
+    return;
+  }
+
+  // ---- 04 Pivot Builder ----
+  if (settingsTab === 'pivot') {
+    wrap.innerHTML =
+      '<h3 class="snap-set-title">Defaults</h3>' +
+      '<div class="settings-row">' +
+        '<label class="toolbar-label">Opens in</label>' +
+        '<select id="set-pivot-mode" class="select">' +
+          '<option value="quick"' + ((Prefs.pivotMode || 'quick') === 'quick' ? ' selected' : '') + '>Quick Report (tick columns)</option>' +
+          '<option value="drag"' + (Prefs.pivotMode === 'drag' ? ' selected' : '') + '>Drag &amp; Drop Builder</option>' +
+        '</select>' +
+        '<label class="toolbar-label">Date grouping</label>' +
+        '<select id="set-pivot-grain" class="select">' +
+          [['none', 'None'], ['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['quarter', 'Quarter'], ['year', 'Year']].map(function (o) {
+            return '<option value="' + o[0] + '"' + ((Prefs.quickGrain || 'none') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="settings-row">' +
+        '<label class="toolbar-label">Sort</label>' +
+        '<select id="set-pivot-sort" class="select">' +
+          '<option value="desc"' + (Prefs.quickDesc !== false ? ' selected' : '') + '>Descending (largest first)</option>' +
+          '<option value="asc"' + (Prefs.quickDesc === false ? ' selected' : '') + '>Ascending</option>' +
+        '</select>' +
+      '</div>';
+
+    wrap.querySelector('#set-pivot-mode').addEventListener('change', function (e) {
+      Prefs.pivotMode = e.target.value; savePrefs();
+    });
+    wrap.querySelector('#set-pivot-grain').addEventListener('change', function (e) {
+      Prefs.quickGrain = e.target.value; savePrefs();
+      QuickReport.dateGrain = Prefs.quickGrain;
+      const g = document.getElementById('quick-date-grain');
+      if (g) { g.value = Prefs.quickGrain; renderQuickReport(); }
+    });
+    wrap.querySelector('#set-pivot-sort').addEventListener('change', function (e) {
+      Prefs.quickDesc = e.target.value === 'desc'; savePrefs();
+      QuickReport.desc = Prefs.quickDesc;
+      const g = document.getElementById('quick-sort');
+      if (g) { g.value = e.target.value; renderQuickReport(); }
+    });
+    return;
+  }
+
+  // ---- 05 Explore Rows ----
+  if (settingsTab === 'explore') {
+    wrap.innerHTML =
+      '<h3 class="snap-set-title">Rows per page</h3>' +
+      '<div class="settings-row">' +
+        '<select id="set-explore-page" class="select">' +
+          [50, 100, 200, 500, 1000].map(function (n) {
+            return '<option value="' + n + '"' + ((Prefs.explorePageSize || 100) === n ? ' selected' : '') + '>' + n + ' rows</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<p class="drill-subtitle" style="margin-top:10px;">Larger pages mean less clicking but a slower first draw on very big files.</p>';
+
+    wrap.querySelector('#set-explore-page').addEventListener('change', function (e) {
+      Prefs.explorePageSize = parseInt(e.target.value, 10) || 100;
+      savePrefs();
+      ExploreState.pageSize = Prefs.explorePageSize;
+      ExploreState.page = 1;
+      renderExplore();
+    });
+    return;
+  }
+
+  // ---- 06 Import Data ----
+  if (settingsTab === 'import') {
+    wrap.innerHTML =
+      '<h3 class="snap-set-title">After a file is loaded</h3>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="set-autosnap"' +
+        (Snapshot.config.autoShow ? ' checked' : '') + '> Open the Top Items Snapshot automatically</label>' +
+      '<label class="toolbar-checkbox" style="margin-top:8px;"><input type="checkbox" id="set-autolink"' +
+        (Prefs.autoDetectLinks !== false ? ' checked' : '') + '> Detect links between files automatically</label>' +
+      '<h3 class="snap-set-title">Saved data</h3>' +
+      '<p class="drill-subtitle">Loaded files stay in this browser until you remove them on the Import tab.</p>' +
+      '<button class="ghost-btn small" id="set-clear-data">Remove all loaded files</button>' +
       '<h3 class="snap-set-title">Reset</h3>' +
       '<button class="ghost-btn small" id="set-reset-theme">Reset Look &amp; Feel to defaults</button> ' +
       '<button class="ghost-btn small" id="set-reset-all">Clear all settings</button>' +
       '<p class="drill-subtitle" style="margin-top:10px;">Build ' + BUILD_VERSION + '</p>';
 
-    wrap.querySelector('#set-autosnap').addEventListener('change', e => {
+    wrap.querySelector('#set-autosnap').addEventListener('change', function (e) {
       Snapshot.config.autoShow = e.target.checked; saveSnapshotConfigLocal();
     });
-    wrap.querySelector('#set-inline').addEventListener('change', e => {
-      Behaviour.inlineExpand = e.target.checked; saveBehaviour(); renderPerformance();
+    wrap.querySelector('#set-autolink').addEventListener('change', function (e) {
+      Prefs.autoDetectLinks = e.target.checked; savePrefs();
     });
-    wrap.querySelector('#set-autofirst').addEventListener('change', e => {
-      Behaviour.autoOpenFirst = e.target.checked; saveBehaviour();
+    wrap.querySelector('#set-clear-data').addEventListener('click', function () {
+      App.datasets.slice().forEach(function (d) { removeDataset(d.id); });
+      toast('All loaded files removed.');
     });
-    wrap.querySelector('#set-chain-save').addEventListener('click', () => {
-      const picked = [...wrap.querySelectorAll('.perf-chain-level')].map(x => x.value).filter(Boolean);
-      Behaviour.perfChain = picked.filter((v, i) => picked.indexOf(v) === i);
-      if (!Behaviour.perfChain.length) Behaviour.perfChain = PERF_CHAIN_DEFAULT.slice();
-      saveBehaviour();
-      PerfState.open = {};
-      renderPerformance();
-      toast('Expand order saved.');
-    });
-    wrap.querySelector('#set-reset-theme').addEventListener('click', () => {
+    wrap.querySelector('#set-reset-theme').addEventListener('click', function () {
       Object.assign(Theme, THEME_DEFAULT); saveTheme(); renderSettingsBody(); toast('Look & Feel has been reset.');
     });
-    wrap.querySelector('#set-reset-all').addEventListener('click', () => {
+    wrap.querySelector('#set-reset-all').addEventListener('click', function () {
       Store.remove('sl_theme'); Store.remove('sl_snapshot_config'); Store.remove('sl_behaviour');
+      Store.remove('sl_prefs'); Store.remove('sl_colwidths');
       Object.assign(Theme, THEME_DEFAULT); saveTheme();
       toast('All settings cleared - please refresh the page.');
     });
@@ -5391,8 +5586,77 @@ function renderSettingsBody() {
   wrap.querySelector('#set-grid').addEventListener('change', e => { Theme.gridLines = e.target.checked; saveTheme(); });
 }
 
+/* ---- Per-tab preferences (Settings panel, sections 01-06) ---- */
+const PERIOD_CHOICES = [
+  ['all', 'All data'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
+  ['180', 'Last 180 days'], ['365', 'Last 365 days'],
+  ['thismonth', 'Latest month'], ['thisyear', 'Latest year']
+];
+
+const PREFS_DEFAULT = {
+  dashGrain: 'month',
+  defaultPeriod: 'all',
+  perfGroupBy: 'Article No',
+  perfLimit: 800,
+  reorderGroupBy: 'Article No',
+  targetDays: 30,
+  reorderOnlyFlagged: true,
+  pivotMode: 'quick',
+  quickGrain: 'none',
+  quickDesc: true,
+  explorePageSize: 100,
+  autoDetectLinks: true
+};
+
+const Prefs = Object.assign({}, PREFS_DEFAULT);
+
+function loadPrefs() {
+  try {
+    const raw = Store.get('sl_prefs');
+    if (raw) Object.assign(Prefs, PREFS_DEFAULT, JSON.parse(raw));
+  } catch (e) {}
+}
+function savePrefs() { Store.set('sl_prefs', JSON.stringify(Prefs)); }
+
+/** Saved defaults ko controls par lagata hai (page khulte hi). */
+function applyPrefsToControls() {
+  DashState.grain = Prefs.dashGrain || 'month';
+  document.querySelectorAll('#dash-grain .seg-btn').forEach(function (b) {
+    b.classList.toggle('active', b.dataset.grain === DashState.grain);
+  });
+
+  if (Prefs.defaultPeriod && Prefs.defaultPeriod !== 'all') {
+    App.period.mode = Prefs.defaultPeriod;
+    document.querySelectorAll('.period-select').forEach(function (sl) { sl.value = Prefs.defaultPeriod; });
+  }
+
+  const pg = document.getElementById('perf-groupby');
+  if (pg && Prefs.perfGroupBy) pg.value = Prefs.perfGroupBy;
+
+  const rg = document.getElementById('insights-groupby');
+  if (rg && Prefs.reorderGroupBy) rg.value = Prefs.reorderGroupBy;
+  const td = document.getElementById('insights-target-days');
+  if (td && Prefs.targetDays) td.value = Prefs.targetDays;
+  const of = document.getElementById('insights-only-flagged');
+  if (of) of.checked = Prefs.reorderOnlyFlagged !== false;
+
+  QuickReport.dateGrain = Prefs.quickGrain || 'none';
+  const qg = document.getElementById('quick-date-grain');
+  if (qg) qg.value = QuickReport.dateGrain;
+  QuickReport.desc = Prefs.quickDesc !== false;
+  const qs = document.getElementById('quick-sort');
+  if (qs) qs.value = QuickReport.desc ? 'desc' : 'asc';
+
+  ExploreState.pageSize = Prefs.explorePageSize || 100;
+
+  if (Prefs.pivotMode === 'drag') {
+    const b = document.querySelector('#pivot-mode .seg-btn[data-mode="drag"]');
+    if (b) b.click();
+  }
+}
+
 /* Behaviour settings */
-const Behaviour = { inlineExpand: true, perfChain: PERF_CHAIN_DEFAULT.slice(), autoOpenFirst: true };
+const Behaviour = { inlineExpand: true, perfChain: PERF_CHAIN_DEFAULT.slice(), autoOpenFirst: false };
 function loadBehaviour() {
   try { const raw = Store.get('sl_behaviour'); if (raw) Object.assign(Behaviour, JSON.parse(raw)); } catch (e) {}
 }
@@ -5484,7 +5748,7 @@ function refreshResizableTables() {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v18';
+const BUILD_VERSION = 'v19';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -5509,10 +5773,12 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('dashboard', initDashboard);
   safeInit('relations', initRelations);
   safeInit('drill', initDrill);
+  safeInit('prefs', loadPrefs);
   safeInit('behaviour', loadBehaviour);
   safeInit('modal-stack', initModalStack);
   safeInit('settings', initSettings);
   safeInit('col-resize', initColResize);
+  safeInit('prefs-apply', applyPrefsToControls);
   safeInit('snapshot', initSnapshot);
   safeInit('session', initSession);
   safeInit('period-selects', wirePeriodSelects);

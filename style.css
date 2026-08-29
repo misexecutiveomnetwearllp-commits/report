@@ -26,7 +26,7 @@
   --xl-foot-text: #241C14;
   /* nesting levels in Product Performance */
   --lvl0-bg: #FFFFFF;
-  --lvl0-open: #FBEFE0;
+  --lvl0-open: #FDF3E7;   /* light fill for an opened row */
   --lvl1-bg: #F1F5F9;
   --lvl2-bg: #F2F7F1;
   --lvl3-bg: #FAF3F7;
@@ -39,7 +39,7 @@
   --lvl-2: #F7F4EC;
   --lvl-3: #F3F1F7;
   --lvl-4: #FAF6F2;
-  --lvl-open: #FBE7D2;
+  --lvl-open: #FDF3E7;
   --lvl-rail-1: #1F6F5C;
   --lvl-rail-2: #B9862F;
   --lvl-rail-3: #4A6FA5;
@@ -813,7 +813,13 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 
 .perf-row:hover > td { background: var(--xl-hover) !important; }
 .perf-row.is-open > td { font-weight: 600; }
-.perf-row.depth-0.is-open > td { background: var(--lvl0-open); }
+/* An opened row is filled right across, in a light tint, at every depth. */
+.perf-row.is-open > td,
+.perf-row.depth-0.is-open > td,
+.perf-row.depth-1.is-open > td,
+.perf-row.depth-2.is-open > td,
+.perf-row.depth-3.is-open > td { background: var(--lvl0-open) !important; }
+.perf-row.is-open:hover > td { background: #FBE9D6 !important; }
 
 .perf-row.depth-1 .perf-key,
 .perf-row.depth-2 .perf-key,
@@ -934,7 +940,7 @@ body.no-gridlines .data-table thead th { border-right: none; }
 #perf-table tbody tr.perf-row.depth-4 > td { background: var(--lvl-4); }
 
 /* the row you opened stays highlighted so you can see what you are inside of */
-#perf-table tbody tr.perf-row.is-open > td { background: var(--lvl-open); font-weight: 600; }
+#perf-table tbody tr.perf-row.is-open > td { background: var(--lvl-open) !important; font-weight: 600; }
 
 /* left rail marks the nesting depth in the accent colour */
 #perf-table tbody tr.perf-row.depth-1 > td:first-child { box-shadow: inset 3px 0 0 var(--lvl-rail-1); }
