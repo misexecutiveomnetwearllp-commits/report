@@ -14,6 +14,16 @@
   --text-on-ink: #EDE6D6;
   --text-on-ink-soft: #9CA9B4;
   --radius: 8px;
+  /* Excel-like grid palette */
+  --xl-border: #D8D3C6;
+  --xl-border-strong: #B9B2A1;
+  --xl-head-bg: #EDE9DD;
+  --xl-head-hover: #E3DECF;
+  --xl-head-text: #241C14;
+  --xl-zebra: #FAF8F2;
+  --xl-hover: #FBE7D2;
+  --xl-foot-bg: #EDE9DD;
+  --xl-foot-text: #241C14;
   --font-display: 'Zilla Slab', Georgia, serif;
   --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', monospace;
@@ -277,44 +287,60 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 /* ---- data table (explore / pivot / insights) ---- */
 .table-scroll {
   max-height: 64vh; overflow: auto;
-  border: 1px solid var(--line-strong); border-radius: var(--radius);
-  background: var(--paper-raised);
-  box-shadow: inset 0 -14px 14px -14px rgba(22,33,44,.12);
+  border: 1px solid var(--xl-border-strong);
+  border-radius: 4px;
+  background: #fff;
 }
-.data-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
 
-/* --- header: taller, clearer, doesn't blend into rows --- */
+/* ===== Excel-style grid ===== */
+.data-table {
+  border-collapse: separate; border-spacing: 0; width: 100%;
+  font-size: var(--table-font-size, 13px);
+  background: #fff;
+}
+
+/* header: grey band with crisp cell borders, like a spreadsheet */
 .data-table thead th {
   position: sticky; top: 0; z-index: 3;
-  background: var(--ink); color: var(--text-on-ink);
-  padding: 12px 14px; text-align: left; font-weight: 600; white-space: nowrap;
+  background: var(--xl-head-bg); color: var(--xl-head-text);
+  padding: 9px 12px; text-align: left; font-weight: 600; white-space: nowrap;
   cursor: pointer; user-select: none;
-  font-family: var(--font-body); font-size: 11.5px;
-  letter-spacing: .5px; text-transform: uppercase;
-  border-bottom: 2px solid var(--rust);
+  font-family: var(--font-body); font-size: 12px; letter-spacing: .2px;
+  border-right: 1px solid var(--xl-border-strong);
+  border-bottom: 2px solid var(--xl-border-strong);
 }
-.data-table thead th:hover { background: var(--ink-soft); }
-.data-table thead th .sort-arrow { opacity: .7; margin-left: 5px; font-size: 10px; }
+.data-table thead th:last-child { border-right: none; }
+.data-table thead th:hover { background: var(--xl-head-hover); }
+.data-table thead th .sort-arrow { opacity: .85; margin-left: 5px; font-size: 10px; }
 
-/* --- rows: more air, softer separators, strong hover --- */
+/* cells: thin gridlines on all sides */
 .data-table tbody td {
-  padding: 10px 14px; border-bottom: 1px solid var(--line);
-  white-space: nowrap; font-family: var(--font-mono); font-size: 12.5px;
-  color: var(--text);
+  padding: 7px 12px;
+  border-right: 1px solid var(--xl-border);
+  border-bottom: 1px solid var(--xl-border);
+  white-space: nowrap; font-family: var(--font-body); font-size: inherit;
+  color: var(--text); background: #fff;
 }
-.data-table tbody tr:nth-child(even) > td { background: #FCF9F0; }
-.data-table tbody tr:hover > td { background: #FBE7D2; }
+.data-table tbody td:last-child { border-right: none; }
 
-/* focus row: jis row par ho wo poori tarah highlight ho */
+/* numbers right-aligned + monospaced, exactly like Excel */
+.data-table td.num, .data-table th.num { text-align: right; }
+.data-table td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.data-table tbody tr:nth-child(even) > td { background: var(--xl-zebra); }
+.data-table tbody tr:hover > td { background: var(--xl-hover); }
 .data-table tbody tr:hover > td:first-child { box-shadow: inset 3px 0 0 var(--rust); }
 
-.data-table td.num, .data-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* totals row pinned at the bottom */
 .data-table tfoot td {
   position: sticky; bottom: 0; z-index: 2;
-  background: var(--ink); color: var(--text-on-ink);
-  font-weight: 700; border-top: 2px solid var(--rust);
-  font-family: var(--font-mono); padding: 11px 14px; font-size: 12.5px;
+  background: var(--xl-foot-bg); color: var(--xl-foot-text);
+  font-weight: 700; border-top: 2px solid var(--xl-border-strong);
+  border-right: 1px solid var(--xl-border-strong);
+  font-family: var(--font-body); padding: 9px 12px; font-size: inherit;
 }
+.data-table tfoot td:last-child { border-right: none; }
+.data-table tfoot td.num { font-family: var(--font-mono); text-align: right; }
 .data-table .row-flag { color: var(--rust); font-weight: 700; }
 
 .pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12.5px; color: var(--text-soft); }
@@ -805,9 +831,9 @@ body.density-compact .data-table tbody td { padding: 6px 11px; }
 body.density-compact .data-table thead th { padding: 8px 11px; }
 body.density-comfortable .data-table tbody td { padding: 14px 16px; }
 body.density-comfortable .data-table thead th { padding: 15px 16px; }
-body.no-zebra .data-table tbody tr:nth-child(even) > td { background: transparent; }
-body.no-gridlines .data-table tbody td { border-bottom: none; }
-body.no-gridlines .data-table tbody tr:nth-child(even) > td { background: #FCF9F0; }
+body.no-zebra .data-table tbody tr:nth-child(even) > td { background: #fff; }
+body.no-gridlines .data-table tbody td { border-right: none; border-bottom: 1px solid var(--xl-zebra); }
+body.no-gridlines .data-table thead th { border-right: none; }
 
 /* ============ OBS / CBS columns + legend ============ */
 .data-table .obs-col { color: #2C4E7A; }

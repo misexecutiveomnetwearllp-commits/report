@@ -41,11 +41,8 @@
       <button class="tab-btn" data-tab="pivot">
         <span class="tab-no">05</span> Pivot Builder
       </button>
-      <button class="tab-btn" data-tab="relations">
-        <span class="tab-no">06</span> Connections
-      </button>
       <button class="tab-btn" data-tab="explore">
-        <span class="tab-no">07</span> Explore Rows
+        <span class="tab-no">06</span> Explore Rows
       </button>
     </nav>
 
@@ -113,15 +110,15 @@
             <span id="gs-status" class="connect-status"></span>
           </div>
           <details class="connect-help">
-            <summary>Pehli baar setup kaise karein?</summary>
+            <summary>First-time setup</summary>
             <ol>
-              <li>Apni Google Sheet kholo → <strong>Extensions → Apps Script</strong>.</li>
-              <li><code>Code.gs</code> ka content hata kar diye gaye <code>Code.gs</code> file ka content paste karo.</li>
-              <li><code>CONFIG.API_KEY</code> ko apna koi lamba random text bana do.</li>
+              <li>Open your Google Sheet, then <strong>Extensions -> Apps Script</strong>.</li>
+              <li>Replace the contents of <code>Code.gs</code> with the supplied <code>Code.gs</code> file into it.</li>
+              <li><code>CONFIG.API_KEY</code> to a long random string of your own.</li>
               <li><strong>Deploy → New deployment → Web app</strong>; “Execute as: Me”, “Who has access: <strong>Anyone</strong>” → Deploy.</li>
-              <li>Jo <code>/exec</code> URL mile, wo aur apni API key upar paste karke Connect dabao.</li>
+              <li>Jo <code>/exec</code> URL you receive, paste it above with your API key, and click Connect.</li>
             </ol>
-            <p class="muted">“Anyone” isliye chahiye ki browser bina Google login ke data maang sake — bina sahi API key ke script kuch bhi return nahi karta.</p>
+            <p class="muted">"Anyone" is required so the browser can request data without a Google login. Without the correct API key the script returns nothing.</p>
           </details>
         </div>
 
@@ -137,28 +134,6 @@
           <tbody></tbody>
         </table>
       </div>
-    </section>
-
-    <!-- ---------- TAB: CONNECTIONS ---------- -->
-    <section class="tab-panel" id="tab-relations">
-      <header class="panel-head">
-        <h1>Connections</h1>
-        <p>Yahan aapki files ke beech ke rishte banate hain — bilkul Power BI / Tableau ke model view jaisa. Kisi column ke gol point se drag karke doosri file ke column par chhod do, wire ban jayegi. Jud jaane ke baad ek file ka column doosri file ke analysis mein bhi use ho sakta hai.</p>
-      </header>
-
-      <div class="toolbar">
-        <button id="rel-autodetect" class="ghost-btn primary">Auto-detect connections</button>
-        <button id="rel-arrange" class="ghost-btn small">Re-arrange boxes</button>
-        <button id="rel-clear" class="ghost-btn small">Clear all</button>
-        <span class="spacer"></span>
-        <span class="toolbar-label">Box ke header se drag karke hilao · column ke point se drag karke jodo</span>
-      </div>
-
-      <div id="rel-empty" class="empty-hint big">Do ya zyada files load karo, phir yahan unke beech connections banaoge.</div>
-      <div id="rel-canvas" class="rel-canvas"></div>
-
-      <h2 class="section-title">Active connections</h2>
-      <div id="rel-list"></div>
     </section>
 
     <!-- ---------- TAB: EXPLORE ---------- -->
@@ -187,7 +162,7 @@
     <section class="tab-panel" id="tab-pivot">
       <header class="panel-head">
         <h1>Pivot builder</h1>
-        <p>Do tareeke: columns ko tick karke turant nested report banao (Google Sheet wale pivot jaisa), ya Excel ki tarah fields drag karke apni marzi ka pivot banao.</p>
+        <p>Two ways to work: tick columns for an instant nested report (like the pivot in your Google Sheet), or drag fields to build a custom pivot as in Excel.</p>
       </header>
 
       <div class="seg-control" id="pivot-mode">
@@ -260,7 +235,7 @@
 
         <div class="quick-layout">
           <div class="quick-fieldlist">
-            <div class="pivot-fieldlist-head">Columns &mdash; tick karne ka kram hi grouping ka kram hai</div>
+            <div class="pivot-fieldlist-head">Columns &mdash; the order you tick them is the grouping order</div>
             <div id="quick-field-list" class="qr-check-list"></div>
           </div>
           <div class="quick-result">
@@ -332,7 +307,7 @@
     <section class="tab-panel" id="tab-insights">
       <header class="panel-head">
         <h1>Reorder planner</h1>
-        <p>Kya mangwana hai. Sales, Purchase aur Stock ko jodkar har item ka average daily sale nikalta hai, aur bataata hai ki target stock cover tak pahunchne ke liye kitna order karna chahiye.</p>
+        <p>What to order. Combines Sales, Purchase and Stock to work out each item average daily sale, and how much to order to reach your target stock cover.</p>
       </header>
 
       <div class="toolbar" id="insights-toolbar">
@@ -370,8 +345,8 @@
     <section class="tab-panel" id="tab-performance">
       <header class="panel-head">
         <h1>Product performance</h1>
-        <p>Kya chal raha hai aur kya atka hua hai. Har item ka sell-through, aakhri bikri kab hui, stock kitna purana hai, aur ABC class — taaki best performers aur dead stock dono turant saaf dikhein.</p>
-        <p class="head-tip">Tip: aapke ERP mein <strong>Item Code</strong> har piece ka alag barcode hai, isliye default grouping <strong>Article No</strong> rakhi hai — wahan trend saaf dikhta hai. Style ya Sub Section par bhi switch kar sakte ho.</p>
+        <p>What is selling and what is stuck. Sell-through, last sale date, stock age and ABC class for every item, so best performers and dead stock are both obvious at a glance.</p>
+        <p class="head-tip">Tip: in your ERP, <strong>Item Code</strong> is a separate barcode per piece, so the default grouping is <strong>Article No</strong>, where the trend is clearest. You can switch to Style or Sub Section too.</p>
       </header>
 
       <div class="toolbar">
@@ -396,10 +371,27 @@
 
       <div id="perf-kpis" class="kpi-row"></div>
 
+      <div class="seg-control" id="perf-view">
+        <button class="seg-btn active" data-view="all">All</button>
+        <button class="seg-btn" data-view="best">Best sellers</button>
+        <button class="seg-btn" data-view="slow">Slow movers</button>
+        <button class="seg-btn" data-view="dead">Dead stock</button>
+        <button class="seg-btn" data-view="over">Overstocked</button>
+        <button class="seg-btn" data-view="oos">Out of stock</button>
+        <span class="seg-count" id="perf-count"></span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="data-table" id="perf-table"></table>
+      </div>
+
+      <div id="perf-legend" class="perf-legend" data-open="0"></div>
+
       <div id="perf-charts">
+        <h2 class="section-title">Charts</h2>
         <div class="chart-grid">
           <div class="chart-card wide">
-            <h3>Pareto — which items make up the sales <span class="h3-note">(bars = qty sold, line = cumulative %)</span></h3>
+            <h3>Pareto \u2014 which items make up the sales <span class="h3-note">(bars = qty sold, line = cumulative %)</span></h3>
             <div class="chart-box chart-box-wide"><canvas id="chart-pareto"></canvas></div>
           </div>
           <div class="chart-card">
@@ -416,29 +408,13 @@
           </div>
         </div>
       </div>
-
-      <div id="perf-legend" class="perf-legend" data-open="0"></div>
-
-      <div class="seg-control" id="perf-view">
-        <button class="seg-btn active" data-view="all">All</button>
-        <button class="seg-btn" data-view="best">⭐ Best sellers</button>
-        <button class="seg-btn" data-view="slow">🐢 Slow movers</button>
-        <button class="seg-btn" data-view="dead">🧊 Dead stock</button>
-        <button class="seg-btn" data-view="over">📦 Overstocked</button>
-        <button class="seg-btn" data-view="oos">⚠ Out of stock</button>
-        <span class="seg-count" id="perf-count"></span>
-      </div>
-
-      <div class="table-scroll">
-        <table class="data-table" id="perf-table"></table>
-      </div>
     </section>
 
     <!-- ---------- TAB: DASHBOARD ---------- -->
     <section class="tab-panel" id="tab-dashboard">
       <header class="panel-head">
         <h1>Dashboard</h1>
-        <p>Poore business ki ek nazar mein tasveer — kitna bika, kitna aaya, kitna pada hai.</p>
+        <p>The whole business at a glance - how much sold, how much came in, how much is sitting.</p>
       </header>
 
       <div id="dashboard-empty" class="empty-hint big">Load a Sales, Purchase or Stock file on the Import tab to see charts here.</div>
@@ -540,9 +516,9 @@
 
 <script>
 /* Library loader with CDN fallbacks.
-   SheetJS ke naye versions npm par nahi hain (npm par 0.18.5 tak hi), isliye
-   pehle official SheetJS CDN try karte hain, phir jsDelivr/unpkg ka 0.18.5.
-   Ek CDN block ho jaye (office firewall, ad-blocker) to doosra chal jata hai. */
+   Newer SheetJS versions are not published to npm (npm stops at 0.18.5), so we
+   try the official SheetJS CDN first, then jsDelivr/unpkg 0.18.5.
+   If one CDN is blocked (office firewall, ad-blocker) the next one is used. */
 (function () {
   var pending = 2, failed = [];
 
@@ -567,8 +543,8 @@
         var b = document.getElementById('lib-error');
         if (!b) return;
         b.style.display = '';
-        b.textContent = failed.join(' aur ') + ' library load nahi hui. Internet connection, ' +
-          'ad-blocker ya office firewall check karo — inke bina file padhna kaam nahi karega.';
+        b.textContent = failed.join(' aur ') + ' could not be loaded. Please check your internet connection, ' +
+          'ad-blocker or office firewall - file reading will not work without it.';
       };
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', show);
       else show();

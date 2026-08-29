@@ -402,6 +402,95 @@ function getRecordsForSelection(selection) {
 function datasetsOfType(type) { return App.datasets.filter(d => d.type === type); }
 
 /* ---------------------------------------------------------------
+   3b. AUTO-PERSISTENCE (IndexedDB) — data survives closing the tab.
+   Removed only when the user clicks Remove on a dataset.
+   --------------------------------------------------------------- */
+const IDB_NAME = 'StockLedgerDB', IDB_VERSION = 1, IDB_STORE = 'datasets';
+let _idbDb = null;
+
+function idbAvailable() { return typeof indexedDB !== 'undefined'; }
+
+function idbOpen() {
+  if (_idbDb) return Promise.resolve(_idbDb);
+  return new Promise((resolve, reject) => {
+    if (!idbAvailable()) { reject(new Error('IndexedDB not available')); return; }
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE, { keyPath: 'id' }); };
+    req.onsuccess = () => { _idbDb = req.result; resolve(_idbDb); };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function serializeDate(d) { return d instanceof Date ? { __date: d.toISOString() } : d; }
+function deserializeDate(v) { return (v && typeof v === 'object' && v.__date) ? new Date(v.__date) : v; }
+
+function serializeDatasetForIdb(ds) {
+  return {
+    id: ds.id, name: ds.name, type: ds.type, fields: ds.fields,
+    origin: ds.origin || null, mapping: ds.mapping || null, headerIdx: ds.headerIdx || 0,
+    reportPeriod: ds.reportPeriod ? { from: serializeDate(ds.reportPeriod.from), to: serializeDate(ds.reportPeriod.to), raw: ds.reportPeriod.raw } : null,
+    records: ds.records.map(r => {
+      const o = {};
+      ds.fields.forEach(f => { o[f] = serializeDate(r[f]); });
+      return o;
+    })
+  };
+}
+
+function hydrateDatasetFromIdb(raw) {
+  const records = raw.records.map(r => {
+    const o = { __ds: raw.id };
+    raw.fields.forEach(f => { o[f] = deserializeDate(r[f]); });
+    return o;
+  });
+  return {
+    id: raw.id, name: raw.name, type: raw.type, fields: raw.fields, records,
+    rowCount: records.length, colorIdx: App.nextDsColor++,
+    origin: raw.origin || null, mapping: raw.mapping || null, headerIdx: raw.headerIdx || 0,
+    reportPeriod: raw.reportPeriod ? { from: deserializeDate(raw.reportPeriod.from), to: deserializeDate(raw.reportPeriod.to), raw: raw.reportPeriod.raw } : null
+  };
+}
+
+/** Fire-and-forget save — never blocks the UI, and a failure here (private
+ *  browsing, storage disabled) never breaks the app; it just means this
+ *  dataset won't survive a browser close. */
+function idbSaveDataset(ds) {
+  if (!idbAvailable()) return;
+  idbOpen().then(db => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(serializeDatasetForIdb(ds));
+  }).catch(err => console.error('StockLedger: could not auto-save dataset', err));
+}
+
+function idbDeleteDataset(id) {
+  if (!idbAvailable()) return;
+  idbOpen().then(db => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(id);
+  }).catch(err => console.error('StockLedger: could not remove auto-saved dataset', err));
+}
+
+function idbLoadAllDatasets() {
+  if (!idbAvailable()) return Promise.resolve([]);
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).getAll();
+    req.onsuccess = () => resolve((req.result || []).map(hydrateDatasetFromIdb));
+    req.onerror = () => reject(req.error);
+  })).catch(err => { console.error('StockLedger: could not restore auto-saved data', err); return []; });
+}
+
+/** App start hote hi pehle se load ki hui files wapas la deta hai. */
+function restorePersistedDatasets() {
+  idbLoadAllDatasets().then(saved => {
+    if (!saved.length) return;
+    App.datasets = App.datasets.concat(saved);
+    refreshAfterDataChange();
+    toast(saved.length + ' previously loaded file(s) restored.');
+  });
+}
+
+/* ---------------------------------------------------------------
    4. FILE IMPORT
    --------------------------------------------------------------- */
 function initImport() {
@@ -421,8 +510,8 @@ function handleFiles(fileList) {
 }
 
 function readWorkbook(file) {
-  if (file.size === 0) { toast(file.name + ': file khaali hai (0 bytes) — dobara download karke try karo.'); return; }
-  if (file.size > 80 * 1024 * 1024) { toast(file.name + ': file bahut badi hai (' + (file.size / 1024 / 1024).toFixed(0) + ' MB) — browser mein load karna mushkil ho sakta hai.'); }
+  if (file.size === 0) { toast(file.name + ': file is empty (0 bytes) — please download it again.'); return; }
+  if (file.size > 80 * 1024 * 1024) { toast(file.name + ': this file is very large (' + (file.size / 1024 / 1024).toFixed(0) + ' MB) — this may be slow to load in the browser.'); }
 
   const reader = new FileReader();
   reader.onload = function (e) {
@@ -430,14 +519,14 @@ function readWorkbook(file) {
     // Library abhi tak load na hui ho to pehle usko laate hain, phir parse.
     ensureXLSX().then(function (ok) {
       if (!ok) {
-        showLibError('Excel reader library load nahi ho payi. Internet connection, ad-blocker ' +
-          'ya office firewall check karo — inke bina file padhna kaam nahi karega.');
+        showLibError('The Excel reader library could not be loaded. Please check your internet connection, ad-blocker ' +
+          'or office firewall — file reading will not work without it.');
         return;
       }
       parseWorkbookBuffer(data, file);
     });
   };
-  reader.onerror = () => toast(file.name + ': browser file read nahi kar paya (' + (reader.error ? reader.error.name : 'unknown') + ').');
+  reader.onerror = () => toast(file.name + ': the browser could not read this file (' + (reader.error ? reader.error.name : 'unknown') + ').');
   reader.readAsArrayBuffer(file);
 }
 
@@ -449,7 +538,7 @@ function readWorkbook(file) {
  */
 function parseWorkbookBuffer(data, file) {
   if (typeof XLSX === 'undefined') {
-    showLibError('Excel reader library load nahi ho payi. Page refresh karo; phir bhi na chale to ad-blocker/firewall check karo.');
+    showLibError('The Excel reader library could not be loaded. Please refresh the page; if it still fails, check your ad-blocker or firewall.');
     return;
   }
 
@@ -475,15 +564,15 @@ function parseWorkbookBuffer(data, file) {
         else renderMultiSheetChoice(file, wb);
         return;
       }
-      lastErr = new Error('File padhi gayi lekin koi sheet nahi mili.');
+      lastErr = new Error('The file was read but contains no sheets.');
     } catch (err) {
       lastErr = err;
     }
   }
 
   console.error('StockLedger: could not parse', file.name, lastErr);
-  toast(file.name + ': read nahi ho payi — ' + (lastErr ? lastErr.message : 'unknown error') +
-    '. Excel mein khol kar "Save As → .xlsx" karke dobara try karo.');
+  toast(file.name + ': could not be read — ' + (lastErr ? lastErr.message : 'unknown error') +
+    '. Try opening it in Excel and using "Save As -> .xlsx".');
 }
 
 function renderMultiSheetChoice(file, wb) {
@@ -636,6 +725,7 @@ function confirmImport(card, filename, columns, dataRows, origin, headerIdx, rep
     reportPeriod: reportPeriod || null   // ERP header ki "Reporting Period" line
   };
   App.datasets.push(ds);
+  idbSaveDataset(ds);
   card.remove();
   toast('Added "' + name + '" — ' + records.length.toLocaleString('en-IN') + ' rows.');
   refreshAfterDataChange();
@@ -667,6 +757,7 @@ function refreshAfterDataChange() {
 
 function removeDataset(id) {
   App.datasets = App.datasets.filter(d => d.id !== id);
+  idbDeleteDataset(id);
   refreshAfterDataChange();
 }
 
@@ -795,7 +886,7 @@ function gsGet(params) {
       let data;
       try { data = JSON.parse(text); }
       catch (e) {
-        throw new Error('Script ne JSON ke bajaye HTML bheja — deployment "Who has access: Anyone" par set hai kya? URL /exec par khatam hona chahiye.');
+        throw new Error('The script returned HTML instead of JSON. Is the deployment set to "Who has access: Anyone"? The URL must end in /exec.');
       }
       if (!data.ok) throw new Error(data.error || 'Unknown error from Apps Script.');
       return data;
@@ -823,12 +914,12 @@ function gsPost(body) {
 function connectSheet() {
   const url = document.getElementById('gs-url').value.trim();
   const key = document.getElementById('gs-key').value.trim();
-  if (!url) { setGsStatus('Web app URL daalo.', 'err'); return; }
+  if (!url) { setGsStatus('Enter the web app URL.', 'err'); return; }
   if (!/^https:\/\/script\.google\.com\/.*\/exec/.test(url)) {
-    setGsStatus('URL https://script.google.com/... /exec jaisa hona chahiye.', 'err');
+    setGsStatus('The URL should look like https://script.google.com/.../exec', 'err');
     return;
   }
-  if (!key) { setGsStatus('API key daalo.', 'err'); return; }
+  if (!key) { setGsStatus('Enter the API key.', 'err'); return; }
 
   GS.url = url; GS.key = key;
   setGsStatus('Connecting…', 'busy');
@@ -853,7 +944,7 @@ function connectSheet() {
 function renderSheetList(meta) {
   const wrap = document.getElementById('gs-sheet-list');
   wrap.style.display = '';
-  if (!meta.sheets.length) { wrap.innerHTML = '<div class="empty-hint">Is spreadsheet mein koi visible sheet nahi mili.</div>'; return; }
+  if (!meta.sheets.length) { wrap.innerHTML = '<div class="empty-hint">No visible sheets found in this spreadsheet.</div>'; return; }
 
   wrap.innerHTML = '<h3>' + escapeHtml(meta.spreadsheetName) + '</h3>' +
     meta.sheets.map(s =>
@@ -903,7 +994,7 @@ function pullSheet(sheetName, type, rowEl) {
   next(0).then(() => {
     btn.disabled = false; btn.textContent = 'Pull data';
     setTimeout(() => { track.style.display = 'none'; }, 600);
-    if (!all.length) { toast(sheetName + ': koi row nahi mili.'); return; }
+    if (!all.length) { toast(sheetName + ': no rows found.'); return; }
 
     // Type ko user ki choice se force karte hain, guess se nahi.
     ingestRows(all, sheetName, null, { url: GS.url, key: GS.key, sheet: sheetName });
@@ -945,6 +1036,7 @@ function refreshDataset(id) {
     const dataRows = all.slice(ds.headerIdx + 1).filter(r => r && r.some(c => c !== null && c !== undefined && c !== ''));
     ds.records = buildRecords(dataRows, ds.mapping, ds.id);
     ds.rowCount = ds.records.length;
+    idbSaveDataset(ds);
     GS.url = savedUrl || GS.url; GS.key = savedKey || GS.key;
     refreshAfterDataChange();
     toast('"' + ds.name + '" refreshed — ' + ds.rowCount.toLocaleString('en-IN') + ' rows.');
@@ -956,23 +1048,23 @@ function refreshDataset(id) {
 
 function pivotToSheet() {
   const grid = pivotToGrid();
-  if (!grid) { toast('Pehle ek pivot banao.'); return; }
-  const sheetName = prompt('Kis sheet mein likhein? (na ho to ban jayegi)', 'StockLedger Pivot');
+  if (!grid) { toast('Build a pivot first.'); return; }
+  const sheetName = prompt('Which sheet should this be written to? (it will be created if missing)', 'StockLedger Pivot');
   if (!sheetName) return;
-  toast('Writing to sheet…');
+  toast('Writing to sheet...');
   gsPost({ action: 'write', sheet: sheetName, values: [grid.headers].concat(grid.rows), mode: 'replace' })
-    .then(res => toast('Ho gaya — "' + res.sheet + '" mein ' + res.rowsWritten + ' rows likhi gayi.'))
+    .then(res => toast('Done - "' + res.sheet + '" now has ' + res.rowsWritten + ' rows.'))
     .catch(err => toast('Write failed: ' + err.message));
 }
 
 function insightsToSheet() {
   const grid = insightsToGrid();
-  if (!grid) { toast('Abhi kuch export karne ko nahi hai.'); return; }
-  const sheetName = prompt('Kis sheet mein likhein? (na ho to ban jayegi)', 'StockLedger Reorder');
+  if (!grid) { toast('There is nothing to export yet.'); return; }
+  const sheetName = prompt('Which sheet should this be written to? (it will be created if missing)', 'StockLedger Reorder');
   if (!sheetName) return;
-  toast('Writing to sheet…');
+  toast('Writing to sheet...');
   gsPost({ action: 'write', sheet: sheetName, values: [grid.headers].concat(grid.rows), mode: 'replace' })
-    .then(res => toast('Ho gaya — "' + res.sheet + '" mein ' + res.rowsWritten + ' rows likhi gayi.'))
+    .then(res => toast('Done - "' + res.sheet + '" now has ' + res.rowsWritten + ' rows.'))
     .catch(err => toast('Write failed: ' + err.message));
 }
 
@@ -1007,7 +1099,7 @@ function initExplore() {
 /** Column chunkar uski values mein se filter lagane ka popup. */
 function openExploreFilterPicker() {
   const fields = exploreFields();
-  if (!fields.length) { toast('Pehle koi file load karo.'); return; }
+  if (!fields.length) { toast('Load a file first.'); return; }
   const recs = currentExploreRecords();
 
   const popup = document.createElement('div');
@@ -1041,7 +1133,7 @@ function openExploreFilterPicker() {
       '<label class="efp-row"><input type="checkbox" value="' + escapeHtml(v) + '"' +
       (!sel || sel.has(v) ? ' checked' : '') + '> <span>' + escapeHtml(v) + '</span>' +
       '<span class="efp-count">' + c.toLocaleString('en-IN') + '</span></label>').join('') +
-      (counts.size > 500 ? '<div class="empty-hint">' + counts.size.toLocaleString('en-IN') + ' unique values — top 500 dikha rahe hain.</div>' : '');
+      (counts.size > 500 ? '<div class="empty-hint">' + counts.size.toLocaleString('en-IN') + ' unique values — showing the top 500.</div>' : '');
   }
   loadValues();
   popup.querySelector('#efp-field').addEventListener('change', loadValues);
@@ -1155,7 +1247,7 @@ function renderExplore() {
     }).join('') + '</tr>'
   ).join('') + '</tbody>';
 
-  table.innerHTML = thead + tbody;
+  table.innerHTML = thead + tbody + exploreFootHtml(recs, fields, isNum);
   table.querySelectorAll('thead th').forEach(th => th.addEventListener('click', () => {
     const f = th.dataset.field;
     if (ExploreState.sortField === f) ExploreState.sortDir *= -1; else { ExploreState.sortField = f; ExploreState.sortDir = 1; }
@@ -1170,6 +1262,21 @@ function renderExplore() {
   const prevBtn = document.getElementById('ep-prev'), nextBtn = document.getElementById('ep-next');
   if (prevBtn) prevBtn.addEventListener('click', () => { ExploreState.page--; renderExplore(); });
   if (nextBtn) nextBtn.addEventListener('click', () => { ExploreState.page++; renderExplore(); });
+}
+
+/** Filtered rows par numeric columns ka total \u2014 paginated view mein bhi
+ *  poore filtered set ka sum dikhata hai, na ki sirf current page ka. */
+function exploreFootHtml(recs, fields, isNum) {
+  if (!fields.some(isNum)) return '';
+  let out = '<tfoot><tr>';
+  fields.forEach((f, i) => {
+    if (i === 0) { out += '<td>Total (' + recs.length.toLocaleString('en-IN') + ' rows)</td>'; return; }
+    if (isNum(f)) {
+      const sum = recs.reduce((s, r) => s + (typeof r[f] === 'number' ? r[f] : 0), 0);
+      out += '<td class="num">' + fmtNum(sum) + '</td>';
+    } else out += '<td></td>';
+  });
+  return out + '</tr></tfoot>';
 }
 
 function exportExploreCSV() {
@@ -1640,7 +1747,7 @@ function effectiveRange(range) {
   const recs = salesRecords().concat(purchaseRecords()).filter(r => inPeriod(r, range));
   const dates = recs.map(r => r.Date).filter(Boolean);
   if (!dates.length) {
-    return { from: null, to: null, days: 0, rows: recs.length, text: 'is window mein koi dated row nahi' };
+    return { from: null, to: null, days: 0, rows: recs.length, text: 'no dated rows in this window' };
   }
   const mm = minMaxTime(dates);
   const from = new Date(mm.min), to = new Date(mm.max);
@@ -1825,7 +1932,7 @@ function autoDetectRelationships(silent) {
     if (!App.relationships.some(x => x.id === r.id)) { App.relationships.push(r); added++; }
   });
   clearLookups();
-  if (!silent) toast(added ? added + ' connection(s) detect hui.' : 'Koi nayi connection nahi mili.');
+  if (!silent) toast(added ? added + ' connection(s) detected.' : 'No new connections were found.');
   return added;
 }
 
@@ -2198,7 +2305,7 @@ function renderQuickFieldList() {
   const wrap = document.getElementById('quick-field-list');
   if (!wrap) return;
   const fields = quickReportFields();
-  if (!fields.length) { wrap.innerHTML = '<div class="empty-hint">Pehle koi file load karo.</div>'; return; }
+  if (!fields.length) { wrap.innerHTML = '<div class="empty-hint">Load a file first.</div>'; return; }
 
   wrap.innerHTML = fields.map(f => {
     const idx = QuickReport.order.indexOf(f);
@@ -2346,7 +2453,7 @@ function openQuickColumnFilter(dim, anchorEl) {
     '<h3>Filter: ' + escapeHtml(dim) + '</h3>' +
     '<input type="search" id="qcf-search" class="text-input" placeholder="Type to search values\u2026" style="width:100%;margin-bottom:8px;">' +
     '<div class="qcf-actions">' +
-    '<button class="ghost-btn small primary" id="qcf-only" title="Sirf search se mile values rakho, baaki sab hata do">Only these</button>' +
+    '<button class="ghost-btn small primary" id="qcf-only" title="Keep only the values matching your search">Only these</button>' +
     '<button class="ghost-btn small" id="qcf-all">Select all</button>' +
     '<button class="ghost-btn small" id="qcf-none">Clear</button>' +
     '<span class="qcf-count" id="qcf-count"></span></div>' +
@@ -2367,7 +2474,7 @@ function openQuickColumnFilter(dim, anchorEl) {
     listEl.innerHTML = shown.slice(0, 800).map(([v, c]) =>
       '<label class="efp-row"><input type="checkbox" value="' + escapeHtml(v) + '"' + (checkedNow.has(v) ? ' checked' : '') + '>' +
       '<span>' + escapeHtml(v) + '</span><span class="efp-count">' + c.toLocaleString('en-IN') + '</span></label>').join('') +
-      (shown.length > 800 ? '<div class="empty-hint">Top 800 dikha rahe hain \u2014 search se aur chhota karo.</div>' : '');
+      (shown.length > 800 ? '<div class="empty-hint">Showing the top 800 - use search to narrow further.</div>' : '');
     listEl.querySelectorAll('input').forEach(cb => cb.addEventListener('change', () => {
       if (cb.checked) checkedNow.add(cb.value); else checkedNow.delete(cb.value);
     }));
@@ -2394,7 +2501,7 @@ function openQuickColumnFilter(dim, anchorEl) {
     pop.remove(); QuickReport.collapsed = {}; renderQuickReport();
   };
   pop.querySelector('#qcf-apply').onclick = () => {
-    if (checkedNow.size === 0) { toast('Kam se kam ek value chuno.'); return; }
+    if (checkedNow.size === 0) { toast('Select at least one value.'); return; }
     if (checkedNow.size === values.length) delete QuickReport.filters[dim];
     else QuickReport.filters[dim] = new Set(checkedNow);
     pop.remove(); QuickReport.collapsed = {}; renderQuickReport();
@@ -2463,9 +2570,9 @@ function renderQuickSourceNote(rowCount) {
   if (warn) {
     if (info.mixed) {
       warn.style.display = '';
-      warn.textContent = 'Dhyan do: ye "All files combined" hai \u2014 Sales, Purchase aur Stock ki quantity ek saath jud rahi hai, ' +
-        'jiska business matlab nahi banta (bika hua + mangaya hua + pada hua sab ek number mein). ' +
-        'Upar "Data" dropdown se Sales / Purchase / Stock alag chuno.';
+      warn.textContent = 'Note: this is "All files combined" - Sales, Purchase and Stock quantities are being added together, ' +
+        'which is not meaningful (sold + purchased + on-hand in a single number). ' +
+        'Use the "Data" dropdown above to pick Sales, Purchase or Stock separately.';
     } else warn.style.display = 'none';
   }
 }
@@ -2476,7 +2583,7 @@ function renderQuickReport() {
   if (!table) return;
 
   if (!App.datasets.length) {
-    table.innerHTML = '<tr><td class="empty-hint">Pehle Import tab se data load karo.</td></tr>';
+    table.innerHTML = '<tr><td class="empty-hint">Load data from the Import tab first.</td></tr>';
     head.textContent = ''; QuickReport.lastRows = null; return;
   }
   // Date grouping dropdown se aaya level hamesha sabse pehle lagta hai
@@ -2489,7 +2596,7 @@ function renderQuickReport() {
   if (noteEl) noteEl.textContent = 'Showing: ' + range.label;
 
   if (!dims.length) {
-    table.innerHTML = '<tr><td class="empty-hint">Baayein taraf se column tick karo, ya upar se "Date grouping" chuno. Jis kram mein tick karoge, usi kram mein grouping hogi.</td></tr>';
+    table.innerHTML = '<tr><td class="empty-hint">Tick columns on the left, or pick a "Date grouping" above. Columns group in the order you tick them.</td></tr>';
     head.textContent = ''; QuickReport.lastRows = null;
     renderQuickSourceNote(quickFilteredRecords().length);
     renderQuickFilterChips();
@@ -2578,7 +2685,7 @@ function renderQuickReport() {
 
   document.getElementById('quick-count').textContent =
     flat.length.toLocaleString('en-IN') + ' rows shown \u00b7 ' + recs.length.toLocaleString('en-IN') + ' source rows' +
-    (capped ? ' \u00b7 pehli ' + MAX_RENDER.toLocaleString('en-IN') + ' rows dikha rahe hain (poori list ke liye Export CSV)' : '');
+    (capped ? ' \u00b7 pehli ' + MAX_RENDER.toLocaleString('en-IN') + ' rows shown (use Export CSV for the full list)' : '');
 }
 
 function quickToGrid() {
@@ -2595,18 +2702,18 @@ function quickToGrid() {
 
 function exportQuickCSV() {
   const g = quickToGrid();
-  if (!g) { toast('Pehle column tick karo.'); return; }
+  if (!g) { toast('Please tick at least one column first.'); return; }
   downloadBlob(toCSV(g.headers, g.rows), 'quick-report.csv', 'text/csv');
 }
 
 function quickToSheet() {
   const g = quickToGrid();
-  if (!g) { toast('Pehle column tick karo.'); return; }
-  const sheetName = prompt('Kis sheet mein likhein?', 'StockLedger Report');
+  if (!g) { toast('Please tick at least one column first.'); return; }
+  const sheetName = prompt('Which sheet should this be written to?', 'StockLedger Report');
   if (!sheetName) return;
-  toast('Writing to sheet…');
+  toast('Writing to sheet...');
   gsPost({ action: 'write', sheet: sheetName, mode: 'replace', values: [g.headers].concat(g.rows) })
-    .then(res => toast('Ho gaya — "' + res.sheet + '" mein ' + res.rowsWritten + ' rows likhi gayi.'))
+    .then(res => toast('Done - "' + res.sheet + '" now has ' + res.rowsWritten + ' rows.'))
     .catch(err => toast('Write failed: ' + err.message));
 }
 
@@ -2689,7 +2796,15 @@ function renderInsights() {
     '</tr>'
   ).join('') + '</tbody>';
 
-  wrap.innerHTML = head + body;
+  const foot = '<tfoot><tr><td>Total (' + rows.length.toLocaleString('en-IN') + ' rows)</td>' +
+    '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.sold, 0)) + '</td>' +
+    '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.purchased, 0)) + '</td>' +
+    '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.stock, 0)) + '</td>' +
+    '<td></td><td></td><td></td>' +
+    '<td class="num"><strong>' + fmtNum(rows.reduce((s, r) => s + (r.reorder ? r.suggested : 0), 0)) + '</strong></td>' +
+    '</tr></tfoot>';
+
+  wrap.innerHTML = head + body + foot;
   wrap.querySelectorAll('tbody tr').forEach(tr => tr.addEventListener('click', () => {
     if (tr.dataset.key) openDrill(dim, tr.dataset.key);
   }));
@@ -2809,9 +2924,8 @@ function renderPerformance() {
   .concat([['stock', stockLabel, true]])
   .concat(hasOBS ? [['movement', 'Moved (OBS\u2212CBS)', true]] : [])
   .concat([
-    ['sellThrough', 'Sell-through', true], ['daysCover', 'Days cover', true],
-    ['lastSale', 'Last sold', false], ['daysSinceLastSale', 'Days since', true],
-    ['stockAgeDays', 'Stock age', true], ['excessQty', 'Excess', true],
+    ['sellThrough', 'Sell-through', true],
+    ['lastSale', 'Last sold', false],
     ['abc', 'ABC', false], ['status', 'Status', false]
   ]);
   PerfState.cols = cols;
@@ -2829,7 +2943,8 @@ function renderPerformance() {
   });
   const body = '<tbody>' + bodyRows.join('') + '</tbody>';
 
-  tableEl.innerHTML = head + body;
+  const foot = perfFootHtml(rows, cols);
+  tableEl.innerHTML = head + body + foot;
   tableEl.querySelectorAll('thead th').forEach(th => th.addEventListener('click', () => {
     const k = th.dataset.key;
     if (PerfState.sortKey === k) PerfState.sortDir *= -1;
@@ -2863,33 +2978,33 @@ function renderPerfLegend(hasOBS) {
   const open = el.dataset.open === '1';
   const metricRows = []
     .concat(hasOBS ? [
-      ['Opening (OBS)', 'Period ke shuru mein kitna stock tha \u2014 OBS Qty column se'],
-      ['Closing (CBS)', 'Period ke aakhir mein kitna bacha \u2014 CBS Qty column se'],
-      ['Moved (OBS\u2212CBS)', '\u2193 matlab stock ghata (nikla), \u2191 matlab badha (aaya)']
-    ] : [['Stock', 'Abhi kitna maal pada hai']])
+      ['Opening (OBS)', 'Stock at the start of the period - from the OBS Qty column'],
+      ['Closing (CBS)', 'Stock left at the end of the period - from the CBS Qty column'],
+      ['Moved (OBS\u2212CBS)', '\u2193 means stock went down (issued), \u2191 means it went up (received)']
+    ] : [['Stock', 'How much stock is on hand right now']])
     .concat([
-      ['Sold', 'Chuni hui window mein kitna bika'],
-      ['Sell-through', 'bika \u00f7 (bika + stock) \u2014 kitna maal nikal gaya'],
-      ['Days cover', 'stock \u00f7 average daily sale \u2014 itne din ka maal pada hai'],
-      ['Days since', 'Aakhri bikri ko kitne din ho gaye'],
-      ['Stock age', 'Purchase bill date se weighted average umar'],
-      ['Excess', 'Target cover se zyada pada hua maal'],
-      ['ABC', 'A = top items jo 80% sale banate hain, B = agle 15%, C = baaki']
+      ['Sold', 'Quantity sold in the selected window'],
+      ['Sell-through', 'sold / (sold + stock) - how much of the stock moved'],
+      ['Days cover', 'stock / average daily sale - how many days of cover you hold'],
+      ['Days since', 'Days since the last sale'],
+      ['Stock age', 'Quantity-weighted average age from the purchase bill date'],
+      ['Excess', 'Stock above the target cover level'],
+      ['ABC', 'A = top items making up 80% of sales, B = next 15%, C = the rest']
     ]);
 
   const statusRows = [
-    ['Best seller', 'A-class \u2014 sabse zyada bikne wale'],
-    ['Steady', 'B-class \u2014 theek-thaak chal rahe hain'],
-    ['Slow mover', 'C-class \u2014 bik to rahe hain par bahut kam'],
-    ['Dead stock', 'Stock pada hai lekin is window mein zero sale, ya 90+ din se koi bikri nahi'],
-    ['Out of stock', 'Bika to hai lekin ab balance zero \u2014 mangwana pad sakta hai'],
-    ['Overstocked', 'Days cover target se 3 guna zyada'],
-    ['No activity', 'Na bika, na stock hai']
+    ['Best seller', 'A-class - your strongest sellers'],
+    ['Steady', 'B-class - selling steadily'],
+    ['Slow mover', 'C-class - selling, but very slowly'],
+    ['Dead stock', 'Stock on hand but zero sales in this window, or no sale for 90+ days'],
+    ['Out of stock', 'Sold, but the balance is now zero - may need reordering'],
+    ['Overstocked', 'Days cover is more than 3x the target'],
+    ['No activity', 'No sales and no stock']
   ];
 
   el.innerHTML =
     '<button class="legend-toggle" id="perf-legend-toggle">' + (open ? '\u25BE' : '\u25B8') +
-      ' Column aur status ka matlab</button>' +
+      ' What the columns and statuses mean</button>' +
     (open ? '<div class="legend-body">' +
       '<div class="legend-col"><h4>Columns</h4>' +
         metricRows.map(([k, v]) => '<div class="legend-item"><strong>' + k + '</strong><span>' + v + '</span></div>').join('') +
@@ -2938,10 +3053,10 @@ function perfRowHtml(r, dim, depth, path) {
   return '<tr class="perf-row depth-' + depth + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(r.key) + '" data-path="' + escapeHtml(key) + '">' +
     '<td class="perf-name" style="padding-left:' + (14 + depth * 18) + 'px">' +
       (hasKids
-        ? '<button class="perf-caret' + (open ? ' open' : '') + '" title="Andar ki details kholo">\u25B8</button>'
+        ? '<button class="perf-caret' + (open ? ' open' : '') + '" title="Show details inside this row">\u25B8</button>'
         : '<span class="perf-caret-spacer"></span>') +
       '<span class="perf-key" title="' + escapeHtml(Object.values(r.meta || {}).join(' \u00b7 ')) + '">' + escapeHtml(r.key) + '</span>' +
-      '<button class="perf-popout" title="Poori details alag window mein kholo">\u29C9</button>' +
+      '<button class="perf-popout" title="Open full details in a separate window">\u29C9</button>' +
     '</td>' +
     perfMetricCells(r) +
   '</tr>';
@@ -2994,7 +3109,7 @@ function perfChildRowsHtml(path, depth, colCount) {
   const LIMIT = 25;
   const shown = kids.slice(0, LIMIT);
   if (!shown.length) {
-    return '<tr class="perf-child-note"><td colspan="' + colCount + '">Is selection ke andar ' + escapeHtml(childDim) + ' ka data nahi mila.</td></tr>';
+    return '<tr class="perf-child-note"><td colspan="' + colCount + '">No ' + escapeHtml(childDim) + ' data found here.</td></tr>';
   }
 
   let html = '<tr class="perf-child-head depth-' + depth + '"><td colspan="' + colCount + '">' +
@@ -3042,6 +3157,27 @@ function wirePerfRowEvents(tableEl, dim) {
       if (caret) caret.click();
     });
   });
+}
+
+/** Column-wise totals footer \u2014 sums over ALL filtered rows, not just the 800 shown. */
+function perfFootHtml(rows, cols) {
+  let out = '<tfoot><tr>';
+  cols.forEach(([k], i) => {
+    if (i === 0) { out += '<td>Total (' + rows.length.toLocaleString('en-IN') + ' rows)</td>'; return; }
+    if (k === 'sold') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.sold, 0)) + '</td>';
+    else if (k === 'opening') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.hasOpening ? r.opening : 0), 0)) + '</td>';
+    else if (k === 'stock') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.stock, 0)) + '</td>';
+    else if (k === 'movement') {
+      const m = rows.reduce((s, r) => s + (r.movement || 0), 0);
+      out += '<td class="num ' + (m > 0 ? 'mv-down' : (m < 0 ? 'mv-up' : '')) + '">' + (m ? fmtNum(Math.abs(m)) : '\u2014') + '</td>';
+    }
+    else if (k === 'sellThrough') {
+      const sold = rows.reduce((s, r) => s + r.sold, 0), stock = rows.reduce((s, r) => s + r.stock, 0);
+      out += '<td class="num">' + (sold + stock > 0 ? fmtNum(sold / (sold + stock) * 100, 1) + '%' : '\u2014') + '</td>';
+    }
+    else out += '<td></td>';
+  });
+  return out + '</tr></tfoot>';
 }
 
 function destroyPerfChart(id) { if (perfCharts[id]) { perfCharts[id].destroy(); delete perfCharts[id]; } }
@@ -3418,9 +3554,9 @@ function renderDrillBreakdown(sales, purch, stock, days) {
   const noteEl = document.getElementById('drill-blank-note');
   if (blankRow && totalSold > 0 && (blankRow.sold / totalSold) >= 0.3) {
     noteEl.style.display = '';
-    noteEl.textContent = 'Dhyan do: is selection ki ' + fmtNum(blankRow.sold / totalSold * 100, 0) +
-      '% sale rows mein "' + dim + '" khaali hai, isliye ye breakdown adhoora hai. ' +
-      'ERP mein ' + dim + ' bharna shuru karoge to ye analysis kaam karega.';
+    noteEl.textContent = 'Note: ' + fmtNum(blankRow.sold / totalSold * 100, 0) +
+      '% of the sale rows in this selection have "' + dim + '" empty, so this breakdown is incomplete. ' +
+      'Filling in ' + dim + ' in your ERP will make this analysis work.';
   } else {
     noteEl.style.display = 'none';
   }
@@ -3444,7 +3580,7 @@ function renderDrillRaw(sales) {
 }
 
 function exportDrillCSV() {
-  if (!lastDrillRows || !lastDrillRows.rows.length) { toast('Kuch export karne ko nahi hai.'); return; }
+  if (!lastDrillRows || !lastDrillRows.rows.length) { toast('There is nothing to export yet.'); return; }
   const { rows, dim } = lastDrillRows;
   const headers = [dim, 'Sold Qty', 'Purchased Qty', 'Stock Qty', 'Sell-through %', 'Days Cover', 'Last Sold'];
   const data = rows.map(r => [r.key, r.sold, r.purchased, r.stock, Number(r.sellThrough.toFixed(1)),
@@ -3515,10 +3651,10 @@ function pushSnapshotConfig() {
   if (GS.url && GS.meta && GS.meta.canWrite) {
     gsPost({ action: 'write', sheet: 'StockLedger Settings', mode: 'replace',
       values: [['key', 'value'], ['snapshot_config', JSON.stringify(Snapshot.config)]] })
-      .then(() => toast('Settings save ho gayi — Google Sheet mein bhi.'))
-      .catch(() => toast('Settings is device par save ho gayi (Sheet mein save nahi ho payi).'));
+      .then(() => toast('Settings saved, including to your Google Sheet.'))
+      .catch(() => toast('Settings saved on this device (could not save to the Sheet).'));
   } else {
-    toast('Settings is device par save ho gayi.');
+    toast('Settings saved on this device.');
   }
 }
 
@@ -3544,7 +3680,7 @@ function snapshotRange() {
   if (Snapshot.periodMode === 'custom') {
     const from = Snapshot.from ? parseDateLoose(Snapshot.from) : null;
     const to = Snapshot.to ? parseDateLoose(Snapshot.to) : null;
-    return { from, to, label: (from && to) ? ('Custom (' + fmtDate(from) + ' \u2013 ' + fmtDate(to) + ')') : 'Custom range \u2014 dono dates chuno' };
+    return { from, to, label: (from && to) ? ('Custom (' + fmtDate(from) + ' \u2013 ' + fmtDate(to) + ')') : 'Custom range - pick both dates' };
   }
   const mon = mondayOfWeekUTC(anchorMid);
   const sun = new Date(mon.getTime() + 6 * 86400000);
@@ -3717,7 +3853,7 @@ function renderSnapshot() {
   const totalSold = recs.reduce((s, r) => s + (recQty(r)), 0);
   document.getElementById('snapshot-total').textContent =
     recs.length ? (fmtNum(totalSold) + ' pcs sold across ' + recs.length.toLocaleString('en-IN') + ' bill lines')
-                : 'Is period mein koi sale nahi mili.';
+                : 'No sales found in this period.';
 
   if (Snapshot.view === 'map') renderSnapMap(recs, totalSold);
   else if (Snapshot.view === 'cards') renderSnapshotCards(recs);
@@ -3779,17 +3915,16 @@ function renderSnapMap(recs, totalSold) {
   const svg = document.getElementById('snapmap-svg');
   const levels = (Snapshot.config.levels || []).filter(l => l);
   if (!levels.length) {
-    svg.innerHTML = '<text x="20" y="30" class="snap-empty-text">Settings tab se levels chuno.</text>';
+    svg.innerHTML = '<text x="20" y="30" class="snap-empty-text">Choose levels in the Settings tab.</text>';
     return;
   }
   if (!recs.length) {
-    svg.innerHTML = '<text x="20" y="30" class="snap-empty-text">Is period mein koi sale nahi mili.</text>';
+    svg.innerHTML = '<text x="20" y="30" class="snap-empty-text">No sales found in this period.</text>';
     return;
   }
 
   const tree = buildSnapTree(recs, levels, Snapshot.config.topN || 5, 0, []);
-  // pehli baar level-1 khula rakhte hain
-  tree.forEach(n => { if (SnapMap.expanded[n.path] === undefined) SnapMap.expanded[n.path] = true; });
+  // Default collapsed — user manually expands whichever branch they want to see.
 
   const style = Snapshot.config.mapStyle || 'tree-h';
   let out;
@@ -4238,7 +4373,7 @@ function renderSnapshotCards(recs) {
   const dims = (Snapshot.config.dims || []).filter(d => SNAPSHOT_ALL_DIMS.includes(d));
   const wrap = document.getElementById('snapshot-grid');
   if (!dims.length) {
-    wrap.innerHTML = '<div class="empty-hint">Koi type chuni nahi hai — "Settings" tab se select karo.</div>';
+    wrap.innerHTML = '<div class="empty-hint">No types selected - choose them in the Settings tab.</div>';
     return;
   }
   wrap.innerHTML = dims.map(dim => {
@@ -4252,7 +4387,7 @@ function renderSnapshotCards(recs) {
           '<td class="snap-name">' + escapeHtml(k) + '</td>' +
           '<td class="num snap-qty">' + fmtNum(v) + '</td>' +
         '</tr>').join('') + '</table>'
-        : '<div class="empty-hint">Is period mein data nahi mila.</div>') +
+        : '<div class="empty-hint">No data in this period.</div>') +
       '</div>';
   }).join('');
 
@@ -4294,10 +4429,10 @@ function renderSnapshotSettings(hostId) {
     '</div>' +
 
     '<h3 class="snap-set-title">Mind Map hierarchy</h3>' +
-    '<p class="drill-subtitle">Upar se neeche kaunsa level kis ke andar khule. Jitne chaaho utne level chuno \u2014 jo nahi chahiye usko "none" rakh do.</p>' +
+    '<p class="drill-subtitle">Choose which level opens inside which, from top to bottom. Use as many levels as you like - leave the rest as "none".</p>' +
     '<div class="snap-levels">' + levelRows + '</div>' +
 
-    '<h3 class="snap-set-title">Top Lists mein kaunse types</h3>' +
+    '<h3 class="snap-set-title">Which types to show in Top Lists</h3>' +
     '<div class="snap-checklist">' +
       SNAPSHOT_ALL_DIMS.map(d =>
         '<label class="snap-check"><input type="checkbox" value="' + d + '"' +
@@ -4305,12 +4440,12 @@ function renderSnapshotSettings(hostId) {
     '</div>' +
 
     '<div class="connect-row" style="margin-top:16px;">' +
-      '<label class="toolbar-label">Har level/type mein top:</label>' +
+      '<label class="toolbar-label">Top N per level/type:</label>' +
       '<input type="number" id="snap-topn" class="text-input narrow" min="3" max="15" value="' + (Snapshot.config.topN || 5) + '">' +
     '</div>' +
     '<label class="toolbar-checkbox" style="margin-top:10px;">' +
       '<input type="checkbox" id="snap-autoshow"' + (Snapshot.config.autoShow ? ' checked' : '') + '> ' +
-      'Data upload hote hi ye popup khud khule' +
+      'Open this popup automatically when data is loaded' +
     '</label>' +
     '<div class="modal-actions" style="margin-top:16px;">' +
       '<button class="ghost-btn primary small" id="snap-save">Save settings</button>' +
@@ -4472,12 +4607,21 @@ function renderStockSplitChart(stockRecs) {
   if (!el) return;
   if (!stockRecs.length) { el.style.display = 'none'; return; }
   el.style.display = '';
+  el.style.cursor = 'pointer';
   const map = aggregateByDimension(stockRecs, 'Section');
   const top = [...map.entries()].filter(([k]) => k !== '(blank)').sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const labels = top.map(t => t[0]);
   dashCharts['chart-stocksplit'] = makeChart(el.getContext('2d'), {
     type: 'doughnut',
-    data: { labels: top.map(t => t[0]), datasets: [{ data: top.map(t => t[1]), backgroundColor: top.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } } } }
+    data: { labels, datasets: [{ data: top.map(t => t[1]), backgroundColor: top.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } },
+        tooltip: { callbacks: { title: items => labels[items[0].dataIndex] + '  (click for stock details)' } }
+      },
+      onClick: (evt, els) => { if (els && els.length) openDrill('Section', labels[els[0].index]); }
+    }
   });
 }
 
@@ -4487,18 +4631,20 @@ function renderStockSplitChart(stockRecs) {
 const RelUI = { positions: {}, dragNode: null, dragPort: null, tempLine: null, selected: null };
 
 function initRelations() {
+  return;   // Connections tab removed
+  if (!document.getElementById('rel-autodetect')) return;
   document.getElementById('rel-autodetect').addEventListener('click', () => {
     autoDetectRelationships();
     renderRelations();
     refreshAnalysisViews();
   });
   document.getElementById('rel-clear').addEventListener('click', () => {
-    if (!App.relationships.length) { toast('Koi connection nahi hai.'); return; }
+    if (!App.relationships.length) { toast('There are no connections.'); return; }
     App.relationships = [];
     clearLookups();
     renderRelations();
     refreshAnalysisViews();
-    toast('Sab connections hata di gayi.');
+    toast('All connections removed.');
   });
   document.getElementById('rel-arrange').addEventListener('click', () => {
     RelUI.positions = {};
@@ -4517,7 +4663,9 @@ function defaultPosition(idx) {
 }
 
 function renderRelations() {
+  return;   // Connections tab removed
   const canvas = document.getElementById('rel-canvas');
+  if (!canvas) return;   // Connections tab removed from UI — detection still runs in background
   const empty = document.getElementById('rel-empty');
   if (!App.datasets.length) {
     empty.style.display = '';
@@ -4582,7 +4730,7 @@ function wireRelNodeEvents() {
       const to = { dsId: port.dataset.ds, field: port.dataset.field };
       RelUI.dragPort = null;
       removeTempLine();
-      if (from.dsId === to.dsId) { toast('Ek hi file ke do columns ko jodna kaam nahi karega.'); return; }
+      if (from.dsId === to.dsId) { toast('You cannot connect two columns from the same file.'); return; }
       addRelationship(from.dsId, from.field, to.dsId, to.field);
       e.stopPropagation();
     });
@@ -4592,14 +4740,14 @@ function wireRelNodeEvents() {
 function addRelationship(fromDsId, fromField, toDsId, toField) {
   const id = relationshipId(fromDsId, fromField, toDsId, toField);
   const rev = relationshipId(toDsId, toField, fromDsId, fromField);
-  if (App.relationships.some(r => r.id === id || r.id === rev)) { toast('Ye connection pehle se hai.'); return; }
+  if (App.relationships.some(r => r.id === id || r.id === rev)) { toast('That connection already exists.'); return; }
   const a = App.datasets.find(d => d.id === fromDsId), b = App.datasets.find(d => d.id === toDsId);
   const score = scoreRelationship(a, fromField, b, toField);
   App.relationships.push({ id, fromDsId, fromField, toDsId, toField, enabled: true, score });
   clearLookups();
   renderRelations();
   refreshAnalysisViews();
-  toast('Connection bani: ' + fromField + ' ↔ ' + toField + ' (' + fmtNum(score.pct, 0) + '% match)');
+  toast('Connection created: ' + fromField + ' ↔ ' + toField + ' (' + fmtNum(score.pct, 0) + '% match)');
 }
 
 function onRelMouseMove(e) {
@@ -4694,7 +4842,7 @@ function drawWires() {
 function renderRelList() {
   const wrap = document.getElementById('rel-list');
   if (!App.relationships.length) {
-    wrap.innerHTML = '<div class="empty-hint">Abhi koi connection nahi. "Auto-detect" dabao, ya kisi column ke gol point se drag karke doosri file ke column par chhodo.</div>';
+    wrap.innerHTML = '<div class="empty-hint">No connections yet. Click "Auto-detect", or drag from a column dot onto a column in another file.</div>';
     return;
   }
   const nameOf = id => { const d = App.datasets.find(x => x.id === id); return d ? d.name : '?'; };
@@ -4713,17 +4861,17 @@ function renderRelList() {
         '<td><span class="match-pill ' + cls + '">' + fmtNum(pct, 0) + '%</span></td>' +
         '<td>' + (sc.toDistinct || 0).toLocaleString('en-IN') + '</td>' +
         '<td>' + (sc.canEnrich
-            ? '<span class="match-pill ok" title="Ye ek asli key hai — iske through doosri file ke columns bhi use ho sakte hain">Yes</span>'
-            : '<span class="match-pill warn" title="Values unique nahi hain, isliye sirf samajhne ke liye — column lookup band hai">No</span>') + '</td>' +
+            ? '<span class="match-pill ok" title="This is a true key, so columns from the other file can be used through it">Yes</span>'
+            : '<span class="match-pill warn" title="Values are not unique, so this link is informational only - column lookup is disabled">No</span>') + '</td>' +
         '<td><input type="checkbox" class="rel-toggle" data-id="' + rel.id + '"' + (rel.enabled ? ' checked' : '') + '></td>' +
         '<td><button class="ghost-btn small rel-del" data-id="' + rel.id + '">Remove</button></td>' +
       '</tr>';
     }).join('') + '</tbody></table>' +
-    '<p class="rel-help"><strong>Match %</strong> = pehli file ki kitni rows ko doosri file mein jodne wali value mili. ' +
-    '<strong>Unique keys</strong> = target column mein kitni alag values hain. ' +
-    '<strong>Can look up</strong> = kya iske through doosri file ka column is file ke analysis mein use ho sakta hai. ' +
-    'Ye sirf tab "Yes" hota hai jab values lagbhag unique hon (jaise Item Code / barcode). ' +
-    'Section jaisa column 100% match dikhata hai par uske through value uthana galat hoga — ek Section mein hazaron alag items hote hain.</p>';
+    '<p class="rel-help"><strong>Match %</strong> = how many rows in the first file found a matching value in the second. ' +
+    '<strong>Unique keys</strong> = how many distinct values the target column has. ' +
+    '<strong>Can look up</strong> = whether a column from the other file can be used in this file analysis. ' +
+    'This is only "Yes" when the values are nearly unique (like Item Code / barcode). ' +
+    'A column like Section shows a 100% match, but looking values up through it would be wrong - one Section contains thousands of different items.</p>';
 
   wrap.querySelectorAll('.rel-toggle').forEach(cb => cb.addEventListener('change', () => {
     const rel = App.relationships.find(r => r.id === cb.dataset.id);
@@ -4972,7 +5120,7 @@ function ensureSettingsDom() {
       '<div class="drill-panel settings-panel">' +
         '<div class="drill-head"><div>' +
           '<h2>Settings</h2>' +
-          '<div class="drill-subtitle">Look, snapshot aur behaviour \u2014 sab ek jagah</div>' +
+          '<div class="drill-subtitle">Appearance, snapshot and behaviour - all in one place</div>' +
         '</div><button id="settings-close" class="drill-close" title="Close (Esc)">&times;</button></div>' +
         '<div class="seg-control" id="settings-tabs" style="margin:14px 0 12px;">' +
           '<button class="seg-btn active" data-stab="look">\uD83C\uDFA8 Look &amp; Feel</button>' +
@@ -5035,16 +5183,16 @@ function renderSettingsBody() {
     wrap.innerHTML =
       '<h3 class="snap-set-title">Windows</h3>' +
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-autosnap"' +
-        (Snapshot.config.autoShow ? ' checked' : '') + '> Data upload hote hi Top Items Snapshot khud khule</label>' +
-      '<p class="drill-subtitle" style="margin-top:8px;">Ek se zyada window khuli ho to <strong>Esc</strong> ulte kram mein band karta hai \u2014 ' +
-      'jo sabse baad mein khuli, wahi pehle band hoti hai.</p>' +
+        (Snapshot.config.autoShow ? ' checked' : '') + '> Open the Top Items Snapshot automatically after data is loaded</label>' +
+      '<p class="drill-subtitle" style="margin-top:8px;">When several windows are open, <strong>Esc</strong> closes them in reverse order - ' +
+      'the most recently opened one closes first.</p>' +
       '<h3 class="snap-set-title">Product Performance</h3>' +
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-inline"' +
-        (Behaviour.inlineExpand ? ' checked' : '') + '> Row par click karne se details usi table mein neeche khulein ' +
-        '(band karoge to seedha alag window khulegi)</label>' +
+        (Behaviour.inlineExpand ? ' checked' : '') + '> Clicking a row opens its details inside the same table ' +
+        '(turn this off to open a separate window instead)</label>' +
       '<h3 class="snap-set-title">Reset</h3>' +
-      '<button class="ghost-btn small" id="set-reset-theme">Look &amp; Feel default par le jao</button> ' +
-      '<button class="ghost-btn small" id="set-reset-all">Sab settings mitao</button>' +
+      '<button class="ghost-btn small" id="set-reset-theme">Reset Look &amp; Feel to defaults</button> ' +
+      '<button class="ghost-btn small" id="set-reset-all">Clear all settings</button>' +
       '<p class="drill-subtitle" style="margin-top:10px;">Build ' + BUILD_VERSION + '</p>';
 
     wrap.querySelector('#set-autosnap').addEventListener('change', e => {
@@ -5054,12 +5202,12 @@ function renderSettingsBody() {
       Behaviour.inlineExpand = e.target.checked; saveBehaviour(); renderPerformance();
     });
     wrap.querySelector('#set-reset-theme').addEventListener('click', () => {
-      Object.assign(Theme, THEME_DEFAULT); saveTheme(); renderSettingsBody(); toast('Look & Feel reset ho gaya.');
+      Object.assign(Theme, THEME_DEFAULT); saveTheme(); renderSettingsBody(); toast('Look & Feel has been reset.');
     });
     wrap.querySelector('#set-reset-all').addEventListener('click', () => {
       Store.remove('sl_theme'); Store.remove('sl_snapshot_config'); Store.remove('sl_behaviour');
       Object.assign(Theme, THEME_DEFAULT); saveTheme();
-      toast('Sab settings mit gayi \u2014 page refresh karo.');
+      toast('All settings cleared - please refresh the page.');
     });
     return;
   }
@@ -5131,7 +5279,7 @@ function saveBehaviour() { Store.set('sl_behaviour', JSON.stringify(Behaviour));
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v14';
+const BUILD_VERSION = 'v15';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -5166,6 +5314,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('dashboard-render', renderDashboard);
   safeInit('performance-render', renderPerformance);
   safeInit('relations-render', renderRelations);
+  safeInit('restore-persisted', restorePersistedDatasets);
 });
 
 })();
