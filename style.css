@@ -308,7 +308,7 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 /* ---- data table (explore / pivot / insights) ---- */
 .table-scroll {
   max-height: 64vh; overflow: auto;
-  border: 1px solid var(--xl-border-strong);
+  border: var(--grid-width, 1px) solid var(--grid-color, #111);
   border-radius: 4px;
   background: #fff;
 }
@@ -327,8 +327,8 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
   padding: 6px 10px; text-align: left; font-weight: 600; white-space: nowrap;
   cursor: pointer; user-select: none;
   font-family: var(--font-body); font-size: 12px; letter-spacing: .2px;
-  border-right: 1px solid var(--xl-border-strong);
-  border-bottom: 2px solid var(--xl-border-strong);
+  border-right: var(--grid-width, 1px) solid var(--grid-color, #111);
+  border-bottom: calc(var(--grid-width, 1px) * 2) solid var(--grid-color, #111);
 }
 .data-table thead th:last-child { border-right: none; }
 .data-table thead th:hover { background: var(--xl-head-hover); }
@@ -337,8 +337,8 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 /* cells: thin gridlines on all sides */
 .data-table tbody td {
   padding: var(--row-pad, 4px) 10px;
-  border-right: 1px solid var(--xl-border);
-  border-bottom: 1px solid var(--xl-border);
+  border-right: var(--grid-width, 1px) solid var(--grid-color, #111);
+  border-bottom: var(--grid-width, 1px) solid var(--grid-color, #111);
   white-space: nowrap; font-family: var(--font-body); font-size: inherit;
   color: var(--text); background: #fff;
 }
@@ -349,15 +349,15 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 .data-table td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 .data-table tbody tr:nth-child(even) > td { background: var(--xl-zebra); }
-.data-table tbody tr:hover > td { background: var(--xl-hover); }
+.data-table tbody tr:hover > td { background: var(--xl-hover) !important; }
 .data-table tbody tr:hover > td:first-child { box-shadow: inset 3px 0 0 var(--rust); }
 
 /* totals row pinned at the bottom */
 .data-table tfoot td {
   position: sticky; bottom: 0; z-index: 2;
   background: var(--xl-foot-bg); color: var(--xl-foot-text);
-  font-weight: 700; border-top: 2px solid var(--xl-border-strong);
-  border-right: 1px solid var(--xl-border-strong);
+  font-weight: 700; border-top: calc(var(--grid-width, 1px) * 2) solid var(--grid-color, #111);
+  border-right: var(--grid-width, 1px) solid var(--grid-color, #111);
   font-family: var(--font-body); padding: 6px 10px; font-size: inherit;
 }
 .data-table tfoot td:last-child { border-right: none; }
@@ -819,11 +819,48 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; colo
 .perf-row.depth-1.is-open > td,
 .perf-row.depth-2.is-open > td,
 .perf-row.depth-3.is-open > td { background: var(--lvl0-open) !important; }
-.perf-row.is-open:hover > td { background: #FBE9D6 !important; }
+.perf-row.is-open:hover > td { background: var(--xl-hover) !important; }
 
 .perf-row.depth-1 .perf-key,
 .perf-row.depth-2 .perf-key,
 .perf-row.depth-3 .perf-key { color: var(--text-soft); }
+
+.perf-popout {
+  all: unset; cursor: pointer; margin-left: 9px; opacity: 0;
+  font-size: 12px; color: var(--text-soft); transition: opacity .12s, color .12s;
+}
+.perf-row:hover .perf-popout { opacity: .65; }
+.perf-popout:hover { opacity: 1 !important; color: var(--rust); }
+
+.perf-child-note > td { background: var(--lvl1-bg) !important; color: var(--text-soft); font-family: var(--font-body) !important; }
+
+.rp-badge {
+  display: inline-block; font-family: var(--font-mono); font-size: 11px;
+  background: #DEE8F5; color: #2C4E7A; padding: 2px 8px; border-radius: 20px; margin-right: 6px;
+}
+
+/* The expand triangle is positioned out of the text flow, so changing its
+   size never changes the row height. Row height comes only from the
+   "Row height" / "Drill-down row height" settings. */
+.data-table td.perf-name {
+  position: relative;
+  padding-left: calc(var(--indent, 10px) + var(--caret-size, 20px) + 6px) !important;
+  font-family: var(--font-body) !important;
+}
+.perf-caret {
+  all: unset; cursor: pointer;
+  position: absolute; left: var(--indent, 10px); top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--caret-size, 20px); height: var(--caret-size, 20px);
+  background: none; border: none; border-radius: 0;
+  color: var(--ink); line-height: 1;
+  font-size: calc(var(--caret-size, 20px) * 0.62);
+  transition: color .12s;
+}
+.perf-caret:hover { color: var(--rust); }
+.perf-caret.open { transform: translateY(-50%) rotate(90deg); color: var(--rust); }
+.perf-caret-spacer { display: none; }
 
 .perf-popout {
   all: unset; cursor: pointer; margin-left: 9px; opacity: 0;
@@ -926,8 +963,9 @@ body.no-gridlines .data-table thead th { border-right: none; }
 .caret-demo .perf-caret { cursor: default; }
 
 /* GIF-style dense grid: keep the first column tight and aligned */
-.data-table td.perf-name { display: flex; align-items: center; }
-.data-table td.perf-name .perf-key { overflow: hidden; text-overflow: ellipsis; }
+/* (flex removed - the name cell is a normal cell so the absolutely
+   positioned triangle cannot stretch it) */
+.data-table td.perf-name .perf-key { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 
 
 /* ===== Product Performance: one flat colour per level =====
@@ -984,18 +1022,59 @@ body.col-resizing .col-resizer { background: var(--rust); opacity: .8; }
   padding-bottom: calc(var(--row-pad, 4px) * var(--child-row-scale, .7));
   line-height: 1.25;
 }
-/* the expand triangle shrinks with the row so it stays centred */
-.perf-row.depth-1 .perf-caret,
-.perf-row.depth-2 .perf-caret,
-.perf-row.depth-3 .perf-caret,
-.perf-row.depth-4 .perf-caret,
-.perf-row.depth-5 .perf-caret,
-.perf-row.depth-6 .perf-caret,
-.perf-row.depth-7 .perf-caret,
-.perf-row.depth-1 .perf-caret-spacer,
-.perf-row.depth-2 .perf-caret-spacer,
-.perf-row.depth-3 .perf-caret-spacer {
-  width: calc(var(--caret-size, 20px) * var(--child-row-scale, .7));
-  height: calc(var(--caret-size, 20px) * var(--child-row-scale, .7));
-  font-size: calc(var(--caret-size, 20px) * var(--child-row-scale, .7) * 0.62);
+/* Drill-down rows only change padding - the triangle keeps the size you set,
+   and since it is out of the flow it cannot push the row taller. */
+
+
+/* ============ OPENED DRILL ROW - BORDER HIGHLIGHT ============ */
+/* Drawn as an inset shadow so turning it on/off never shifts the layout.
+   Colour and thickness come from Settings -> Look & Feel. */
+.perf-row.is-open > td {
+  box-shadow:
+    inset 0 var(--open-bw, 2px) 0 0 var(--open-bc, #A6402C),
+    inset 0 calc(var(--open-bw, 2px) * -1) 0 0 var(--open-bc, #A6402C);
+}
+.perf-row.is-open > td:first-child {
+  box-shadow:
+    inset 0 var(--open-bw, 2px) 0 0 var(--open-bc, #A6402C),
+    inset 0 calc(var(--open-bw, 2px) * -1) 0 0 var(--open-bc, #A6402C),
+    inset var(--open-bw, 2px) 0 0 0 var(--open-bc, #A6402C);
+}
+.perf-row.is-open > td:last-child {
+  box-shadow:
+    inset 0 var(--open-bw, 2px) 0 0 var(--open-bc, #A6402C),
+    inset 0 calc(var(--open-bw, 2px) * -1) 0 0 var(--open-bc, #A6402C),
+    inset calc(var(--open-bw, 2px) * -1) 0 0 0 var(--open-bc, #A6402C);
+}
+
+/* colour pickers in Settings */
+.color-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.color-row label.toolbar-label { min-width: 150px; }
+.color-row input[type="color"] {
+  width: 42px; height: 28px; padding: 0; border: 1px solid var(--line-strong);
+  border-radius: 5px; background: none; cursor: pointer;
+}
+.color-row .hexcode { font-family: var(--font-mono); font-size: 11px; color: var(--text-soft); }
+
+
+/* ============ DRILL ROWS GET THEIR OWN HOVER COLOUR ============ */
+/* Normal rows use --xl-hover; every drill-down level uses --drill-hover so the
+   two are never confused. Both are set in Settings -> Look & Feel. */
+.perf-row.depth-1:hover > td,
+.perf-row.depth-2:hover > td,
+.perf-row.depth-3:hover > td,
+.perf-row.depth-4:hover > td,
+.perf-row.depth-5:hover > td,
+.perf-row.depth-6:hover > td,
+.perf-row.depth-7:hover > td,
+#perf-table tbody tr.perf-row.depth-1:hover > td,
+#perf-table tbody tr.perf-row.depth-2:hover > td,
+#perf-table tbody tr.perf-row.depth-3:hover > td {
+  background: var(--drill-hover, #D7E8F7) !important;
+}
+/* an opened drill row keeps its own hover too */
+.perf-row.depth-1.is-open:hover > td,
+.perf-row.depth-2.is-open:hover > td,
+.perf-row.depth-3.is-open:hover > td {
+  background: var(--drill-hover, #D7E8F7) !important;
 }

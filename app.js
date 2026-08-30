@@ -3082,7 +3082,7 @@ function perfRowHtml(r, dim, depth, path, isFirstChild) {
   const open = perfIsOpen(depth === 0 ? r.key : key, isFirstChild);
   const hasKids = !!perfChildDim(path.map(p => p.field));
   return '<tr class="perf-row depth-' + depth + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(r.key) + '" data-path="' + escapeHtml(key) + '">' +
-    '<td class="perf-name" style="padding-left:' + (14 + depth * 18) + 'px">' +
+    '<td class="perf-name" style="--indent:' + (10 + depth * 18) + 'px">' +
       (hasKids
         ? '<button class="perf-caret' + (open ? ' open' : '') + '" title="Show details inside this row">\u25B8</button>'
         : '<span class="perf-caret-spacer"></span>') +
@@ -5141,7 +5141,14 @@ const THEME_DEFAULT = {
   gridLines: true,
   caretSize: 20,       // expand/collapse triangle size in px
   rowPad: 4,           // table row padding in px (row height)
-  childRowScale: 70    // drill-down row height as a % of the parent row
+  childRowScale: 70,   // drill-down row height as a % of the parent row
+  gridColor: '#111111',      // table grid line colour
+  gridWidth: 1,              // table grid line thickness (px)
+  hoverColor: '#FFE3BF',     // row colour under the mouse (normal rows)
+  drillHoverColor: '#D7E8F7',// row colour under the mouse (drill-down rows)
+  openFill: '#FDF3E7',       // fill of a row opened in the drill-down
+  openBorderColor: '#A6402C',// border of a row opened in the drill-down
+  openBorderWidth: 2         // that border's thickness (px)
 };
 
 const ACCENT_CHOICES = [
@@ -5191,6 +5198,15 @@ function applyTheme() {
   // Drill-down rows sit shorter than their parent row (default 70%).
   const crs = (Theme.childRowScale === undefined ? 70 : Theme.childRowScale) / 100;
   root.style.setProperty('--child-row-scale', String(crs));
+
+  // Table grid, hover colour and the drill-down open-row highlight
+  root.style.setProperty('--grid-color', Theme.gridColor || '#111111');
+  root.style.setProperty('--drill-hover', Theme.drillHoverColor || '#D7E8F7');
+  root.style.setProperty('--grid-width', (Theme.gridWidth === undefined ? 1 : Theme.gridWidth) + 'px');
+  root.style.setProperty('--xl-hover', Theme.hoverColor || '#FFE3BF');
+  root.style.setProperty('--lvl0-open', Theme.openFill || '#FDF3E7');
+  root.style.setProperty('--open-bc', Theme.openBorderColor || '#A6402C');
+  root.style.setProperty('--open-bw', (Theme.openBorderWidth === undefined ? 2 : Theme.openBorderWidth) + 'px');
 
   const b = document.body;
   ['density-compact', 'density-normal', 'density-comfortable'].forEach(c => b.classList.remove(c));
@@ -5562,6 +5578,48 @@ function renderSettingsBody() {
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-grid"' + (Theme.gridLines ? ' checked' : '') + '> Row separator lines</label>' +
     '</div>' +
 
+    '<h3 class="snap-set-title">Table grid lines</h3>' +
+    '<div class="color-row">' +
+      '<label class="toolbar-label">Line colour</label>' +
+      '<input type="color" id="set-gridcolor" value="' + (Theme.gridColor || '#111111') + '">' +
+      '<span class="hexcode" id="set-gridcolor-val">' + (Theme.gridColor || '#111111') + '</span>' +
+      '<button class="ghost-btn small" id="set-grid-black">Black</button>' +
+      '<button class="ghost-btn small" id="set-grid-soft">Soft grey</button>' +
+    '</div>' +
+    '<div class="settings-row">' +
+      '<label class="toolbar-label">Line thickness</label>' +
+      '<input type="range" id="set-gridwidth" min="0" max="3" step="0.5" value="' + (Theme.gridWidth === undefined ? 1 : Theme.gridWidth) + '">' +
+      '<span class="drill-count" id="set-gridwidth-val">' + (Theme.gridWidth === undefined ? 1 : Theme.gridWidth) + 'px</span>' +
+    '</div>' +
+
+    '<h3 class="snap-set-title">Row colours</h3>' +
+    '<div class="color-row">' +
+      '<label class="toolbar-label">Mouse-over row</label>' +
+      '<input type="color" id="set-hovercolor" value="' + (Theme.hoverColor || '#FFE3BF') + '">' +
+      '<span class="hexcode" id="set-hovercolor-val">' + (Theme.hoverColor || '#FFE3BF') + '</span>' +
+    '</div>' +
+    '<div class="color-row">' +
+      '<label class="toolbar-label">Mouse-over drill row</label>' +
+      '<input type="color" id="set-drillhover" value="' + (Theme.drillHoverColor || '#D7E8F7') + '">' +
+      '<span class="hexcode" id="set-drillhover-val">' + (Theme.drillHoverColor || '#D7E8F7') + '</span>' +
+      '<span class="drill-count">kept different so drill rows stand out</span>' +
+    '</div>' +
+    '<div class="color-row">' +
+      '<label class="toolbar-label">Opened drill row fill</label>' +
+      '<input type="color" id="set-openfill" value="' + (Theme.openFill || '#FDF3E7') + '">' +
+      '<span class="hexcode" id="set-openfill-val">' + (Theme.openFill || '#FDF3E7') + '</span>' +
+    '</div>' +
+    '<div class="color-row">' +
+      '<label class="toolbar-label">Opened drill row border</label>' +
+      '<input type="color" id="set-openborder" value="' + (Theme.openBorderColor || '#A6402C') + '">' +
+      '<span class="hexcode" id="set-openborder-val">' + (Theme.openBorderColor || '#A6402C') + '</span>' +
+    '</div>' +
+    '<div class="settings-row">' +
+      '<label class="toolbar-label">Open row border thickness</label>' +
+      '<input type="range" id="set-openbw" min="0" max="5" step="0.5" value="' + (Theme.openBorderWidth === undefined ? 2 : Theme.openBorderWidth) + '">' +
+      '<span class="drill-count" id="set-openbw-val">' + (Theme.openBorderWidth === undefined ? 2 : Theme.openBorderWidth) + 'px</span>' +
+    '</div>' +
+
     '<div class="theme-preview">' +
       '<table class="data-table"><thead><tr><th>Article</th><th class="num">Sold</th><th class="num">Stock</th></tr></thead>' +
       '<tbody><tr><td>T-SHIRT-M</td><td class="num">1,538</td><td class="num">2,828</td></tr>' +
@@ -5587,6 +5645,40 @@ function renderSettingsBody() {
     wrap.querySelector('#set-fontsize-val').textContent = Theme.fontSize + 'px';
     saveTheme();
   });
+  function bindColor(id, key) {
+    const el = wrap.querySelector('#' + id);
+    if (!el) return;
+    el.addEventListener('input', function (e) {
+      Theme[key] = e.target.value;
+      const lab = wrap.querySelector('#' + id + '-val');
+      if (lab) lab.textContent = e.target.value;
+      saveTheme();
+    });
+  }
+  bindColor('set-gridcolor', 'gridColor');
+  bindColor('set-hovercolor', 'hoverColor');
+  bindColor('set-drillhover', 'drillHoverColor');
+  bindColor('set-openfill', 'openFill');
+  bindColor('set-openborder', 'openBorderColor');
+
+  const gb = wrap.querySelector('#set-grid-black');
+  if (gb) gb.addEventListener('click', function () { Theme.gridColor = '#111111'; saveTheme(); renderSettingsBody(); });
+  const gs = wrap.querySelector('#set-grid-soft');
+  if (gs) gs.addEventListener('click', function () { Theme.gridColor = '#D8D3C6'; saveTheme(); renderSettingsBody(); });
+
+  const gw = wrap.querySelector('#set-gridwidth');
+  if (gw) gw.addEventListener('input', function (e) {
+    Theme.gridWidth = parseFloat(e.target.value);
+    wrap.querySelector('#set-gridwidth-val').textContent = Theme.gridWidth + 'px';
+    saveTheme();
+  });
+  const obw = wrap.querySelector('#set-openbw');
+  if (obw) obw.addEventListener('input', function (e) {
+    Theme.openBorderWidth = parseFloat(e.target.value);
+    wrap.querySelector('#set-openbw-val').textContent = Theme.openBorderWidth + 'px';
+    saveTheme();
+  });
+
   const crEl = wrap.querySelector('#set-childrow');
   if (crEl) crEl.addEventListener('input', function (e) {
     Theme.childRowScale = parseInt(e.target.value, 10);
@@ -5765,7 +5857,7 @@ function refreshResizableTables() {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v20';
+const BUILD_VERSION = 'v22';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
