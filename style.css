@@ -1078,3 +1078,88 @@ body.col-resizing .col-resizer { background: var(--rust); opacity: .8; }
 .perf-row.depth-3.is-open:hover > td {
   background: var(--drill-hover, #D7E8F7) !important;
 }
+
+/* ============ CATALOG CONSOLE ============ */
+.cat-filters { margin: 4px 0 10px; }
+.cat-filter-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; padding: 3px 0; }
+.cat-flabel {
+  font-size: 11.5px; color: var(--text-soft); font-weight: 600;
+  min-width: 62px; letter-spacing: .3px;
+}
+.cat-chip {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border: 1px solid var(--line-strong); border-radius: 4px;
+  background: var(--paper-raised); font-size: 12px; line-height: 1.5;
+  transition: background .1s, border-color .1s, color .1s;
+}
+.cat-chip:hover { border-color: var(--rust); background: #FFF6EC; }
+.cat-chip.active { background: var(--rust); border-color: var(--rust); color: #fff; font-weight: 600; }
+.cat-chip-n { font-family: var(--font-mono); font-size: 10px; opacity: .65; }
+.cat-chip.active .cat-chip-n { opacity: .85; }
+
+.cat-scroll { max-height: 66vh; }
+.cat-table td { vertical-align: middle; }
+.cat-c-design { min-width: 300px; position: relative; }
+.cat-c-colours { min-width: 130px; }
+
+.cat-caret {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-right: 5px; color: var(--ink);
+  font-size: 10px; transition: transform .14s, color .12s; vertical-align: middle;
+}
+.cat-caret:hover { color: var(--rust); }
+.cat-caret.open { transform: rotate(90deg); color: var(--rust); }
+
+.cat-thumb {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 34px; margin-right: 8px; vertical-align: middle;
+  border: 1px solid var(--line-strong); border-radius: 3px; overflow: hidden;
+  background: var(--paper); flex: 0 0 auto;
+}
+.cat-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cat-thumb-empty { color: var(--text-soft); font-size: 13px; }
+.cat-thumb:hover { border-color: var(--rust); background: #FFF3E4; }
+
+.cat-name { font-weight: 600; font-family: var(--font-body); vertical-align: middle; }
+.cat-sub { font-size: 10.5px; color: var(--text-soft); margin-left: 8px; font-family: var(--font-mono); }
+.cat-cat { font-family: var(--font-body) !important; color: var(--text-soft); font-size: 12px; }
+
+.cat-dot {
+  display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+  margin-right: 3px; border: 1px solid rgba(0,0,0,.22); vertical-align: middle;
+}
+.cat-more { font-family: var(--font-mono); font-size: 10px; color: var(--text-soft); margin-left: 2px; }
+
+.cat-swatch {
+  display: inline-block; width: 14px; height: 14px; border-radius: 3px;
+  border: 1px solid rgba(0,0,0,.25); margin-right: 7px; vertical-align: middle;
+}
+
+.cat-row.cat-colour > td { background: #F7FAFD; }
+.cat-row.cat-size-row > td { background: #FBFCFE; color: var(--text-soft); }
+.cat-row.cat-design.is-open > td { background: var(--lvl0-open, #FDF3E7) !important; }
+.cat-row.cat-design:hover > td { background: var(--xl-hover) !important; }
+.cat-row.cat-colour:hover > td,
+.cat-row.cat-size-row:hover > td { background: var(--drill-hover, #D7E8F7) !important; }
+.cat-indent { padding-left: 30px !important; }
+.cat-indent2 { padding-left: 62px !important; }
+.cat-sizekey { font-family: var(--font-mono); font-size: 11.5px; }
+
+/* size run strip, like the census strip in the reference UI */
+.cat-strip { line-height: 1.7; }
+.cat-size {
+  display: inline-block; min-width: 26px; text-align: center;
+  padding: 1px 4px; margin: 1px 2px 1px 0; border-radius: 3px;
+  font-family: var(--font-mono); font-size: 10px; border: 1px solid transparent;
+}
+.cat-size.ok { background: #D9EFE2; color: #14624F; border-color: #B4DCC6; }
+.cat-size.low { background: #FBEBD2; color: #8A6118; border-color: #EBD4A8; }
+.cat-size.zero { background: #F7DED7; color: #8C2E1B; border-color: #E8C0B5; }
+
+/* catalog statuses */
+.cs-healthy { background: #DCF0E7; color: #14624F; }
+.cs-low-cover { background: #FBEBD2; color: #8A6118; }
+.cs-stockout { background: #F7DED7; color: #8C2E1B; }
+.cs-overstock { background: #DEE8F5; color: #2C4E7A; }
+.cs-no-sale { background: #F2E2F0; color: #6E2A63; }
+.cs-idle { background: #E8E4DA; color: #5E574B; }

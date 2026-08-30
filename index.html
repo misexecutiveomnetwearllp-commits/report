@@ -32,8 +32,8 @@
       <button class="tab-btn" data-tab="performance">
         <span class="tab-no">02</span> Product Performance
       </button>
-      <button class="tab-btn" data-tab="insights">
-        <span class="tab-no">03</span> Reorder Planner
+      <button class="tab-btn" data-tab="catalog">
+        <span class="tab-no">03</span> Catalog
       </button>
       <button class="tab-btn" data-tab="pivot">
         <span class="tab-no">04</span> Pivot Builder
@@ -156,6 +156,46 @@
         <table class="data-table" id="explore-table"></table>
       </div>
       <div class="pager" id="explore-pager"></div>
+    </section>
+
+    <!-- ---------- TAB: CATALOG ---------- -->
+    <section class="tab-panel" id="tab-catalog">
+      <header class="panel-head">
+        <h1>Catalog</h1>
+        <p>Every design, colour and size in one place. Pick a letter to jump to a group of articles, open a design to see its colours, then open a colour to see the size run. Add a photo to any design so it is recognisable at a glance.</p>
+      </header>
+
+      <div class="toolbar">
+        <label class="toolbar-label">Sales window:</label>
+        <select id="catalog-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option><option value="custom">Custom range&hellip;</option></select>
+        <input type="search" id="cat-search" class="text-input" placeholder="Search design, colour, brand&hellip;">
+        <label class="toolbar-label">Sort:</label>
+        <select id="cat-sort" class="select">
+          <option value="worstcover">Worst cover first</option>
+          <option value="topseller">Best sellers first</option>
+          <option value="moststock">Most stock first</option>
+          <option value="az">A to Z</option>
+        </select>
+        <span class="spacer"></span>
+        <button id="cat-expand-all" class="ghost-btn small">Expand all</button>
+        <button id="cat-collapse-all" class="ghost-btn small">Collapse all</button>
+        <button id="cat-export" class="ghost-btn small">&#11015; Export CSV</button>
+      </div>
+
+      <div id="cat-filters" class="cat-filters"></div>
+
+      <div class="seg-control" id="cat-flags">
+        <button class="seg-btn" data-flag="stockout">Stockout</button>
+        <button class="seg-btn" data-flag="lowcover">Low cover</button>
+        <button class="seg-btn" data-flag="overstock">Overstock</button>
+        <button class="seg-btn" data-flag="nosale">No sale</button>
+        <span class="seg-count" id="cat-count"></span>
+      </div>
+
+      <div class="table-scroll cat-scroll">
+        <table class="data-table cat-table" id="cat-table"></table>
+      </div>
+      <input type="file" id="cat-image-input" accept="image/*" hidden>
     </section>
 
     <!-- ---------- TAB: PIVOT ---------- -->
@@ -300,44 +340,6 @@
         <canvas id="pivot-chart-canvas"></canvas>
         <button class="chip-remove-btn" id="pivot-chart-close">✕</button>
       </div>
-      </div>
-    </section>
-
-    <!-- ---------- TAB: REORDER PLANNER ---------- -->
-    <section class="tab-panel" id="tab-insights">
-      <header class="panel-head">
-        <h1>Reorder planner</h1>
-        <p>What to order. Combines Sales, Purchase and Stock to work out each item average daily sale, and how much to order to reach your target stock cover.</p>
-      </header>
-
-      <div class="toolbar" id="insights-toolbar">
-        <label class="toolbar-label">Group by:</label>
-        <select id="insights-groupby" class="select">
-          <option value="Article No" selected>Article No</option>
-          <option value="Sub Section">Sub Section</option>
-          <option value="Item Code">Item Code (barcode level)</option>
-          <option value="Brand">Brand</option>
-          <option value="Style">Style</option>
-          <option value="Supplier">Supplier</option>
-          <option value="Section">Section</option>
-          <option value="Colour">Colour</option>
-          <option value="Size">Size</option>
-        </select>
-        <label class="toolbar-label">Sales window:</label>
-        <select id="insights-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option><option value="custom">Custom range…</option></select><span class="period-custom-range date-range-inline" id="insights-period-custom" style="display:none;"><span class="dr-label">From</span><input type="date" class="text-input period-from" title="Start date"><span class="dr-label">To</span><input type="date" class="text-input period-to" title="End date"></span>
-        <label class="toolbar-label">Target cover:</label>
-        <input type="number" id="insights-target-days" class="text-input narrow" value="30" min="1" max="365"> days
-        <label class="toolbar-checkbox"><input type="checkbox" id="insights-only-flagged" checked> Only items needing reorder</label>
-        <span class="spacer"></span>
-        <button id="insights-export" class="ghost-btn small">⬇ Export CSV</button>
-        <button id="insights-to-sheet" class="ghost-btn small gs-only" style="display:none;">↗ Send to Sheet</button>
-      </div>
-
-      <div id="insights-kpis" class="kpi-row"></div>
-      <div id="insights-missing-note" class="note-banner" style="display:none;"></div>
-
-      <div class="table-scroll" id="insights-table-wrap">
-        <table class="data-table" id="insights-table"></table>
       </div>
     </section>
 

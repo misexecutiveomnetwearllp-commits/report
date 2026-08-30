@@ -749,6 +749,7 @@ function refreshAfterDataChange() {
   renderDashboard();
   renderInsights();
   renderPerformance();
+  renderCatalog();
   renderRelations();
   updateRangeNotes();
   if (Drill.open) renderDrill();
@@ -860,7 +861,8 @@ function initSheets() {
   });
 
   document.getElementById('pivot-to-sheet').addEventListener('click', pivotToSheet);
-  document.getElementById('insights-to-sheet').addEventListener('click', insightsToSheet);
+  const insSheet = document.getElementById('insights-to-sheet');   // Reorder tab removed
+  if (insSheet) insSheet.addEventListener('click', insightsToSheet);
 }
 
 function setGsStatus(msg, cls) {
@@ -2139,6 +2141,7 @@ function renderAllPeriodViews() {
   updateRangeNotes();
   renderInsights();
   renderPerformance();
+  renderCatalog();
   renderDashboard();
   if (typeof Drill !== 'undefined' && Drill.open) renderDrill();
 }
@@ -2733,6 +2736,7 @@ function quickToSheet() {
    8. REORDER PLANNER
    --------------------------------------------------------------- */
 function initInsights() {
+  if (!document.getElementById('insights-groupby')) return;   // tab removed
   document.getElementById('insights-groupby').addEventListener('change', renderInsights);
   document.getElementById('insights-target-days').addEventListener('input', debounce(renderInsights, 250));
   document.getElementById('insights-only-flagged').addEventListener('change', renderInsights);
@@ -2752,10 +2756,12 @@ let lastInsightsRows = null;
 
 function renderInsights() {
   const wrap = document.getElementById('insights-table');
+  if (!wrap) return;   // Reorder Planner tab was removed
   const kpiWrap = document.getElementById('insights-kpis');
   const note = document.getElementById('insights-missing-note');
   const dim = document.getElementById('insights-groupby').value;
-  const targetDays = Math.max(1, parseInt(document.getElementById('insights-target-days').value, 10) || 30);
+  const tdEl = document.getElementById('insights-target-days');
+  const targetDays = Math.max(1, parseInt(tdEl ? tdEl.value : (Prefs.targetDays || 30), 10) || 30);
   const onlyFlagged = document.getElementById('insights-only-flagged').checked;
 
   if (!App.datasets.length) {
@@ -2873,7 +2879,8 @@ function renderPerformance() {
   }
   chartsWrap.style.display = '';
 
-  const targetDays = Math.max(1, parseInt(document.getElementById('insights-target-days').value, 10) || 30);
+  const tdEl = document.getElementById('insights-target-days');
+  const targetDays = Math.max(1, parseInt(tdEl ? tdEl.value : (Prefs.targetDays || 30), 10) || 30);
   const A = buildAnalysis(dim, targetDays);
 
   // KPIs
@@ -5855,9 +5862,513 @@ function refreshResizableTables() {
 }
 
 /* ---------------------------------------------------------------
+   15. CATALOG CONSOLE — alphabetical product browser
+   ---------------------------------------------------------------
+   Article No  = the design      (top level row)
+   Colour Name = the variant     (first expand)
+   Size Name   = the size        (second expand)
+   Every level shows sold / opening / closing, cover days and a
+   colour-coded status, plus an optional photo per design.
+   --------------------------------------------------------------- */
+
+const Catalog = {
+  letter: 'all',
+  section: 'all',
+  sub: 'all',
+  search: '',
+  flags: { stockout: false, nosale: false, overstock: false, lowcover: false },
+  sort: 'worstcover',
+  expanded: {},
+  images: {},          // Article No -> data URL
+  lastRows: null
+};
+
+/* ---- colour swatches: map a colour name to something visual ---- */
+const COLOUR_WORDS = {
+  black: '#1B1B1B', white: '#F5F5F5', offwhite: '#F2EFE6', 'off white': '#F2EFE6',
+  cream: '#F3E9D2', ivory: '#F6F1E0', beige: '#DCC9A6', khaki: '#B5A16B',
+  grey: '#8B8B8B', gray: '#8B8B8B', charcoal: '#3A3F44', silver: '#C0C0C0',
+  red: '#C0392B', maroon: '#7B241C', rust: '#A6402C', wine: '#722F37',
+  pink: '#E88BA6', rose: '#D96A87', peach: '#F2B49A', coral: '#E9705B',
+  orange: '#E08A2E', mustard: '#D3A625', yellow: '#E8C547', gold: '#C9A227',
+  green: '#2E7D4F', olive: '#6B7A32', pista: '#9CCB8E', mint: '#A8D8C4',
+  teal: '#1F6F5C', bottle: '#1F4B3F', 'b-green': '#2E7D4F',
+  blue: '#2C5AA0', navy: '#1E2A4A', 'r-blue': '#2C5AA0', sky: '#7FB3E0',
+  firozi: '#28B5B5', turquoise: '#28B5B5', 'air force': '#5A7FA6',
+  purple: '#6B4C9A', violet: '#7A4CA0', lavender: '#B9A7D6', magenta: '#B5348C',
+  brown: '#6B4A2F', coffee: '#4B3621', tan: '#B08D57', camel: '#C19A6B',
+  multi: 'linear-gradient(135deg,#C0392B 0 25%,#E8C547 25% 50%,#2E7D4F 50% 75%,#2C5AA0 75%)',
+  assorted: 'linear-gradient(135deg,#C0392B 0 25%,#E8C547 25% 50%,#2E7D4F 50% 75%,#2C5AA0 75%)',
+  asstd: 'linear-gradient(135deg,#C0392B 0 25%,#E8C547 25% 50%,#2E7D4F 50% 75%,#2C5AA0 75%)'
+};
+
+/** Turns a colour name into a CSS background. Known names get their real
+ *  colour; anything else gets a stable colour derived from the text, so the
+ *  same name always looks the same. */
+function colourSwatch(name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key || key === '(blank)') return '#D8D3C6';
+  if (COLOUR_WORDS[key]) return COLOUR_WORDS[key];
+  for (const w in COLOUR_WORDS) {
+    if (key.indexOf(w) !== -1) return COLOUR_WORDS[w];
+  }
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 360;
+  return 'hsl(' + h + ', 42%, 58%)';
+}
+
+/* ---- build the catalog index from the loaded data ---- */
+function buildCatalog() {
+  const range = periodRange();
+  const sales = salesRecords().filter(r => inPeriod(r, range));
+  const purch = purchaseRecords().filter(r => inPeriod(r, range));
+  const stock = stockRecords();
+  const days = periodDayCount(range, sales.length ? sales : purch);
+  const anchor = dataAnchorDate();
+
+  const designs = new Map();
+  function design(key) {
+    let d = designs.get(key);
+    if (!d) {
+      d = { key, sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false,
+            lastSale: null, colours: new Map(), meta: {} };
+      designs.set(key, d);
+    }
+    return d;
+  }
+  function colour(d, key) {
+    let c = d.colours.get(key);
+    if (!c) { c = { key, sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null, sizes: new Map() }; d.colours.set(key, c); }
+    return c;
+  }
+  function size(c, key) {
+    let z = c.sizes.get(key);
+    if (!z) { z = { key, sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false }; c.sizes.set(key, z); }
+    return z;
+  }
+  function meta(d, r) {
+    ['Section', 'Sub Section', 'Brand', 'Supplier', 'Style'].forEach(f => {
+      if (!d.meta[f] && r[f]) d.meta[f] = String(r[f]);
+    });
+  }
+
+  sales.forEach(r => {
+    const d = design(dimKey(r, 'Article No'));
+    const c = colour(d, dimKey(r, 'Colour'));
+    const z = size(c, dimKey(r, 'Size'));
+    const q = recQty(r);
+    d.sold += q; c.sold += q; z.sold += q;
+    if (r.Date) {
+      if (!d.lastSale || r.Date > d.lastSale) d.lastSale = r.Date;
+      if (!c.lastSale || r.Date > c.lastSale) c.lastSale = r.Date;
+    }
+    meta(d, r);
+  });
+
+  purch.forEach(r => {
+    const d = design(dimKey(r, 'Article No'));
+    const c = colour(d, dimKey(r, 'Colour'));
+    const z = size(c, dimKey(r, 'Size'));
+    const q = recQty(r);
+    d.purchased += q; c.purchased += q; z.purchased += q;
+    meta(d, r);
+  });
+
+  stock.forEach(r => {
+    const d = design(dimKey(r, 'Article No'));
+    const c = colour(d, dimKey(r, 'Colour'));
+    const z = size(c, dimKey(r, 'Size'));
+    const cb = recQty(r);
+    const ob = recOpeningQty(r);
+    d.cbs += cb; c.cbs += cb; z.cbs += cb;
+    if (ob !== null) {
+      d.obs += ob; c.obs += ob; z.obs += ob;
+      d.hasOBS = c.hasOBS = z.hasOBS = true;
+    }
+    meta(d, r);
+  });
+
+  const rows = [...designs.values()].map(d => {
+    d.colourList = [...d.colours.values()].map(c => {
+      c.sizeList = [...c.sizes.values()].sort((a, b) => b.cbs - a.cbs || b.sold - a.sold);
+      return Object.assign(c, catalogMetrics(c, days, anchor));
+    }).sort((a, b) => b.sold - a.sold || b.cbs - a.cbs);
+    return Object.assign(d, catalogMetrics(d, days, anchor));
+  });
+
+  return { rows, days, range, anchor };
+}
+
+function catalogMetrics(x, days, anchor) {
+  const avgDaily = x.sold / days;
+  const cover = avgDaily > 0 ? x.cbs / avgDaily : (x.cbs > 0 ? Infinity : 0);
+  const opening = x.sold + x.cbs;
+  const sellThrough = opening > 0 ? (x.sold / opening) * 100 : 0;
+  const daysSince = x.lastSale ? Math.round((anchor - x.lastSale) / 86400000) : null;
+  const moved = x.hasOBS ? (x.obs - x.cbs) : null;
+  let status;
+  if (x.cbs === 0 && x.sold > 0) status = 'Stockout';
+  else if (x.sold === 0 && x.cbs > 0) status = 'No sale';
+  else if (cover !== Infinity && cover < 15 && x.sold > 0) status = 'Low cover';
+  else if (cover === Infinity || cover > 120) status = 'Overstock';
+  else if (x.sold > 0) status = 'Healthy';
+  else status = 'Idle';
+  return { avgDaily, cover, sellThrough, daysSince, moved, status };
+}
+
+function catalogStatusClass(s) {
+  return 'cs-' + String(s).toLowerCase().replace(/\s+/g, '-');
+}
+
+/* ---- filtering ---- */
+function catalogFiltered(all) {
+  let rows = all.slice();
+  if (Catalog.letter !== 'all') {
+    rows = rows.filter(r => String(r.key).trim().charAt(0).toUpperCase() === Catalog.letter);
+  }
+  if (Catalog.section !== 'all') rows = rows.filter(r => (r.meta.Section || '(blank)') === Catalog.section);
+  if (Catalog.sub !== 'all') rows = rows.filter(r => (r.meta['Sub Section'] || '(blank)') === Catalog.sub);
+
+  const f = Catalog.flags;
+  if (f.stockout) rows = rows.filter(r => r.status === 'Stockout');
+  if (f.nosale) rows = rows.filter(r => r.sold === 0);
+  if (f.overstock) rows = rows.filter(r => r.status === 'Overstock');
+  if (f.lowcover) rows = rows.filter(r => r.status === 'Low cover');
+
+  const q = Catalog.search.trim().toLowerCase();
+  if (q) {
+    rows = rows.filter(r =>
+      r.key.toLowerCase().indexOf(q) !== -1 ||
+      Object.values(r.meta).some(v => String(v).toLowerCase().indexOf(q) !== -1) ||
+      [...r.colours.keys()].some(c => String(c).toLowerCase().indexOf(q) !== -1));
+  }
+
+  const s = Catalog.sort;
+  rows.sort((a, b) => {
+    if (s === 'topseller') return b.sold - a.sold;
+    if (s === 'moststock') return b.cbs - a.cbs;
+    if (s === 'az') return String(a.key).localeCompare(String(b.key));
+    // worst cover first: stockouts, then lowest cover, ignoring idle lines
+    const av = a.cover === Infinity ? 1e9 : a.cover;
+    const bv = b.cover === Infinity ? 1e9 : b.cover;
+    return av - bv || b.sold - a.sold;
+  });
+  return rows;
+}
+
+/* ---- rendering ---- */
+function initCatalog() {
+  const host = document.getElementById('tab-catalog');
+  if (!host) return;
+  loadCatalogImages();
+
+  document.getElementById('cat-search').addEventListener('input', debounce(e => {
+    Catalog.search = e.target.value; renderCatalog();
+  }, 200));
+  document.getElementById('cat-sort').addEventListener('change', e => {
+    Catalog.sort = e.target.value; renderCatalog();
+  });
+  document.getElementById('cat-expand-all').addEventListener('click', () => {
+    const rows = catalogFiltered(buildCatalog().rows).slice(0, 60);
+    rows.forEach(r => { Catalog.expanded[r.key] = true; });
+    renderCatalog();
+  });
+  document.getElementById('cat-collapse-all').addEventListener('click', () => {
+    Catalog.expanded = {}; renderCatalog();
+  });
+  document.getElementById('cat-export').addEventListener('click', exportCatalogCSV);
+  document.querySelectorAll('#cat-flags .seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const k = btn.dataset.flag;
+      Catalog.flags[k] = !Catalog.flags[k];
+      btn.classList.toggle('active', Catalog.flags[k]);
+      renderCatalog();
+    });
+  });
+  const imgInput = document.getElementById('cat-image-input');
+  if (imgInput) imgInput.addEventListener('change', onCatalogImagePicked);
+}
+
+function renderCatalog() {
+  const host = document.getElementById('cat-table');
+  if (!host) return;
+  if (!App.datasets.length) {
+    document.getElementById('cat-filters').innerHTML = '';
+    document.getElementById('cat-count').textContent = '';
+    host.innerHTML = '<tr><td class="empty-hint">Load your reports on the Import tab first.</td></tr>';
+    return;
+  }
+
+  const built = buildCatalog();
+  renderCatalogFilters(built.rows);
+  const rows = catalogFiltered(built.rows);
+  Catalog.lastRows = rows;
+
+  document.getElementById('cat-count').textContent =
+    rows.length.toLocaleString('en-IN') + ' / ' + built.rows.length.toLocaleString('en-IN') + ' designs' +
+    ' \u00b7 ' + built.days + ' days';
+
+  const head = '<thead><tr>' +
+    '<th class="cat-c-design">Design</th>' +
+    '<th>Category</th>' +
+    '<th class="cat-c-colours">Colours</th>' +
+    '<th class="num">Sold</th>' +
+    '<th class="num">Opening</th>' +
+    '<th class="num">Closing</th>' +
+    '<th class="num">Moved</th>' +
+    '<th class="num">Cover</th>' +
+    '<th class="num">Sell-thru</th>' +
+    '<th>Last sold</th>' +
+    '<th>Status</th>' +
+    '</tr></thead>';
+
+  const body = rows.slice(0, 300).map(d => catalogDesignRow(d)).join('');
+
+  const tSold = rows.reduce((a, r) => a + r.sold, 0);
+  const tObs = rows.reduce((a, r) => a + r.obs, 0);
+  const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
+  const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
+  const foot = '<tfoot><tr>' +
+    '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td><td></td><td></td>' +
+    '<td class="num">' + fmtNum(tSold) + '</td>' +
+    '<td class="num">' + fmtNum(tObs) + '</td>' +
+    '<td class="num">' + fmtNum(tCbs) + '</td>' +
+    '<td class="num">' + fmtNum(tObs - tCbs) + '</td>' +
+    '<td class="num"></td>' +
+    '<td class="num">' + fmtNum(tST, 1) + '%</td>' +
+    '<td></td><td></td></tr></tfoot>';
+
+  host.innerHTML = head + '<tbody>' + body + '</tbody>' + foot;
+  wireCatalogRows();
+  makeTableResizable(host);
+}
+
+function catalogDesignRow(d) {
+  const open = !!Catalog.expanded[d.key];
+  const img = Catalog.images[d.key];
+  const dots = d.colourList.slice(0, 10).map(c =>
+    '<span class="cat-dot" title="' + escapeHtml(c.key + ' \u2014 ' + fmtNum(c.cbs) + ' in stock, ' + fmtNum(c.sold) + ' sold') + '" ' +
+    'style="background:' + colourSwatch(c.key) + '"></span>').join('') +
+    (d.colourList.length > 10 ? '<span class="cat-more">+' + (d.colourList.length - 10) + '</span>' : '');
+
+  let html = '<tr class="cat-row cat-design' + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(d.key) + '">' +
+    '<td class="cat-c-design">' +
+      '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>' +
+      '<button class="cat-thumb" data-img="' + escapeHtml(d.key) + '" title="Click to add or change the photo">' +
+        (img ? '<img src="' + img + '" alt="">' : '<span class="cat-thumb-empty">\uFF0B</span>') +
+      '</button>' +
+      '<span class="cat-name">' + escapeHtml(d.key) + '</span>' +
+      '<span class="cat-sub">' + d.colourList.length + ' colours \u00b7 ' +
+        d.colourList.reduce((a, c) => a + c.sizes.size, 0) + ' sizes</span>' +
+    '</td>' +
+    '<td class="cat-cat">' + escapeHtml(d.meta['Sub Section'] || d.meta.Section || '\u2014') + '</td>' +
+    '<td class="cat-c-colours">' + dots + '</td>' +
+    '<td class="num">' + fmtNum(d.sold) + '</td>' +
+    '<td class="num obs-col">' + (d.hasOBS ? fmtNum(d.obs) : '\u2014') + '</td>' +
+    '<td class="num cbs-col">' + fmtNum(d.cbs) + '</td>' +
+    '<td class="num ' + (d.moved > 0 ? 'mv-down' : (d.moved < 0 ? 'mv-up' : '')) + '">' +
+      (d.moved === null ? '\u2014' : (d.moved > 0 ? '\u2193 ' : (d.moved < 0 ? '\u2191 ' : '')) + fmtNum(Math.abs(d.moved))) + '</td>' +
+    '<td class="num">' + (d.cover === Infinity ? '\u221E' : fmtNum(d.cover, 0) + 'd') + '</td>' +
+    '<td class="num">' + fmtNum(d.sellThrough, 1) + '%</td>' +
+    '<td>' + (d.lastSale ? fmtDate(d.lastSale) : '\u2014') + '</td>' +
+    '<td><span class="status-tag ' + catalogStatusClass(d.status) + '">' + d.status + '</span></td>' +
+  '</tr>';
+
+  if (open) {
+    d.colourList.forEach(c => { html += catalogColourRow(d, c); });
+  }
+  return html;
+}
+
+function catalogColourRow(d, c) {
+  const cKey = d.key + '|' + c.key;
+  const open = !!Catalog.expanded[cKey];
+  const sizes = c.sizeList.slice(0, 24).map(z =>
+    '<span class="cat-size ' + (z.cbs === 0 ? 'zero' : (z.cbs <= 2 ? 'low' : 'ok')) + '" ' +
+    'title="' + escapeHtml(z.key + ': ' + fmtNum(z.cbs) + ' in stock, ' + fmtNum(z.sold) + ' sold') + '">' +
+    escapeHtml(truncateLabel(z.key, 4)) + '</span>').join('');
+
+  let html = '<tr class="cat-row cat-colour' + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(cKey) + '">' +
+    '<td class="cat-c-design cat-indent">' +
+      '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>' +
+      '<span class="cat-swatch" style="background:' + colourSwatch(c.key) + '"></span>' +
+      '<span class="cat-name">' + escapeHtml(c.key) + '</span>' +
+    '</td>' +
+    '<td class="cat-strip" colspan="2">' + sizes + '</td>' +
+    '<td class="num">' + fmtNum(c.sold) + '</td>' +
+    '<td class="num obs-col">' + (c.hasOBS ? fmtNum(c.obs) : '\u2014') + '</td>' +
+    '<td class="num cbs-col">' + fmtNum(c.cbs) + '</td>' +
+    '<td class="num ' + (c.moved > 0 ? 'mv-down' : (c.moved < 0 ? 'mv-up' : '')) + '">' +
+      (c.moved === null ? '\u2014' : (c.moved > 0 ? '\u2193 ' : (c.moved < 0 ? '\u2191 ' : '')) + fmtNum(Math.abs(c.moved))) + '</td>' +
+    '<td class="num">' + (c.cover === Infinity ? '\u221E' : fmtNum(c.cover, 0) + 'd') + '</td>' +
+    '<td class="num">' + fmtNum(c.sellThrough, 1) + '%</td>' +
+    '<td>' + (c.lastSale ? fmtDate(c.lastSale) : '\u2014') + '</td>' +
+    '<td><span class="status-tag ' + catalogStatusClass(c.status) + '">' + c.status + '</span></td>' +
+  '</tr>';
+
+  if (open) {
+    c.sizeList.forEach(z => {
+      const st = z.cbs === 0 && z.sold > 0 ? 'Stockout' : (z.sold === 0 && z.cbs > 0 ? 'No sale' : (z.sold > 0 ? 'Healthy' : 'Idle'));
+      html += '<tr class="cat-row cat-size-row">' +
+        '<td class="cat-c-design cat-indent2"><span class="cat-sizekey">' + escapeHtml(z.key) + '</span></td>' +
+        '<td colspan="2"></td>' +
+        '<td class="num">' + fmtNum(z.sold) + '</td>' +
+        '<td class="num obs-col">' + (z.hasOBS ? fmtNum(z.obs) : '\u2014') + '</td>' +
+        '<td class="num cbs-col">' + fmtNum(z.cbs) + '</td>' +
+        '<td class="num">' + (z.hasOBS ? fmtNum(z.obs - z.cbs) : '\u2014') + '</td>' +
+        '<td class="num"></td><td class="num"></td><td></td>' +
+        '<td><span class="status-tag ' + catalogStatusClass(st) + '">' + st + '</span></td>' +
+      '</tr>';
+    });
+  }
+  return html;
+}
+
+function renderCatalogFilters(all) {
+  const wrap = document.getElementById('cat-filters');
+  if (!wrap) return;
+
+  const letters = {};
+  all.forEach(r => {
+    const ch = String(r.key).trim().charAt(0).toUpperCase();
+    if (/[A-Z0-9]/.test(ch)) letters[ch] = (letters[ch] || 0) + 1;
+  });
+  const letterKeys = Object.keys(letters).sort();
+
+  const inLetter = Catalog.letter === 'all' ? all
+    : all.filter(r => String(r.key).trim().charAt(0).toUpperCase() === Catalog.letter);
+
+  const sections = {};
+  inLetter.forEach(r => { const s = r.meta.Section || '(blank)'; sections[s] = (sections[s] || 0) + 1; });
+  const sectionKeys = Object.keys(sections).sort((a, b) => sections[b] - sections[a]).slice(0, 14);
+
+  const inSection = Catalog.section === 'all' ? inLetter
+    : inLetter.filter(r => (r.meta.Section || '(blank)') === Catalog.section);
+  const subs = {};
+  inSection.forEach(r => { const s = r.meta['Sub Section'] || '(blank)'; subs[s] = (subs[s] || 0) + 1; });
+  const subKeys = Object.keys(subs).sort((a, b) => subs[b] - subs[a]).slice(0, 18);
+
+  wrap.innerHTML =
+    '<div class="cat-filter-row"><span class="cat-flabel">Cat:</span>' +
+      '<button class="cat-chip' + (Catalog.letter === 'all' ? ' active' : '') + '" data-letter="all">All</button>' +
+      letterKeys.map(k => '<button class="cat-chip' + (Catalog.letter === k ? ' active' : '') + '" data-letter="' + k + '">' +
+        k + '<span class="cat-chip-n">' + letters[k] + '</span></button>').join('') +
+    '</div>' +
+    '<div class="cat-filter-row"><span class="cat-flabel">Section:</span>' +
+      '<button class="cat-chip' + (Catalog.section === 'all' ? ' active' : '') + '" data-section="all">All</button>' +
+      sectionKeys.map(k => '<button class="cat-chip' + (Catalog.section === k ? ' active' : '') + '" data-section="' + escapeHtml(k) + '">' +
+        escapeHtml(truncateLabel(k, 18)) + '<span class="cat-chip-n">' + sections[k] + '</span></button>').join('') +
+    '</div>' +
+    '<div class="cat-filter-row"><span class="cat-flabel">Sub-cat:</span>' +
+      '<button class="cat-chip' + (Catalog.sub === 'all' ? ' active' : '') + '" data-sub="all">All</button>' +
+      subKeys.map(k => '<button class="cat-chip' + (Catalog.sub === k ? ' active' : '') + '" data-sub="' + escapeHtml(k) + '">' +
+        escapeHtml(truncateLabel(k, 20)) + '<span class="cat-chip-n">' + subs[k] + '</span></button>').join('') +
+    '</div>';
+
+  wrap.querySelectorAll('[data-letter]').forEach(b => b.addEventListener('click', () => {
+    Catalog.letter = b.dataset.letter; Catalog.section = 'all'; Catalog.sub = 'all'; renderCatalog();
+  }));
+  wrap.querySelectorAll('[data-section]').forEach(b => b.addEventListener('click', () => {
+    Catalog.section = b.dataset.section; Catalog.sub = 'all'; renderCatalog();
+  }));
+  wrap.querySelectorAll('[data-sub]').forEach(b => b.addEventListener('click', () => {
+    Catalog.sub = b.dataset.sub; renderCatalog();
+  }));
+}
+
+function wireCatalogRows() {
+  const host = document.getElementById('cat-table');
+  host.querySelectorAll('.cat-caret').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const key = btn.closest('tr').dataset.key;
+      Catalog.expanded[key] = !Catalog.expanded[key];
+      renderCatalog();
+    });
+  });
+  host.querySelectorAll('.cat-thumb').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      Catalog.pendingImage = btn.dataset.img;
+      document.getElementById('cat-image-input').click();
+    });
+  });
+  host.querySelectorAll('tr.cat-design, tr.cat-colour').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const c = tr.querySelector('.cat-caret');
+      if (c) c.click();
+    });
+  });
+}
+
+/* ---- photos, kept in this browser ---- */
+function loadCatalogImages() {
+  try {
+    const raw = Store.get('sl_catalog_images');
+    if (raw) Catalog.images = JSON.parse(raw) || {};
+  } catch (e) { Catalog.images = {}; }
+}
+function saveCatalogImages() {
+  try { Store.set('sl_catalog_images', JSON.stringify(Catalog.images)); }
+  catch (e) { toast('Could not save the photo - browser storage is full.'); }
+}
+
+function onCatalogImagePicked(e) {
+  const file = e.target.files && e.target.files[0];
+  const key = Catalog.pendingImage;
+  e.target.value = '';
+  if (!file || !key) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    // shrink it so many photos still fit in browser storage
+    const img = new Image();
+    img.onload = () => {
+      const max = 120;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      Catalog.images[key] = cv.toDataURL('image/jpeg', 0.72);
+      saveCatalogImages();
+      renderCatalog();
+      toast('Photo added to ' + key + '.');
+    };
+    img.onerror = () => toast('That file could not be read as an image.');
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function exportCatalogCSV() {
+  if (!Catalog.lastRows || !Catalog.lastRows.length) { toast('Nothing to export yet.'); return; }
+  const headers = ['Article No', 'Section', 'Sub Section', 'Brand', 'Supplier', 'Colour', 'Size',
+                   'Sold', 'Opening', 'Closing', 'Moved', 'Cover days', 'Sell-through %', 'Status'];
+  const out = [];
+  Catalog.lastRows.forEach(d => {
+    d.colourList.forEach(c => {
+      c.sizeList.forEach(z => {
+        out.push([d.key, d.meta.Section || '', d.meta['Sub Section'] || '', d.meta.Brand || '',
+                  d.meta.Supplier || '', c.key, z.key, z.sold, z.hasOBS ? z.obs : '', z.cbs,
+                  z.hasOBS ? (z.obs - z.cbs) : '', '', '', '']);
+      });
+      out.push([d.key, d.meta.Section || '', d.meta['Sub Section'] || '', d.meta.Brand || '',
+                d.meta.Supplier || '', c.key, 'ALL SIZES', c.sold, c.hasOBS ? c.obs : '', c.cbs,
+                c.moved === null ? '' : c.moved,
+                c.cover === Infinity ? '' : Math.round(c.cover), Number(c.sellThrough.toFixed(1)), c.status]);
+    });
+    out.push([d.key, d.meta.Section || '', d.meta['Sub Section'] || '', d.meta.Brand || '',
+              d.meta.Supplier || '', 'ALL COLOURS', '', d.sold, d.hasOBS ? d.obs : '', d.cbs,
+              d.moved === null ? '' : d.moved,
+              d.cover === Infinity ? '' : Math.round(d.cover), Number(d.sellThrough.toFixed(1)), d.status]);
+  });
+  downloadBlob(toCSV(headers, out), 'catalog.csv', 'text/csv');
+}
+
+/* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v22';
+const BUILD_VERSION = 'v23';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -5887,6 +6398,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('modal-stack', initModalStack);
   safeInit('settings', initSettings);
   safeInit('col-resize', initColResize);
+  safeInit('catalog', initCatalog);
   safeInit('prefs-apply', applyPrefsToControls);
   safeInit('snapshot', initSnapshot);
   safeInit('session', initSession);
