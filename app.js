@@ -5247,7 +5247,7 @@ function ensureSettingsDom() {
           '<button class="seg-btn active" data-stab="look">Look &amp; Feel</button>' +
           '<button class="seg-btn" data-stab="dashboard">01 Dashboard</button>' +
           '<button class="seg-btn" data-stab="performance">02 Performance</button>' +
-          '<button class="seg-btn" data-stab="reorder">03 Reorder</button>' +
+          '<button class="seg-btn" data-stab="catalog">03 Catalog</button>' +
           '<button class="seg-btn" data-stab="pivot">04 Pivot</button>' +
           '<button class="seg-btn" data-stab="explore">05 Explore</button>' +
           '<button class="seg-btn" data-stab="import">06 Import</button>' +
@@ -5401,41 +5401,8 @@ function renderSettingsBody() {
     return;
   }
 
-  // ---- 03 Reorder Planner ----
-  if (settingsTab === 'reorder') {
-    wrap.innerHTML =
-      '<h3 class="snap-set-title">Defaults</h3>' +
-      '<div class="settings-row">' +
-        '<label class="toolbar-label">Group by</label>' +
-        '<select id="set-reo-group" class="select">' +
-          PERF_CHAIN_CHOICES.map(function (d) {
-            return '<option value="' + d + '"' + ((Prefs.reorderGroupBy || 'Article No') === d ? ' selected' : '') + '>' + d + '</option>';
-          }).join('') +
-        '</select>' +
-        '<label class="toolbar-label">Target cover</label>' +
-        '<input type="number" id="set-reo-days" class="text-input narrow" min="1" max="365" value="' + (Prefs.targetDays || 30) + '"> days' +
-      '</div>' +
-      '<label class="toolbar-checkbox" style="margin-top:10px;"><input type="checkbox" id="set-reo-flagged"' +
-        (Prefs.reorderOnlyFlagged !== false ? ' checked' : '') + '> Show only items that need reordering</label>';
-
-    wrap.querySelector('#set-reo-group').addEventListener('change', function (e) {
-      Prefs.reorderGroupBy = e.target.value; savePrefs();
-      const g = document.getElementById('insights-groupby');
-      if (g) { g.value = Prefs.reorderGroupBy; renderInsights(); }
-    });
-    wrap.querySelector('#set-reo-days').addEventListener('change', function (e) {
-      Prefs.targetDays = Math.max(1, Math.min(365, parseInt(e.target.value, 10) || 30));
-      savePrefs();
-      const d = document.getElementById('insights-target-days');
-      if (d) { d.value = Prefs.targetDays; renderInsights(); renderPerformance(); }
-    });
-    wrap.querySelector('#set-reo-flagged').addEventListener('change', function (e) {
-      Prefs.reorderOnlyFlagged = e.target.checked; savePrefs();
-      const c = document.getElementById('insights-only-flagged');
-      if (c) { c.checked = Prefs.reorderOnlyFlagged; renderInsights(); }
-    });
-    return;
-  }
+  // ---- 03 Catalog ----
+  if (settingsTab === 'catalog') { renderCatalogSettings(wrap); return; }
 
   // ---- 04 Pivot Builder ----
   if (settingsTab === 'pivot') {
@@ -6009,8 +5976,8 @@ function catalogMetrics(x, days, anchor) {
   let status;
   if (x.cbs === 0 && x.sold > 0) status = 'Stockout';
   else if (x.sold === 0 && x.cbs > 0) status = 'No sale';
-  else if (cover !== Infinity && cover < 15 && x.sold > 0) status = 'Low cover';
-  else if (cover === Infinity || cover > 120) status = 'Overstock';
+  else if (cover !== Infinity && cover < (CatPrefs.lowCoverDays || 15) && x.sold > 0) status = 'Low cover';
+  else if (cover === Infinity || cover > (CatPrefs.overstockDays || 120)) status = 'Overstock';
   else if (x.sold > 0) status = 'Healthy';
   else status = 'Idle';
   return { avgDaily, cover, sellThrough, daysSince, moved, status };
@@ -6089,6 +6056,63 @@ function initCatalog() {
   if (imgInput) imgInput.addEventListener('change', onCatalogImagePicked);
 }
 
+/** Colour key + the two formulas, shown above the catalog table. */
+function replenLegendHtml() {
+  const bands = [
+    ['0\u201333%', '#ea9999', 'Low stock'],
+    ['>33\u201366%', '#ffd966', 'Medium stock'],
+    ['>66\u2013100%', '#b6d7a8', 'Good / healthy'],
+    ['>100%', '#b4a7d6', 'Overstock']
+  ];
+  return '<div class="stock-legend"><span class="sl-title">Stock %</span>' +
+    bands.map(b => '<span class="sl-item"><span class="sl-sw" style="background:' + b[1] + '"></span>' +
+      b[0] + ' \u00b7 ' + b[2] + '</span>').join('') +
+    '<span class="sl-note">ML = ADC \u00d7 LT \u00d7 SF \u00b7 Stock % = (Closing + MIT) \u00f7 ML</span></div>';
+}
+
+/** Sets one field on every design currently listed. */
+function replenBulkApply(field, value) {
+  const rows = Catalog.lastRows || [];
+  if (!rows.length) { toast('Nothing on screen to apply to.'); return; }
+  const v = parseFloat(value);
+  if (isNaN(v)) { toast('Enter a number first.'); return; }
+  rows.forEach(d => {
+    const o = Replen.overrides[d.key] || (Replen.overrides[d.key] = {});
+    o[field] = v;
+  });
+  saveReplen();
+  renderCatalog();
+  toast(field.toUpperCase() + ' set to ' + v + ' on ' + rows.length + ' designs.');
+}
+
+function replenBulkBarHtml() {
+  return '<div class="cat-bulk">' +
+    '<span class="toolbar-label">Set for all listed designs:</span>' +
+    '<label class="toolbar-label">LT</label><input type="number" id="bulk-lt" class="text-input" min="0" step="1">' +
+    '<label class="toolbar-label">SF</label><input type="number" id="bulk-sf" class="text-input" min="0" step="0.1">' +
+    '<label class="toolbar-label">MOQ</label><input type="number" id="bulk-moq" class="text-input" min="0" step="1">' +
+    '<button class="ghost-btn small primary" id="bulk-apply">Apply</button>' +
+    '<button class="ghost-btn small" id="bulk-clear">Clear all manual values</button>' +
+    '</div>';
+}
+
+function wireReplenBulk() {
+  const ap = document.getElementById('bulk-apply');
+  if (ap) ap.addEventListener('click', () => {
+    let done = false;
+    [['lt', 'bulk-lt'], ['sf', 'bulk-sf'], ['moq', 'bulk-moq']].forEach(([f, id]) => {
+      const el = document.getElementById(id);
+      if (el && el.value !== '') { replenBulkApply(f, el.value); done = true; }
+    });
+    if (!done) toast('Fill LT, SF or MOQ first.');
+  });
+  const cl = document.getElementById('bulk-clear');
+  if (cl) cl.addEventListener('click', () => {
+    Replen.overrides = {}; saveReplen(); renderCatalog();
+    toast('All manual ADC / LT / SF / MOQ / MIT values cleared.');
+  });
+}
+
 function renderCatalog() {
   const host = document.getElementById('cat-table');
   if (!host) return;
@@ -6100,7 +6124,14 @@ function renderCatalog() {
   }
 
   const built = buildCatalog();
+  _catDays = built.days;
   renderCatalogFilters(built.rows);
+  const extra = document.getElementById('cat-extra');
+  if (extra) {
+    const planOn = ['adc','lt','sf','moq','ml','mit','stockpct','reorder'].some(catColOn);
+    extra.innerHTML = planOn ? (replenLegendHtml() + replenBulkBarHtml()) : '';
+    if (planOn) wireReplenBulk();
+  }
   const rows = catalogFiltered(built.rows);
   Catalog.lastRows = rows;
 
@@ -6110,68 +6141,117 @@ function renderCatalog() {
 
   const head = '<thead><tr>' +
     '<th class="cat-c-design">Design</th>' +
-    '<th>Category</th>' +
-    '<th class="cat-c-colours">Colours</th>' +
-    '<th class="num">Sold</th>' +
-    '<th class="num">Opening</th>' +
-    '<th class="num">Closing</th>' +
-    '<th class="num">Moved</th>' +
-    '<th class="num">Cover</th>' +
-    '<th class="num">Sell-thru</th>' +
-    '<th>Last sold</th>' +
-    '<th>Status</th>' +
+    (catColOn('category') ? '<th>Category</th>' : '') +
+    (catColOn('colours') ? '<th class="cat-c-colours">Colours</th>' : '') +
+    (catColOn('sold') ? '<th class="num">Sold</th>' : '') +
+    (catColOn('opening') ? '<th class="num">Opening</th>' : '') +
+    (catColOn('closing') ? '<th class="num">Closing</th>' : '') +
+    (catColOn('moved') ? '<th class="num">Moved</th>' : '') +
+    (catColOn('adc') ? '<th class="num" title="Average Daily Consumption">ADC</th>' : '') +
+    (catColOn('lt') ? '<th class="num" title="Lead Time in days">LT</th>' : '') +
+    (catColOn('sf') ? '<th class="num" title="Safety Factor">SF</th>' : '') +
+    (catColOn('moq') ? '<th class="num" title="Minimum Order Quantity">MOQ</th>' : '') +
+    (catColOn('ml') ? '<th class="num" title="Max Level = ADC x LT x SF">ML</th>' : '') +
+    (catColOn('mit') ? '<th class="num" title="Material In Transit">MIT</th>' : '') +
+    (catColOn('stockpct') ? '<th class="num" title="(Closing + MIT) as a share of Max Level">Stock %</th>' : '') +
+    (catColOn('reorder') ? '<th class="num" title="ML minus what you have, rounded up to the MOQ">Reorder</th>' : '') +
+    (catColOn('cover') ? '<th class="num">Cover</th>' : '') +
+    (catColOn('sellthru') ? '<th class="num">Sell-thru</th>' : '') +
+    (catColOn('lastsold') ? '<th>Last sold</th>' : '') +
+    (catColOn('status') ? '<th>Status</th>' : '') +
     '</tr></thead>';
 
-  const body = rows.slice(0, 300).map(d => catalogDesignRow(d)).join('');
+  const body = rows.slice(0, CatPrefs.maxRows || 300).map(d => catalogDesignRow(d)).join('');
 
   const tSold = rows.reduce((a, r) => a + r.sold, 0);
   const tObs = rows.reduce((a, r) => a + r.obs, 0);
   const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
   const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
+  const tReorder = rows.reduce((a, r) => a + replenFor(r.key, r.sold, built.days, r.cbs).reorder, 0);
+  const fillerCols = (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0);
   const foot = '<tfoot><tr>' +
-    '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td><td></td><td></td>' +
-    '<td class="num">' + fmtNum(tSold) + '</td>' +
-    '<td class="num">' + fmtNum(tObs) + '</td>' +
-    '<td class="num">' + fmtNum(tCbs) + '</td>' +
-    '<td class="num">' + fmtNum(tObs - tCbs) + '</td>' +
-    '<td class="num"></td>' +
-    '<td class="num">' + fmtNum(tST, 1) + '%</td>' +
-    '<td></td><td></td></tr></tfoot>';
+    '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td>' +
+    (fillerCols ? '<td colspan="' + fillerCols + '"></td>' : '') +
+    (catColOn('sold') ? '<td class="num">' + fmtNum(tSold) + '</td>' : '') +
+    (catColOn('opening') ? '<td class="num">' + fmtNum(tObs) + '</td>' : '') +
+    (catColOn('closing') ? '<td class="num">' + fmtNum(tCbs) + '</td>' : '') +
+    (catColOn('moved') ? '<td class="num">' + fmtNum(tObs - tCbs) + '</td>' : '') +
+    ['adc','lt','sf','moq','ml','mit','stockpct'].filter(catColOn).map(function () { return '<td></td>'; }).join('') +
+    (catColOn('reorder') ? '<td class="num">' + fmtNum(tReorder) + '</td>' : '') +
+    (catColOn('cover') ? '<td class="num"></td>' : '') +
+    (catColOn('sellthru') ? '<td class="num">' + fmtNum(tST, 1) + '%</td>' : '') +
+    (catColOn('lastsold') ? '<td></td>' : '') +
+    (catColOn('status') ? '<td></td>' : '') +
+    '</tr></tfoot>';
 
   host.innerHTML = head + '<tbody>' + body + '</tbody>' + foot;
   wireCatalogRows();
+  wireReplenInputs(host);
   makeTableResizable(host);
+}
+
+let _catDays = 30;
+function catalogDays() { return _catDays; }
+
+/** Typing in an ADC / LT / SF / MOQ / MIT box saves that value for the row.
+ *  Clearing the box goes back to the automatic figure. */
+function wireReplenInputs(host) {
+  host.querySelectorAll('.cat-inp').forEach(inp => {
+    inp.addEventListener('click', e => e.stopPropagation());
+    inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); });
+    inp.addEventListener('change', e => {
+      e.stopPropagation();
+      const key = e.target.dataset.rkey, field = e.target.dataset.rfield;
+      const raw = e.target.value;
+      const o = Replen.overrides[key] || (Replen.overrides[key] = {});
+      if (raw === '' || isNaN(parseFloat(raw))) delete o[field];
+      else o[field] = parseFloat(raw);
+      if (!Object.keys(o).length) delete Replen.overrides[key];
+      saveReplen();
+      renderCatalog();
+    });
+  });
 }
 
 function catalogDesignRow(d) {
   const open = !!Catalog.expanded[d.key];
   const img = Catalog.images[d.key];
-  const dots = d.colourList.slice(0, 10).map(c =>
-    '<span class="cat-dot" title="' + escapeHtml(c.key + ' \u2014 ' + fmtNum(c.cbs) + ' in stock, ' + fmtNum(c.sold) + ' sold') + '" ' +
-    'style="background:' + colourSwatch(c.key) + '"></span>').join('') +
-    (d.colourList.length > 10 ? '<span class="cat-more">+' + (d.colourList.length - 10) + '</span>' : '');
+  const maxDots = CatPrefs.maxDots || 10;
+  const dots = d.colourList.slice(0, maxDots).map(c =>
+    '<span class="cat-dotwrap">' +
+      '<span class="cat-dot" title="' + escapeHtml(c.key + ' \u2014 ' + fmtNum(c.cbs) + ' in stock, ' + fmtNum(c.sold) + ' sold') + '" ' +
+      'style="background:' + colourSwatch(c.key) + '"></span>' +
+      (CatPrefs.showDotCounts ? '<span class="cat-dotn">' + fmtNum(c.cbs) + '</span>' : '') +
+    '</span>').join('') +
+    (d.colourList.length > maxDots ? '<span class="cat-more">+' + (d.colourList.length - maxDots) + '</span>' : '');
 
   let html = '<tr class="cat-row cat-design' + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(d.key) + '">' +
     '<td class="cat-c-design">' +
       '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>' +
-      '<button class="cat-thumb" data-img="' + escapeHtml(d.key) + '" title="Click to add or change the photo">' +
-        (img ? '<img src="' + img + '" alt="">' : '<span class="cat-thumb-empty">\uFF0B</span>') +
-      '</button>' +
+      (CatPrefs.showThumbs
+        ? '<button class="cat-thumb" data-img="' + escapeHtml(d.key) + '" title="' +
+          (img ? 'Click to view, replace or remove the photo' : 'Click to add a photo') + '">' +
+          (img ? '<img src="' + img + '" alt="">' : '<span class="cat-thumb-empty">\uFF0B</span>') +
+        '</button>'
+        : '') +
       '<span class="cat-name">' + escapeHtml(d.key) + '</span>' +
-      '<span class="cat-sub">' + d.colourList.length + ' colours \u00b7 ' +
-        d.colourList.reduce((a, c) => a + c.sizes.size, 0) + ' sizes</span>' +
+      (CatPrefs.compactMeta
+        ? '<span class="cat-sub">' + d.colourList.length + ' colours \u00b7 ' +
+          d.colourList.reduce((a, c) => a + c.sizes.size, 0) + ' sizes</span>'
+        : '') +
     '</td>' +
-    '<td class="cat-cat">' + escapeHtml(d.meta['Sub Section'] || d.meta.Section || '\u2014') + '</td>' +
-    '<td class="cat-c-colours">' + dots + '</td>' +
-    '<td class="num">' + fmtNum(d.sold) + '</td>' +
-    '<td class="num obs-col">' + (d.hasOBS ? fmtNum(d.obs) : '\u2014') + '</td>' +
-    '<td class="num cbs-col">' + fmtNum(d.cbs) + '</td>' +
-    '<td class="num ' + (d.moved > 0 ? 'mv-down' : (d.moved < 0 ? 'mv-up' : '')) + '">' +
-      (d.moved === null ? '\u2014' : (d.moved > 0 ? '\u2193 ' : (d.moved < 0 ? '\u2191 ' : '')) + fmtNum(Math.abs(d.moved))) + '</td>' +
-    '<td class="num">' + (d.cover === Infinity ? '\u221E' : fmtNum(d.cover, 0) + 'd') + '</td>' +
-    '<td class="num">' + fmtNum(d.sellThrough, 1) + '%</td>' +
-    '<td>' + (d.lastSale ? fmtDate(d.lastSale) : '\u2014') + '</td>' +
-    '<td><span class="status-tag ' + catalogStatusClass(d.status) + '">' + d.status + '</span></td>' +
+    (catColOn('category') ? '<td class="cat-cat">' + escapeHtml(d.meta['Sub Section'] || d.meta.Section || '\u2014') + '</td>' : '') +
+    (catColOn('colours') ? '<td class="cat-c-colours">' + dots + '</td>' : '') +
+    (catColOn('sold') ? '<td class="num">' + fmtNum(d.sold) + '</td>' : '') +
+    (catColOn('opening') ? '<td class="num obs-col">' + (d.hasOBS ? fmtNum(d.obs) : '\u2014') + '</td>' : '') +
+    (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(d.cbs) + '</td>' : '') +
+    (catColOn('moved') ? '<td class="num ' + (d.moved > 0 ? 'mv-down' : (d.moved < 0 ? 'mv-up' : '')) + '">' +
+      (d.moved === null ? '\u2014' : (d.moved > 0 ? '\u2193 ' : (d.moved < 0 ? '\u2191 ' : '')) + fmtNum(Math.abs(d.moved))) + '</td>' : '') +
+    replenCells(d.key, replenFor(d.key, d.sold, catalogDays(), d.cbs)) +
+    (catColOn('cover') ? '<td class="num">' + (d.cover === Infinity ? '\u221E' : fmtNum(d.cover, 0) + 'd') + '</td>' : '') +
+    (catColOn('sellthru') ? '<td class="num">' + fmtNum(d.sellThrough, 1) + '%</td>' : '') +
+    (catColOn('lastsold') ? '<td>' + (d.lastSale ? fmtDate(d.lastSale) : '\u2014') + '</td>' : '') +
+    (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(d.status) + '">' + d.status + '</span></td>' : '') +
   '</tr>';
 
   if (open) {
@@ -6183,8 +6263,8 @@ function catalogDesignRow(d) {
 function catalogColourRow(d, c) {
   const cKey = d.key + '|' + c.key;
   const open = !!Catalog.expanded[cKey];
-  const sizes = c.sizeList.slice(0, 24).map(z =>
-    '<span class="cat-size ' + (z.cbs === 0 ? 'zero' : (z.cbs <= 2 ? 'low' : 'ok')) + '" ' +
+  const sizes = c.sizeList.slice(0, CatPrefs.maxSizeChips || 24).map(z =>
+    '<span class="cat-size ' + (z.cbs === 0 ? 'zero' : (z.cbs <= (CatPrefs.lowStockAt || 2) ? 'low' : 'ok')) + '" ' +
     'title="' + escapeHtml(z.key + ': ' + fmtNum(z.cbs) + ' in stock, ' + fmtNum(z.sold) + ' sold') + '">' +
     escapeHtml(truncateLabel(z.key, 4)) + '</span>').join('');
 
@@ -6194,30 +6274,37 @@ function catalogColourRow(d, c) {
       '<span class="cat-swatch" style="background:' + colourSwatch(c.key) + '"></span>' +
       '<span class="cat-name">' + escapeHtml(c.key) + '</span>' +
     '</td>' +
-    '<td class="cat-strip" colspan="2">' + sizes + '</td>' +
-    '<td class="num">' + fmtNum(c.sold) + '</td>' +
-    '<td class="num obs-col">' + (c.hasOBS ? fmtNum(c.obs) : '\u2014') + '</td>' +
-    '<td class="num cbs-col">' + fmtNum(c.cbs) + '</td>' +
-    '<td class="num ' + (c.moved > 0 ? 'mv-down' : (c.moved < 0 ? 'mv-up' : '')) + '">' +
-      (c.moved === null ? '\u2014' : (c.moved > 0 ? '\u2193 ' : (c.moved < 0 ? '\u2191 ' : '')) + fmtNum(Math.abs(c.moved))) + '</td>' +
-    '<td class="num">' + (c.cover === Infinity ? '\u221E' : fmtNum(c.cover, 0) + 'd') + '</td>' +
-    '<td class="num">' + fmtNum(c.sellThrough, 1) + '%</td>' +
-    '<td>' + (c.lastSale ? fmtDate(c.lastSale) : '\u2014') + '</td>' +
-    '<td><span class="status-tag ' + catalogStatusClass(c.status) + '">' + c.status + '</span></td>' +
+    (catColOn('category') || catColOn('colours')
+      ? '<td class="cat-strip" colspan="' + ((catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0)) + '">' + sizes + '</td>'
+      : '') +
+    (catColOn('sold') ? '<td class="num">' + fmtNum(c.sold) + '</td>' : '') +
+    (catColOn('opening') ? '<td class="num obs-col">' + (c.hasOBS ? fmtNum(c.obs) : '\u2014') + '</td>' : '') +
+    (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(c.cbs) + '</td>' : '') +
+    (catColOn('moved') ? '<td class="num ' + (c.moved > 0 ? 'mv-down' : (c.moved < 0 ? 'mv-up' : '')) + '">' +
+      (c.moved === null ? '\u2014' : (c.moved > 0 ? '\u2193 ' : (c.moved < 0 ? '\u2191 ' : '')) + fmtNum(Math.abs(c.moved))) + '</td>' : '') +
+    replenCells(d.key + '|' + c.key, replenFor(d.key + '|' + c.key, c.sold, catalogDays(), c.cbs)) +
+    (catColOn('cover') ? '<td class="num">' + (c.cover === Infinity ? '\u221E' : fmtNum(c.cover, 0) + 'd') + '</td>' : '') +
+    (catColOn('sellthru') ? '<td class="num">' + fmtNum(c.sellThrough, 1) + '%</td>' : '') +
+    (catColOn('lastsold') ? '<td>' + (c.lastSale ? fmtDate(c.lastSale) : '\u2014') + '</td>' : '') +
+    (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(c.status) + '">' + c.status + '</span></td>' : '') +
   '</tr>';
 
   if (open) {
     c.sizeList.forEach(z => {
       const st = z.cbs === 0 && z.sold > 0 ? 'Stockout' : (z.sold === 0 && z.cbs > 0 ? 'No sale' : (z.sold > 0 ? 'Healthy' : 'Idle'));
+      const filler = (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0);
       html += '<tr class="cat-row cat-size-row">' +
         '<td class="cat-c-design cat-indent2"><span class="cat-sizekey">' + escapeHtml(z.key) + '</span></td>' +
-        '<td colspan="2"></td>' +
-        '<td class="num">' + fmtNum(z.sold) + '</td>' +
-        '<td class="num obs-col">' + (z.hasOBS ? fmtNum(z.obs) : '\u2014') + '</td>' +
-        '<td class="num cbs-col">' + fmtNum(z.cbs) + '</td>' +
-        '<td class="num">' + (z.hasOBS ? fmtNum(z.obs - z.cbs) : '\u2014') + '</td>' +
-        '<td class="num"></td><td class="num"></td><td></td>' +
-        '<td><span class="status-tag ' + catalogStatusClass(st) + '">' + st + '</span></td>' +
+        (filler ? '<td colspan="' + filler + '"></td>' : '') +
+        (catColOn('sold') ? '<td class="num">' + fmtNum(z.sold) + '</td>' : '') +
+        (catColOn('opening') ? '<td class="num obs-col">' + (z.hasOBS ? fmtNum(z.obs) : '\u2014') + '</td>' : '') +
+        (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(z.cbs) + '</td>' : '') +
+        (catColOn('moved') ? '<td class="num">' + (z.hasOBS ? fmtNum(z.obs - z.cbs) : '\u2014') + '</td>' : '') +
+        replenCells(d.key + '|' + c.key + '|' + z.key, replenFor(d.key + '|' + c.key + '|' + z.key, z.sold, catalogDays(), z.cbs)) +
+        (catColOn('cover') ? '<td class="num"></td>' : '') +
+        (catColOn('sellthru') ? '<td class="num"></td>' : '') +
+        (catColOn('lastsold') ? '<td></td>' : '') +
+        (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(st) + '">' + st + '</span></td>' : '') +
       '</tr>';
     });
   }
@@ -6289,8 +6376,8 @@ function wireCatalogRows() {
   host.querySelectorAll('.cat-thumb').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      Catalog.pendingImage = btn.dataset.img;
-      document.getElementById('cat-image-input').click();
+      // no photo yet -> pick one; photo present -> open it large
+      openCatImage(btn.dataset.img);
     });
   });
   host.querySelectorAll('tr.cat-design, tr.cat-colour').forEach(tr => {
@@ -6366,9 +6453,359 @@ function exportCatalogCSV() {
 }
 
 /* ---------------------------------------------------------------
+   15b. CATALOG PREFERENCES + IMAGE VIEWER
+   --------------------------------------------------------------- */
+
+const CAT_COLUMNS = [
+  ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'],
+  ['opening', 'Opening'], ['closing', 'Closing'], ['moved', 'Moved'],
+  ['adc', 'ADC'], ['lt', 'LT'], ['sf', 'SF'], ['moq', 'MOQ'],
+  ['ml', 'ML'], ['mit', 'MIT'], ['stockpct', 'Stock %'], ['reorder', 'Reorder'],
+  ['cover', 'Cover'], ['sellthru', 'Sell-thru'], ['lastsold', 'Last sold'],
+  ['status', 'Status']
+];
+
+/* ---------------------------------------------------------------
+   Replenishment maths
+     ADC = average daily consumption   (auto = sold / days, editable)
+     LT  = lead time in days           (default, editable)
+     SF  = safety factor               (default, editable)
+     MOQ = minimum order quantity      (default, editable)
+     ML  = max level  = ADC x LT x SF
+     MIT = material in transit         (entered by hand)
+     Stock % = (closing + MIT) / ML
+     Reorder = ML - (closing + MIT), rounded up to the MOQ
+   --------------------------------------------------------------- */
+const Replen = { overrides: {} };
+
+function loadReplen() {
+  try {
+    const raw = Store.get('sl_replen');
+    if (raw) Replen.overrides = JSON.parse(raw) || {};
+  } catch (e) { Replen.overrides = {}; }
+}
+function saveReplen() { Store.set('sl_replen', JSON.stringify(Replen.overrides)); }
+
+function replenFor(key, sold, days, cbs) {
+  const o = Replen.overrides[key] || {};
+  const autoAdc = days > 0 ? sold / days : 0;
+  const adc = (o.adc !== undefined && o.adc !== null) ? o.adc : autoAdc;
+  const lt = (o.lt !== undefined && o.lt !== null) ? o.lt : (CatPrefs.defaultLT || 15);
+  const sf = (o.sf !== undefined && o.sf !== null) ? o.sf : (CatPrefs.defaultSF || 1.5);
+  const moq = (o.moq !== undefined && o.moq !== null) ? o.moq : (CatPrefs.defaultMOQ || 12);
+  const mit = (o.mit !== undefined && o.mit !== null) ? o.mit : 0;
+
+  const ml = adc * lt * sf;
+  const available = cbs + mit;
+  let pct;
+  if (ml > 0) pct = (available / ml) * 100;
+  else pct = available > 0 ? 101 : 0;      // no demand but stock on hand = overstock
+
+  let reorder = 0;
+  if (ml > available) {
+    const gap = ml - available;
+    reorder = moq > 0 ? Math.ceil(gap / moq) * moq : Math.ceil(gap);
+  }
+  return { adc, lt, sf, moq, ml, mit, available, pct, reorder,
+           isAuto: { adc: o.adc === undefined, lt: o.lt === undefined, sf: o.sf === undefined,
+                     moq: o.moq === undefined, mit: o.mit === undefined } };
+}
+
+/** 0-33 red, 33-66 yellow, 66-100 green, over 100 purple. */
+function stockPctClass(pct) {
+  if (pct > 100) return 'sp-over';
+  if (pct > 66) return 'sp-good';
+  if (pct > 33) return 'sp-mid';
+  return 'sp-low';
+}
+
+function replenCells(key, r) {
+  const inp = (field, val, step) =>
+    '<input class="cat-inp' + (r.isAuto[field] ? ' is-auto' : ' is-set') + '" type="number" step="' + step + '" ' +
+    'value="' + val + '" data-rkey="' + escapeHtml(key) + '" data-rfield="' + field + '" ' +
+    'title="' + (r.isAuto[field] ? 'Automatic - type to override' : 'Set by you - clear the box to go back to automatic') + '">';
+
+  return (catColOn('adc') ? '<td class="num cat-edit">' + inp('adc', fmtNum(r.adc, 2), '0.01') + '</td>' : '') +
+         (catColOn('lt') ? '<td class="num cat-edit">' + inp('lt', r.lt, '1') + '</td>' : '') +
+         (catColOn('sf') ? '<td class="num cat-edit">' + inp('sf', r.sf, '0.1') + '</td>' : '') +
+         (catColOn('moq') ? '<td class="num cat-edit">' + inp('moq', r.moq, '1') + '</td>' : '') +
+         (catColOn('ml') ? '<td class="num cat-ml">' + fmtNum(r.ml, 0) + '</td>' : '') +
+         (catColOn('mit') ? '<td class="num cat-edit">' + inp('mit', r.mit, '1') + '</td>' : '') +
+         (catColOn('stockpct') ? '<td class="num stock-pct ' + stockPctClass(r.pct) + '">' + fmtNum(r.pct, 0) + '%</td>' : '') +
+         (catColOn('reorder') ? '<td class="num cat-reorder' + (r.reorder > 0 ? ' has' : '') + '">' +
+            (r.reorder > 0 ? fmtNum(r.reorder) : '\u2014') + '</td>' : '');
+}
+
+const CATPREFS_DEFAULT = {
+  // look
+  density: 'compact',        // compact | normal | roomy
+  fontSize: 11.5,
+  headerStyle: 'dark',       // dark | light
+  zebra: true,
+  gridLines: true,
+  accent: '#2C5AA0',         // selected chip colour (the reference UI uses blue)
+  hoverColor: '#EAF3FC',
+  // thumbnails
+  thumbW: 30,
+  thumbH: 34,
+  showThumbs: true,
+  // colour dots
+  dotShape: 'square',        // square | circle
+  dotSize: 12,
+  maxDots: 10,
+  showDotCounts: false,
+  // size strip
+  maxSizeChips: 24,
+  lowStockAt: 2,
+  // thresholds
+  lowCoverDays: 15,
+  overstockDays: 120,
+  // replenishment defaults
+  defaultLT: 15,      // lead time, days
+  defaultSF: 1.5,     // safety factor
+  defaultMOQ: 12,     // minimum order quantity
+  // table
+  columns: CAT_COLUMNS.map(c => c[0]),
+  maxRows: 300,
+  showChipCounts: true,
+  compactMeta: true
+};
+
+const CatPrefs = Object.assign({}, CATPREFS_DEFAULT);
+
+function loadCatPrefs() {
+  try {
+    const raw = Store.get('sl_catprefs');
+    if (raw) Object.assign(CatPrefs, CATPREFS_DEFAULT, JSON.parse(raw));
+  } catch (e) {}
+  applyCatPrefs();
+}
+function saveCatPrefs() { Store.set('sl_catprefs', JSON.stringify(CatPrefs)); applyCatPrefs(); }
+
+function applyCatPrefs() {
+  const r = document.documentElement;
+  r.style.setProperty('--cat-font', CatPrefs.fontSize + 'px');
+  r.style.setProperty('--cat-pad', (CatPrefs.density === 'compact' ? 2 : CatPrefs.density === 'roomy' ? 9 : 5) + 'px');
+  r.style.setProperty('--cat-accent', CatPrefs.accent);
+  r.style.setProperty('--cat-hover', CatPrefs.hoverColor);
+  r.style.setProperty('--cat-thumb-w', CatPrefs.thumbW + 'px');
+  r.style.setProperty('--cat-thumb-h', CatPrefs.thumbH + 'px');
+  r.style.setProperty('--cat-dot', CatPrefs.dotSize + 'px');
+  r.style.setProperty('--cat-dot-radius', CatPrefs.dotShape === 'circle' ? '50%' : '2px');
+  document.body.classList.toggle('cat-light-head', CatPrefs.headerStyle === 'light');
+  document.body.classList.toggle('cat-no-zebra', !CatPrefs.zebra);
+  document.body.classList.toggle('cat-no-grid', !CatPrefs.gridLines);
+  document.body.classList.toggle('cat-no-thumbs', !CatPrefs.showThumbs);
+}
+
+function catColOn(id) { return (CatPrefs.columns || []).indexOf(id) !== -1; }
+
+/* ---- image viewer: click a photo to enlarge, replace or remove ---- */
+function ensureCatImageViewer() {
+  if (document.getElementById('cat-img-overlay')) return;
+  const d = document.createElement('div');
+  d.id = 'cat-img-overlay';
+  d.className = 'drill-overlay cat-img-overlay';
+  d.style.display = 'none';
+  d.innerHTML =
+    '<div class="cat-img-panel">' +
+      '<div class="drill-head"><div>' +
+        '<h2 id="cat-img-title">Photo</h2>' +
+        '<div class="drill-subtitle" id="cat-img-sub"></div>' +
+      '</div><button id="cat-img-close" class="drill-close" title="Close (Esc)">&times;</button></div>' +
+      '<div class="cat-img-body"><img id="cat-img-big" alt=""></div>' +
+      '<div class="modal-actions">' +
+        '<button class="ghost-btn small primary" id="cat-img-replace">Replace photo</button>' +
+        '<button class="ghost-btn small" id="cat-img-remove">Remove photo</button>' +
+        '<span class="spacer"></span>' +
+        '<button class="ghost-btn small" id="cat-img-done">Close</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(d);
+
+  const close = () => { d.style.display = 'none'; modalClose('cat-img-overlay'); };
+  document.getElementById('cat-img-close').addEventListener('click', close);
+  document.getElementById('cat-img-done').addEventListener('click', close);
+  d.addEventListener('click', e => { if (e.target === d && modalIsTop('cat-img-overlay')) close(); });
+  document.getElementById('cat-img-replace').addEventListener('click', () => {
+    Catalog.pendingImage = Catalog.viewingImage;
+    document.getElementById('cat-image-input').click();
+  });
+  document.getElementById('cat-img-remove').addEventListener('click', () => {
+    const k = Catalog.viewingImage;
+    if (!k) return;
+    delete Catalog.images[k];
+    saveCatalogImages();
+    close();
+    renderCatalog();
+    toast('Photo removed from ' + k + '.');
+  });
+}
+
+function openCatImage(key) {
+  ensureCatImageViewer();
+  const src = Catalog.images[key];
+  if (!src) { Catalog.pendingImage = key; document.getElementById('cat-image-input').click(); return; }
+  Catalog.viewingImage = key;
+  document.getElementById('cat-img-title').textContent = key;
+  const d = (Catalog.lastRows || []).find(r => r.key === key);
+  document.getElementById('cat-img-sub').textContent = d
+    ? (d.colourList.length + ' colours \u00b7 ' + fmtNum(d.cbs) + ' in stock \u00b7 ' + fmtNum(d.sold) + ' sold')
+    : '';
+  document.getElementById('cat-img-big').src = src;
+  document.getElementById('cat-img-overlay').style.display = 'flex';
+  modalOpen('cat-img-overlay', () => {
+    document.getElementById('cat-img-overlay').style.display = 'none';
+  });
+}
+
+/* ---- the Catalog settings page ---- */
+function renderCatalogSettings(wrap) {
+  const row = (label, control) =>
+    '<div class="settings-row"><label class="toolbar-label">' + label + '</label>' + control + '</div>';
+
+  wrap.innerHTML =
+    '<h3 class="snap-set-title">Table look</h3>' +
+    row('Row density',
+      '<select id="cs-density" class="select">' +
+        ['compact', 'normal', 'roomy'].map(d => '<option value="' + d + '"' + (CatPrefs.density === d ? ' selected' : '') + '>' +
+          d.charAt(0).toUpperCase() + d.slice(1) + '</option>').join('') + '</select>' +
+      '<label class="toolbar-label">Font size</label>' +
+      '<input type="range" id="cs-font" min="9" max="16" step="0.5" value="' + CatPrefs.fontSize + '">' +
+      '<span class="drill-count" id="cs-font-val">' + CatPrefs.fontSize + 'px</span>') +
+    row('Header style',
+      '<select id="cs-head" class="select">' +
+        '<option value="dark"' + (CatPrefs.headerStyle === 'dark' ? ' selected' : '') + '>Dark bar</option>' +
+        '<option value="light"' + (CatPrefs.headerStyle === 'light' ? ' selected' : '') + '>Light bar</option></select>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-zebra"' + (CatPrefs.zebra ? ' checked' : '') + '> Row striping</label>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-grid"' + (CatPrefs.gridLines ? ' checked' : '') + '> Grid lines</label>') +
+    '<div class="color-row"><label class="toolbar-label">Selected chip colour</label>' +
+      '<input type="color" id="cs-accent" value="' + CatPrefs.accent + '">' +
+      '<span class="hexcode">' + CatPrefs.accent + '</span>' +
+      '<label class="toolbar-label">Row hover</label>' +
+      '<input type="color" id="cs-hover" value="' + CatPrefs.hoverColor + '">' +
+      '<span class="hexcode">' + CatPrefs.hoverColor + '</span></div>' +
+
+    '<h3 class="snap-set-title">Photos</h3>' +
+    row('Show thumbnails',
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-thumbs"' + (CatPrefs.showThumbs ? ' checked' : '') + '> Show a photo column</label>' +
+      '<label class="toolbar-label">Width</label>' +
+      '<input type="range" id="cs-thumbw" min="18" max="70" value="' + CatPrefs.thumbW + '">' +
+      '<span class="drill-count" id="cs-thumbw-val">' + CatPrefs.thumbW + 'px</span>' +
+      '<label class="toolbar-label">Height</label>' +
+      '<input type="range" id="cs-thumbh" min="18" max="80" value="' + CatPrefs.thumbH + '">' +
+      '<span class="drill-count" id="cs-thumbh-val">' + CatPrefs.thumbH + 'px</span>') +
+    '<p class="drill-subtitle">Click an empty box to add a photo. Click a photo to open it larger, where you can replace or remove it.</p>' +
+    '<div class="settings-row"><span class="drill-count" id="cs-imgcount"></span>' +
+      '<button class="ghost-btn small" id="cs-clearimgs">Remove all photos</button></div>' +
+
+    '<h3 class="snap-set-title">Colour dots</h3>' +
+    row('Appearance',
+      '<select id="cs-dotshape" class="select">' +
+        '<option value="square"' + (CatPrefs.dotShape === 'square' ? ' selected' : '') + '>Squares</option>' +
+        '<option value="circle"' + (CatPrefs.dotShape === 'circle' ? ' selected' : '') + '>Circles</option></select>' +
+      '<label class="toolbar-label">Size</label>' +
+      '<input type="range" id="cs-dotsize" min="7" max="20" value="' + CatPrefs.dotSize + '">' +
+      '<span class="drill-count" id="cs-dotsize-val">' + CatPrefs.dotSize + 'px</span>' +
+      '<label class="toolbar-label">How many</label>' +
+      '<input type="number" id="cs-maxdots" class="text-input narrow" min="3" max="40" value="' + CatPrefs.maxDots + '">' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-dotcounts"' + (CatPrefs.showDotCounts ? ' checked' : '') + '> Show stock number on each dot</label>') +
+
+    '<h3 class="snap-set-title">Size run</h3>' +
+    row('Chips',
+      '<label class="toolbar-label">Max shown</label>' +
+      '<input type="number" id="cs-maxsizes" class="text-input narrow" min="4" max="60" value="' + CatPrefs.maxSizeChips + '">' +
+      '<label class="toolbar-label">Amber when stock is at or below</label>' +
+      '<input type="number" id="cs-lowstock" class="text-input narrow" min="0" max="50" value="' + CatPrefs.lowStockAt + '">') +
+
+    '<h3 class="snap-set-title">Status thresholds</h3>' +
+    row('Cover days',
+      '<label class="toolbar-label">Low cover under</label>' +
+      '<input type="number" id="cs-lowcover" class="text-input narrow" min="1" max="120" value="' + CatPrefs.lowCoverDays + '"> days' +
+      '<label class="toolbar-label">Overstock over</label>' +
+      '<input type="number" id="cs-overstock" class="text-input narrow" min="10" max="900" value="' + CatPrefs.overstockDays + '"> days') +
+
+    '<h3 class="snap-set-title">Columns</h3>' +
+    '<div class="snap-checklist">' +
+      CAT_COLUMNS.map(c => '<label class="snap-check"><input type="checkbox" class="cs-col" value="' + c[0] + '"' +
+        (catColOn(c[0]) ? ' checked' : '') + '> ' + c[1] + '</label>').join('') +
+    '</div>' +
+    row('Rows rendered',
+      '<input type="number" id="cs-maxrows" class="text-input narrow" min="50" max="2000" step="50" value="' + CatPrefs.maxRows + '">' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-chipcounts"' + (CatPrefs.showChipCounts ? ' checked' : '') + '> Counts on filter chips</label>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-meta"' + (CatPrefs.compactMeta ? ' checked' : '') + '> "n colours / n sizes" under each design</label>') +
+
+    '<div class="modal-actions" style="margin-top:16px;">' +
+      '<button class="ghost-btn small" id="cs-reset">Reset Catalog settings</button>' +
+    '</div>';
+
+  const n = Object.keys(Catalog.images || {}).length;
+  const ic = wrap.querySelector('#cs-imgcount');
+  if (ic) ic.textContent = n ? (n + ' photo' + (n === 1 ? '' : 's') + ' saved') : 'No photos saved yet';
+
+  const bind = (id, fn) => { const el = wrap.querySelector('#' + id); if (el) el.addEventListener('input', fn); };
+  const bindC = (id, fn) => { const el = wrap.querySelector('#' + id); if (el) el.addEventListener('change', fn); };
+
+  bindC('cs-density', e => { CatPrefs.density = e.target.value; saveCatPrefs(); renderCatalog(); });
+  bind('cs-font', e => {
+    CatPrefs.fontSize = parseFloat(e.target.value);
+    wrap.querySelector('#cs-font-val').textContent = CatPrefs.fontSize + 'px'; saveCatPrefs();
+  });
+  bindC('cs-head', e => { CatPrefs.headerStyle = e.target.value; saveCatPrefs(); });
+  bindC('cs-zebra', e => { CatPrefs.zebra = e.target.checked; saveCatPrefs(); });
+  bindC('cs-grid', e => { CatPrefs.gridLines = e.target.checked; saveCatPrefs(); });
+  bind('cs-accent', e => { CatPrefs.accent = e.target.value; saveCatPrefs(); });
+  bind('cs-hover', e => { CatPrefs.hoverColor = e.target.value; saveCatPrefs(); });
+
+  bindC('cs-thumbs', e => { CatPrefs.showThumbs = e.target.checked; saveCatPrefs(); renderCatalog(); });
+  bind('cs-thumbw', e => {
+    CatPrefs.thumbW = parseInt(e.target.value, 10);
+    wrap.querySelector('#cs-thumbw-val').textContent = CatPrefs.thumbW + 'px'; saveCatPrefs();
+  });
+  bind('cs-thumbh', e => {
+    CatPrefs.thumbH = parseInt(e.target.value, 10);
+    wrap.querySelector('#cs-thumbh-val').textContent = CatPrefs.thumbH + 'px'; saveCatPrefs();
+  });
+  const ci = wrap.querySelector('#cs-clearimgs');
+  if (ci) ci.addEventListener('click', () => {
+    Catalog.images = {}; saveCatalogImages(); renderCatalog(); renderSettingsBody();
+    toast('All photos removed.');
+  });
+
+  bindC('cs-dotshape', e => { CatPrefs.dotShape = e.target.value; saveCatPrefs(); });
+  bind('cs-dotsize', e => {
+    CatPrefs.dotSize = parseInt(e.target.value, 10);
+    wrap.querySelector('#cs-dotsize-val').textContent = CatPrefs.dotSize + 'px'; saveCatPrefs();
+  });
+  bindC('cs-maxdots', e => { CatPrefs.maxDots = Math.max(3, Math.min(40, parseInt(e.target.value, 10) || 10)); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-dotcounts', e => { CatPrefs.showDotCounts = e.target.checked; saveCatPrefs(); renderCatalog(); });
+
+  bindC('cs-maxsizes', e => { CatPrefs.maxSizeChips = Math.max(4, Math.min(60, parseInt(e.target.value, 10) || 24)); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-lowcover', e => { CatPrefs.lowCoverDays = Math.max(1, parseInt(e.target.value, 10) || 15); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-overstock', e => { CatPrefs.overstockDays = Math.max(10, parseInt(e.target.value, 10) || 120); saveCatPrefs(); renderCatalog(); });
+
+  wrap.querySelectorAll('.cs-col').forEach(cb => cb.addEventListener('change', () => {
+    CatPrefs.columns = [...wrap.querySelectorAll('.cs-col:checked')].map(x => x.value);
+    saveCatPrefs(); renderCatalog();
+  }));
+  bindC('cs-maxrows', e => { CatPrefs.maxRows = Math.max(50, Math.min(2000, parseInt(e.target.value, 10) || 300)); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-chipcounts', e => { CatPrefs.showChipCounts = e.target.checked; saveCatPrefs(); renderCatalog(); });
+  bindC('cs-meta', e => { CatPrefs.compactMeta = e.target.checked; saveCatPrefs(); renderCatalog(); });
+
+  const rs = wrap.querySelector('#cs-reset');
+  if (rs) rs.addEventListener('click', () => {
+    Object.assign(CatPrefs, CATPREFS_DEFAULT);
+    CatPrefs.columns = CAT_COLUMNS.map(c => c[0]);
+    saveCatPrefs(); renderCatalog(); renderSettingsBody();
+    toast('Catalog settings reset.');
+  });
+}
+
+/* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v23';
+const BUILD_VERSION = 'v25';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -6398,6 +6835,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('modal-stack', initModalStack);
   safeInit('settings', initSettings);
   safeInit('col-resize', initColResize);
+  safeInit('catalog-prefs', loadCatPrefs);
   safeInit('catalog', initCatalog);
   safeInit('prefs-apply', applyPrefsToControls);
   safeInit('snapshot', initSnapshot);
