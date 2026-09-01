@@ -2272,6 +2272,13 @@ function initQuickReport() {
     QuickReport.search = e.target.value; QuickReport.collapsed = {}; renderQuickReport();
   }, 220));
 
+  const qea = document.getElementById('quick-expand-all');
+  if (qea) qea.addEventListener('click', () => {
+    (QuickReport.lastPaths || []).forEach(p => { QuickReport.collapsed[p] = false; });
+    renderQuickReport();
+  });
+  const qca = document.getElementById('quick-collapse-all');
+  if (qca) qca.addEventListener('click', () => { QuickReport.collapsed = {}; renderQuickReport(); });
   document.getElementById('quick-export').addEventListener('click', exportQuickCSV);
   const toSheet = document.getElementById('quick-to-sheet');
   if (toSheet) toSheet.addEventListener('click', quickToSheet);
@@ -2622,6 +2629,10 @@ function renderQuickReport() {
   const recs = quickFilteredRecords();
   renderQuickSourceNote(recs.length);
   const tree = buildQuickTree(recs, dims, 0, '') || [];
+  QuickReport.lastPaths = (function collect(ns, out) {
+    (ns || []).forEach(n => { if (n.children && n.children.length) { out.push(n.path); collect(n.children, out); } });
+    return out;
+  })(tree, []);
   renderQuickFilterChips();
 
   const srcInfo = quickSourceInfo();
@@ -2638,7 +2649,8 @@ function renderQuickReport() {
       if (flat.length >= MAX_RENDER) { capped = true; return; }
       flat.push(n);
       const hasKids = n.children && n.children.length;
-      const isCollapsed = QuickReport.collapsed[n.path];
+      // closed by default - opens only when the user clicks it
+      const isCollapsed = QuickReport.collapsed[n.path] !== false;
       const isLeaf = !hasKids;
       body += '<tr class="qr-row depth-' + Math.min(n.depth, 4) + (isLeaf ? ' qr-leaf' : ' qr-group') + '" data-path="' + escapeHtml(n.path) + '">' +
         '<td class="qr-cell" style="padding-left:' + (10 + n.depth * 22) + 'px">' +
@@ -2682,7 +2694,7 @@ function renderQuickReport() {
   table.querySelectorAll('.qr-toggle').forEach(t => t.addEventListener('click', e => {
     e.stopPropagation();
     const p = t.dataset.toggle;
-    QuickReport.collapsed[p] = !QuickReport.collapsed[p];
+    QuickReport.collapsed[p] = (QuickReport.collapsed[p] === false);
     renderQuickReport();
   }));
   makeTableResizable(table);
@@ -2938,7 +2950,7 @@ function renderPerformance() {
   const hasOBS = A.rows.some(r => r.hasOpening);
   const stockLabel = hasOBS ? 'Closing (CBS)' : 'Stock';
   const cols = [
-    ['key', dim, false], ['sold', 'Sold', true]
+    ['key', dim, false], ['sold', 'Sold', true], ['purchased', 'Purchased', true]
   ]
   .concat(hasOBS ? [['opening', 'Opening (OBS)', true]] : [])
   .concat([['stock', stockLabel, true]])
@@ -3057,6 +3069,7 @@ function perfMetricCells(r) {
   cols.forEach(([k]) => {
     if (k === 'key') return;
     if (k === 'sold') out += '<td class="num">' + fmtNum(r.sold) + '</td>';
+    else if (k === 'purchased') out += '<td class="num cat-purch">' + fmtNum(r.purchased || 0) + '</td>';
     else if (k === 'opening') out += '<td class="num obs-col">' + (r.hasOpening ? fmtNum(r.opening) : '\u2014') + '</td>';
     else if (k === 'stock') out += '<td class="num cbs-col">' + fmtNum(r.stock) + '</td>';
     else if (k === 'movement') out += '<td class="num ' + (r.movement > 0 ? 'mv-down' : (r.movement < 0 ? 'mv-up' : '')) + '">' +
@@ -3116,9 +3129,12 @@ function perfChildRowsHtml(path, depth, colCount) {
   const map = new Map();
   const slot = k => {
     let x = map.get(k);
-    if (!x) { x = { key: k, sold: 0, stock: 0, opening: 0, hasOpening: false, lastSale: null, meta: {} }; map.set(k, x); }
+    if (!x) { x = { key: k, sold: 0, purchased: 0, stock: 0, opening: 0, hasOpening: false, lastSale: null, meta: {} }; map.set(k, x); }
     return x;
   };
+  purchaseRecords().filter(r => inPeriod(r, range)).filter(match).forEach(r => {
+    slot(dimKey(r, childDim)).purchased += recQty(r);
+  });
   sales.forEach(r => {
     const x = slot(dimKey(r, childDim));
     x.sold += recQty(r);
@@ -3231,6 +3247,7 @@ function perfFootHtml(rows, cols) {
   cols.forEach(([k], i) => {
     if (i === 0) { out += '<td>Total (' + rows.length.toLocaleString('en-IN') + ' rows)</td>'; return; }
     if (k === 'sold') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.sold, 0)) + '</td>';
+    else if (k === 'purchased') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.purchased || 0), 0)) + '</td>';
     else if (k === 'opening') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.hasOpening ? r.opening : 0), 0)) + '</td>';
     else if (k === 'stock') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.stock, 0)) + '</td>';
     else if (k === 'movement') {
@@ -4580,6 +4597,10 @@ function initDashboard() {
 }
 
 function renderDashboard() {
+  renderDashFilters();
+  renderCustomCharts();
+  if (!document.getElementById('chart-trend')) return;   // old fixed charts were replaced by the builder
+
   const empty = document.getElementById('dashboard-empty');
   const body = document.getElementById('dashboard-body');
   if (!App.datasets.length) { empty.style.display = ''; body.style.display = 'none'; return; }
@@ -6972,9 +6993,311 @@ function renderCatalogSettings(wrap) {
 }
 
 /* ---------------------------------------------------------------
+   16. DASHBOARD BUILDER — add your own charts, click to cross-filter
+   ---------------------------------------------------------------
+   Every chart is saved, so the layout you build stays until you
+   change it. Clicking a bar or slice filters every other chart on
+   the page, and one button clears the lot.
+   --------------------------------------------------------------- */
+
+const CHART_TYPES = [
+  ['bar', 'Bar (horizontal)'],
+  ['column', 'Column (vertical)'],
+  ['line', 'Line'],
+  ['area', 'Area'],
+  ['pie', 'Pie'],
+  ['doughnut', 'Doughnut'],
+  ['table', 'Table']
+];
+
+const CHART_SOURCES = [
+  ['sales', 'Sales'],
+  ['purchase', 'Purchase'],
+  ['stock', 'Stock']
+];
+
+const CHART_DIMS = ['Article No', 'Brand', 'Colour', 'Size', 'Style', 'Section',
+                    'Sub Section', 'Supplier', 'Item Code', 'Month', 'Week', 'Transaction Date'];
+
+const CHART_MEASURES = [
+  ['qty', 'Quantity'],
+  ['rows', 'Row count'],
+  ['items', 'Distinct items']
+];
+
+const DEFAULT_CHARTS = [
+  { id: 'c1', title: 'Sales by month',       type: 'column', source: 'sales',    dim: 'Month',       measure: 'qty', topN: 24 },
+  { id: 'c2', title: 'Top brands (sold)',    type: 'bar',    source: 'sales',    dim: 'Brand',       measure: 'qty', topN: 10 },
+  { id: 'c3', title: 'Sales by section',     type: 'doughnut', source: 'sales',  dim: 'Section',     measure: 'qty', topN: 8 },
+  { id: 'c4', title: 'Purchases by month',   type: 'column', source: 'purchase', dim: 'Month',       measure: 'qty', topN: 24 },
+  { id: 'c5', title: 'Stock by sub section', type: 'bar',    source: 'stock',    dim: 'Sub Section', measure: 'qty', topN: 10 },
+  { id: 'c6', title: 'Top selling articles', type: 'table',  source: 'sales',    dim: 'Article No',  measure: 'qty', topN: 12 }
+];
+
+const Dash = {
+  charts: [],
+  filters: [],          // [{dim, value}] - the Power BI style cross filter
+  editing: null,
+  instances: {}
+};
+
+function loadDashCharts() {
+  try {
+    const raw = Store.get('sl_dash_charts');
+    Dash.charts = raw ? JSON.parse(raw) : DEFAULT_CHARTS.slice();
+  } catch (e) { Dash.charts = DEFAULT_CHARTS.slice(); }
+  if (!Dash.charts.length) Dash.charts = DEFAULT_CHARTS.slice();
+}
+function saveDashCharts() { Store.set('sl_dash_charts', JSON.stringify(Dash.charts)); }
+
+function dashRecordsFor(source) {
+  const range = periodRange();
+  if (source === 'purchase') return purchaseRecords().filter(r => inPeriod(r, range));
+  if (source === 'stock') return stockRecords();
+  return salesRecords().filter(r => inPeriod(r, range));
+}
+
+function dashDimKey(rec, dim) {
+  if (dim === 'Month') return rec.Date ? dateKeyForGrain(rec.Date, 'month') : '(blank)';
+  if (dim === 'Week') return rec.Date ? weekKeyOf(rec.Date) : '(blank)';
+  if (dim === 'Transaction Date') return rec.Date ? fmtDate(rec.Date) : '(blank)';
+  return dimKey(rec, dim);
+}
+
+/** Applies the cross filter set by clicking other charts. */
+function dashPassesFilters(rec) {
+  return Dash.filters.every(f => dashDimKey(rec, f.dim) === f.value);
+}
+
+function dashAggregate(cfg) {
+  let recs = dashRecordsFor(cfg.source).filter(dashPassesFilters);
+  const map = new Map();
+  const seen = new Map();
+  recs.forEach(r => {
+    const k = dashDimKey(r, cfg.dim);
+    if (cfg.measure === 'rows') map.set(k, (map.get(k) || 0) + 1);
+    else if (cfg.measure === 'items') {
+      let set = seen.get(k);
+      if (!set) { set = new Set(); seen.set(k, set); }
+      const code = r['Item Code'] || r['Article No'];
+      if (code) set.add(String(code));
+      map.set(k, set.size);
+    } else map.set(k, (map.get(k) || 0) + recQty(r));
+  });
+
+  let entries = [...map.entries()].filter(([k]) => k !== '(blank)');
+  const chrono = ['Month', 'Week', 'Transaction Date'].indexOf(cfg.dim) !== -1;
+  if (chrono) {
+    const g = cfg.dim === 'Month' ? 'month' : 'day';
+    entries.sort((a, b) => (cfg.dim === 'Month' ? grainSort(a[0], g) - grainSort(b[0], g)
+      : (parseDateLoose(a[0].split(' \u2013 ')[0]) || 0) - (parseDateLoose(b[0].split(' \u2013 ')[0]) || 0)));
+    if (entries.length > (cfg.topN || 24)) entries = entries.slice(-(cfg.topN || 24));
+  } else {
+    entries.sort((a, b) => b[1] - a[1]);
+    entries = entries.slice(0, cfg.topN || 10);
+  }
+  return entries;
+}
+
+function initDashboardBuilder() {
+  loadDashCharts();
+  const add = document.getElementById('dash-add-chart');
+  if (add) add.addEventListener('click', () => openChartEditor(null));
+  const reset = document.getElementById('dash-reset');
+  if (reset) reset.addEventListener('click', () => {
+    Dash.charts = DEFAULT_CHARTS.slice();
+    Dash.filters = [];
+    saveDashCharts();
+    renderDashboard();
+    toast('Dashboard reset to the standard charts.');
+  });
+  const clearF = document.getElementById('dash-clear-filters');
+  if (clearF) clearF.addEventListener('click', () => { Dash.filters = []; renderDashboard(); });
+}
+
+function renderDashFilters() {
+  const wrap = document.getElementById('dash-filters');
+  if (!wrap) return;
+  if (!Dash.filters.length) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = '<span class="toolbar-label">Filtered by:</span>' +
+    Dash.filters.map((f, i) =>
+      '<span class="filter-chip">' + escapeHtml(f.dim) + ': <strong>' + escapeHtml(f.value) + '</strong>' +
+      '<button data-fi="' + i + '">&times;</button></span>').join('') +
+    '<button class="ghost-btn small" id="dash-clear-inline">Clear all</button>';
+  wrap.querySelectorAll('[data-fi]').forEach(b => b.addEventListener('click', () => {
+    Dash.filters.splice(parseInt(b.dataset.fi, 10), 1);
+    renderDashboard();
+  }));
+  const ci = wrap.querySelector('#dash-clear-inline');
+  if (ci) ci.addEventListener('click', () => { Dash.filters = []; renderDashboard(); });
+}
+
+function renderCustomCharts() {
+  const grid = document.getElementById('dash-grid');
+  if (!grid) return;
+  Object.keys(Dash.instances).forEach(id => {
+    if (Dash.instances[id]) { try { Dash.instances[id].destroy(); } catch (e) {} }
+  });
+  Dash.instances = {};
+
+  if (!App.datasets.length) {
+    grid.innerHTML = '<div class="empty-hint big">Load your reports on the Import tab to build a dashboard.</div>';
+    return;
+  }
+
+  grid.innerHTML = Dash.charts.map(cfg =>
+    '<div class="dash-card' + (cfg.wide ? ' wide' : '') + '" data-cid="' + cfg.id + '">' +
+      '<div class="dash-card-head">' +
+        '<h3>' + escapeHtml(cfg.title) + '</h3>' +
+        '<span class="dash-card-meta">' + escapeHtml(cfg.source) + ' \u00b7 ' + escapeHtml(cfg.dim) + '</span>' +
+        '<span class="spacer"></span>' +
+        '<button class="dash-ico" data-act="wide" title="Make this chart wide or normal">\u2194</button>' +
+        '<button class="dash-ico" data-act="edit" title="Edit this chart">\u270E</button>' +
+        '<button class="dash-ico" data-act="dup" title="Duplicate">\u29C9</button>' +
+        '<button class="dash-ico" data-act="del" title="Remove">\u2715</button>' +
+      '</div>' +
+      (cfg.type === 'table'
+        ? '<div class="dash-table-wrap"><table class="data-table dash-mini" id="dt-' + cfg.id + '"></table></div>'
+        : '<div class="chart-box"><canvas id="dc-' + cfg.id + '"></canvas></div>') +
+    '</div>').join('');
+
+  Dash.charts.forEach(cfg => drawCustomChart(cfg));
+
+  grid.querySelectorAll('.dash-ico').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = btn.closest('.dash-card').dataset.cid;
+      const i = Dash.charts.findIndex(c => c.id === id);
+      const act = btn.dataset.act;
+      if (act === 'del') { Dash.charts.splice(i, 1); saveDashCharts(); renderDashboard(); }
+      else if (act === 'edit') openChartEditor(Dash.charts[i]);
+      else if (act === 'dup') {
+        const copy = Object.assign({}, Dash.charts[i], { id: 'c' + Date.now(), title: Dash.charts[i].title + ' (copy)' });
+        Dash.charts.splice(i + 1, 0, copy); saveDashCharts(); renderDashboard();
+      } else if (act === 'wide') {
+        Dash.charts[i].wide = !Dash.charts[i].wide; saveDashCharts(); renderDashboard();
+      }
+    });
+  });
+}
+
+function drawCustomChart(cfg) {
+  const data = dashAggregate(cfg);
+  const labels = data.map(d => d[0]);
+  const values = data.map(d => d[1]);
+
+  if (cfg.type === 'table') {
+    const el = document.getElementById('dt-' + cfg.id);
+    if (!el) return;
+    const total = values.reduce((a, b) => a + b, 0);
+    el.innerHTML = '<thead><tr><th>' + escapeHtml(cfg.dim) + '</th><th class="num">Qty</th><th class="num">Share</th></tr></thead>' +
+      '<tbody>' + data.map(([k, v]) =>
+        '<tr class="dash-trow" data-v="' + escapeHtml(k) + '"><td>' + escapeHtml(k) + '</td>' +
+        '<td class="num">' + fmtNum(v) + '</td>' +
+        '<td class="num">' + (total ? fmtNum(v / total * 100, 1) + '%' : '\u2014') + '</td></tr>').join('') +
+      '</tbody><tfoot><tr><td>Total</td><td class="num">' + fmtNum(total) + '</td><td class="num">100%</td></tr></tfoot>';
+    el.querySelectorAll('.dash-trow').forEach(tr => tr.addEventListener('click', () => addDashFilter(cfg.dim, tr.dataset.v)));
+    return;
+  }
+
+  const canvas = document.getElementById('dc-' + cfg.id);
+  if (!canvas || typeof Chart === 'undefined') return;
+  const isPie = cfg.type === 'pie' || cfg.type === 'doughnut';
+  const chartType = cfg.type === 'column' ? 'bar'
+    : cfg.type === 'area' ? 'line'
+    : cfg.type === 'bar' ? 'bar' : cfg.type;
+
+  Dash.instances[cfg.id] = makeChart(canvas.getContext('2d'), {
+    type: chartType,
+    data: {
+      labels: labels,
+      datasets: [{
+        label: cfg.title,
+        data: values,
+        backgroundColor: isPie ? labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) : CHART_COLORS[0],
+        borderColor: cfg.type === 'line' || cfg.type === 'area' ? CHART_COLORS[0] : undefined,
+        fill: cfg.type === 'area',
+        tension: .25
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      indexAxis: cfg.type === 'bar' ? 'y' : 'x',
+      onClick: (evt, els) => { if (els && els.length) addDashFilter(cfg.dim, labels[els[0].index]); },
+      plugins: {
+        legend: { display: isPie, position: 'right', labels: { font: { size: 10 }, boxWidth: 10 } },
+        tooltip: { callbacks: { afterLabel: () => 'Click to filter the dashboard' } }
+      },
+      scales: isPie ? {} : { x: { ticks: { font: { size: 10 } } }, y: { beginAtZero: true } }
+    }
+  });
+}
+
+function addDashFilter(dim, value) {
+  const i = Dash.filters.findIndex(f => f.dim === dim);
+  if (i >= 0) {
+    if (Dash.filters[i].value === value) Dash.filters.splice(i, 1); // click again to clear
+    else Dash.filters[i].value = value;
+  } else Dash.filters.push({ dim, value });
+  renderDashboard();
+}
+
+/* ---- add / edit a chart ---- */
+function openChartEditor(cfg) {
+  const editing = !!cfg;
+  const c = cfg || { id: 'c' + Date.now(), title: '', type: 'column', source: 'sales',
+                     dim: 'Brand', measure: 'qty', topN: 10 };
+
+  const pop = document.createElement('div');
+  pop.className = 'modal-backdrop';
+  pop.innerHTML = '<div class="modal-box chart-editor">' +
+    '<h3>' + (editing ? 'Edit chart' : 'Add a chart') + '</h3>' +
+    '<div class="settings-row"><label class="toolbar-label">Title</label>' +
+      '<input type="text" id="ce-title" class="text-input grow" value="' + escapeHtml(c.title) + '" placeholder="Sales by brand"></div>' +
+    '<div class="settings-row"><label class="toolbar-label">Chart type</label>' +
+      '<select id="ce-type" class="select">' + CHART_TYPES.map(t =>
+        '<option value="' + t[0] + '"' + (c.type === t[0] ? ' selected' : '') + '>' + t[1] + '</option>').join('') + '</select>' +
+      '<label class="toolbar-label">Data</label>' +
+      '<select id="ce-source" class="select">' + CHART_SOURCES.map(t =>
+        '<option value="' + t[0] + '"' + (c.source === t[0] ? ' selected' : '') + '>' + t[1] + '</option>').join('') + '</select></div>' +
+    '<div class="settings-row"><label class="toolbar-label">Group by</label>' +
+      '<select id="ce-dim" class="select">' + CHART_DIMS.map(d =>
+        '<option value="' + d + '"' + (c.dim === d ? ' selected' : '') + '>' + d + '</option>').join('') + '</select>' +
+      '<label class="toolbar-label">Measure</label>' +
+      '<select id="ce-measure" class="select">' + CHART_MEASURES.map(m =>
+        '<option value="' + m[0] + '"' + (c.measure === m[0] ? ' selected' : '') + '>' + m[1] + '</option>').join('') + '</select>' +
+      '<label class="toolbar-label">Top</label>' +
+      '<input type="number" id="ce-topn" class="text-input narrow" min="3" max="50" value="' + (c.topN || 10) + '"></div>' +
+    '<label class="toolbar-checkbox"><input type="checkbox" id="ce-wide"' + (c.wide ? ' checked' : '') + '> Full width</label>' +
+    '<div class="modal-actions"><button class="ghost-btn primary small" id="ce-save">' +
+      (editing ? 'Save chart' : 'Add chart') + '</button>' +
+      '<span class="spacer"></span><button class="ghost-btn small" id="ce-cancel">Cancel</button></div>' +
+  '</div>';
+  document.body.appendChild(pop);
+
+  pop.querySelector('#ce-cancel').onclick = () => pop.remove();
+  pop.addEventListener('click', e => { if (e.target === pop) pop.remove(); });
+  pop.querySelector('#ce-save').onclick = () => {
+    c.title = pop.querySelector('#ce-title').value.trim() ||
+      (pop.querySelector('#ce-source').selectedOptions[0].text + ' by ' + pop.querySelector('#ce-dim').value);
+    c.type = pop.querySelector('#ce-type').value;
+    c.source = pop.querySelector('#ce-source').value;
+    c.dim = pop.querySelector('#ce-dim').value;
+    c.measure = pop.querySelector('#ce-measure').value;
+    c.topN = Math.max(3, Math.min(50, parseInt(pop.querySelector('#ce-topn').value, 10) || 10));
+    c.wide = pop.querySelector('#ce-wide').checked;
+    if (!editing) Dash.charts.push(c);
+    saveDashCharts();
+    pop.remove();
+    renderDashboard();
+    toast(editing ? 'Chart updated.' : 'Chart added.');
+  };
+}
+
+/* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v27';
+const BUILD_VERSION = 'v28';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -7006,6 +7329,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('col-resize', initColResize);
   safeInit('catalog-prefs', loadCatPrefs);
   safeInit('catalog', initCatalog);
+  safeInit('dash-builder', initDashboardBuilder);
   safeInit('prefs-apply', applyPrefsToControls);
   safeInit('snapshot', initSnapshot);
   safeInit('session', initSession);
