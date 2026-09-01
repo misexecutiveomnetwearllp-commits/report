@@ -1427,3 +1427,16 @@ body.board-dark .dash-mini tfoot td { background: rgba(255,255,255,.08); color: 
 .present-stage .board-resize, .present-stage .board-grip { display: none; }
 body.presenting .sidebar, body.presenting .main { visibility: hidden; }
 @media (max-width: 900px) { .present-stage .board-card { width: 100% !important; } }
+
+/* drag bar under the Catalog table to set its height */
+.cat-height-grip {
+  flex: 0 0 auto; height: 10px; margin-top: 2px; cursor: ns-resize;
+  border-radius: 4px; background: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+.cat-height-grip::before {
+  content: ''; width: 60px; height: 4px; border-radius: 2px;
+  background: var(--line-strong); transition: background .12s, width .12s;
+}
+.cat-height-grip:hover::before { background: var(--rust); width: 110px; }
+body.row-resizing { cursor: ns-resize !important; user-select: none; }

@@ -4551,34 +4551,40 @@ function renderSnapshotSettings(hostId) {
       '<input type="checkbox" id="snap-autoshow"' + (Snapshot.config.autoShow ? ' checked' : '') + '> ' +
       'Open this popup automatically when data is loaded' +
     '</label>' +
-    '<div class="modal-actions" style="margin-top:16px;">' +
-      '<button class="ghost-btn primary small" id="snap-save">Save settings</button>' +
-    '</div>';
+    '';
 
   wrap.querySelectorAll('input[name="mapstyle"]').forEach(r => r.addEventListener('change', () => {
     wrap.querySelectorAll('.snap-style-opt').forEach(o => o.classList.toggle('active', o.querySelector('input').checked));
   }));
 
-  wrap.querySelector('#snap-save').addEventListener('click', () => {
-    const lv = [...wrap.querySelectorAll('.snap-level')].map(s => s.value).filter(v => v);
-    // duplicate levels hatao, warna wahi cheez do baar khulegi
+  // The snapshot page saves through the shared Save bar at the bottom, so this
+  // block only runs if an older markup still has its own button.
+  // Snapshot settings apply the moment you change them; the shared Save bar at
+  // the bottom is what writes them to disk (and to the Google Sheet).
+  function applySnapshotSettings(rerender) {
+    const lv = [...wrap.querySelectorAll('.snap-level')].map(x => x.value).filter(v => v);
     Snapshot.config.levels = lv.filter((v, i) => lv.indexOf(v) === i);
     if (!Snapshot.config.levels.length) Snapshot.config.levels = ['Sub Section'];
     const styleRadio = wrap.querySelector('input[name="mapstyle"]:checked');
     if (styleRadio) Snapshot.config.mapStyle = styleRadio.value;
     Snapshot.config.dims = [...wrap.querySelectorAll('.snap-check input:checked')].map(c => c.value);
-    Snapshot.config.topN = Math.max(3, Math.min(15, parseInt(wrap.querySelector('#snap-topn').value, 10) || 5));
-    Snapshot.config.autoShow = wrap.querySelector('#snap-autoshow').checked;
+    const tn = wrap.querySelector('#snap-topn');
+    if (tn) Snapshot.config.topN = Math.max(3, Math.min(15, parseInt(tn.value, 10) || 5));
+    const as = wrap.querySelector('#snap-autoshow');
+    if (as) Snapshot.config.autoShow = as.checked;
     SnapMap.expanded = {};
-    pushSnapshotConfig();
-    Snapshot.view = 'map';
-    document.querySelectorAll('#snapshot-view-tabs .seg-btn').forEach(b =>
-      b.classList.toggle('active', b.dataset.view === 'map'));
-    showSnapshotView();
-    renderSnapshot();
-    setTimeout(fitSnapMap, 0);
-  });
+    saveSnapshotConfigLocal();
+    if (rerender && document.getElementById('snapshot-overlay') &&
+        document.getElementById('snapshot-overlay').style.display !== 'none') {
+      renderSnapshot();
+      setTimeout(fitSnapMap, 0);
+    }
+  }
+
+  wrap.querySelectorAll('.snap-level, .snap-check input, #snap-topn, #snap-autoshow, input[name="mapstyle"]')
+    .forEach(el => el.addEventListener('change', () => applySnapshotSettings(true)));
 }
+
 
 /* ---------------------------------------------------------------
    9. DASHBOARD
@@ -6096,10 +6102,49 @@ function catalogFiltered(all) {
 }
 
 /* ---- rendering ---- */
+/* ---- drag the bar under the Catalog table to make it taller or shorter ---- */
+function initCatalogHeightGrip() {
+  const grip = document.getElementById('cat-height-grip');
+  const box = document.getElementById('cat-scroll-box');
+  if (!grip || !box) return;
+
+  const saved = parseInt(Store.get('sl_cat_height') || '', 10);
+  if (saved > 120) { box.style.flex = '0 0 auto'; box.style.height = saved + 'px'; }
+
+  grip.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = box.getBoundingClientRect().height;
+    box.style.flex = '0 0 auto';
+    document.body.classList.add('row-resizing');
+
+    const move = ev => {
+      const h = Math.max(140, startH + (ev.clientY - startY));
+      box.style.height = h + 'px';
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      document.body.classList.remove('row-resizing');
+      Store.set('sl_cat_height', String(Math.round(box.getBoundingClientRect().height)));
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  });
+
+  // double-click puts it back to filling the tab
+  grip.addEventListener('dblclick', () => {
+    box.style.flex = ''; box.style.height = '';
+    Store.remove('sl_cat_height');
+    toast('Table height reset to fit the window.');
+  });
+}
+
 function initCatalog() {
   const host = document.getElementById('tab-catalog');
   if (!host) return;
   loadCatalogImages();
+  initCatalogHeightGrip();
 
   document.getElementById('cat-search').addEventListener('input', debounce(e => {
     Catalog.search = e.target.value; renderCatalog();
@@ -6748,13 +6793,35 @@ const CATPREFS_DEFAULT = {
 
 const CatPrefs = Object.assign({}, CATPREFS_DEFAULT);
 
+// Columns added in later builds must appear for people who already had
+// settings saved, otherwise a new column stays invisible for ever.
+const CAT_COLUMNS_ADDED_LATER = ['purchased'];
+
 function loadCatPrefs() {
   try {
     const raw = Store.get('sl_catprefs');
-    if (raw) Object.assign(CatPrefs, CATPREFS_DEFAULT, JSON.parse(raw));
+    if (raw) {
+      const saved = JSON.parse(raw);
+      Object.assign(CatPrefs, CATPREFS_DEFAULT, saved);
+      if (Array.isArray(saved.columns)) {
+        const known = CAT_COLUMNS.map(c => c[0]);
+        CatPrefs.columns = saved.columns.filter(c => known.indexOf(c) !== -1);
+        // switch on any column that did not exist when these settings were saved
+        CAT_COLUMNS_ADDED_LATER.forEach(c => {
+          if (CatPrefs.columns.indexOf(c) === -1) {
+            const at = CatPrefs.columns.indexOf('sold');
+            if (at >= 0) CatPrefs.columns.splice(at + 1, 0, c);
+            else CatPrefs.columns.push(c);
+          }
+        });
+        saveCatPrefsQuiet();
+      }
+    }
   } catch (e) {}
   applyCatPrefs();
 }
+
+function saveCatPrefsQuiet() { Store.set('sl_catprefs', JSON.stringify(CatPrefs)); }
 function saveCatPrefs() { Store.set('sl_catprefs', JSON.stringify(CatPrefs)); applyCatPrefs(); }
 
 function applyCatPrefs() {
@@ -7880,7 +7947,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v30';
+const BUILD_VERSION = 'v31';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
