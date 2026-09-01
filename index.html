@@ -391,25 +391,16 @@
       <div id="perf-legend" class="perf-legend" data-open="0"></div>
 
       <div id="perf-charts">
-        <h2 class="section-title">Charts</h2>
-        <div class="chart-grid">
-          <div class="chart-card wide">
-            <h3>Pareto \u2014 which items make up the sales <span class="h3-note">(bars = qty sold, line = cumulative %)</span></h3>
-            <div class="chart-box chart-box-wide"><canvas id="chart-pareto"></canvas></div>
-          </div>
-          <div class="chart-card">
-            <h3>Status split</h3>
-            <div class="chart-box"><canvas id="chart-status"></canvas></div>
-          </div>
-          <div class="chart-card">
-            <h3>Stock ageing (by purchase bill date)</h3>
-            <div class="chart-box"><canvas id="chart-ageing"></canvas></div>
-          </div>
-          <div class="chart-card wide">
-            <h3>Biggest non-movers <span class="h3-note">(stock lying with zero sale in this window)</span></h3>
-            <div class="chart-box chart-box-wide"><canvas id="chart-bottom"></canvas></div>
-          </div>
+        <div class="toolbar">
+          <span class="toolbar-label">Charts</span>
+          <span class="spacer"></span>
+          <button id="perf-present" class="ghost-btn small">▶ Present</button>
+          <button id="perf-add-chart" class="ghost-btn small primary">+ Add chart</button>
+          <button id="perf-clear-filters" class="ghost-btn small">Clear filters</button>
+          <button id="perf-reset" class="ghost-btn small">Reset charts</button>
         </div>
+        <div id="perf-chart-filters" class="filter-chip-row"></div>
+        <div id="perf-grid" class="chart-board"></div>
       </div>
     </section>
 
@@ -419,13 +410,14 @@
         <label class="toolbar-label">Sales window:</label>
         <select id="dash-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option><option value="custom">Custom range&hellip;</option></select>
         <span class="spacer"></span>
+        <button id="dash-present" class="ghost-btn small">▶ Present</button>
         <button id="dash-add-chart" class="ghost-btn small primary">+ Add chart</button>
         <button id="dash-clear-filters" class="ghost-btn small">Clear filters</button>
         <button id="dash-reset" class="ghost-btn small">Reset dashboard</button>
       </div>
 
       <div id="dash-filters" class="filter-chip-row dash-filters"></div>
-      <div id="dash-grid" class="dash-grid"></div>
+      <div id="dash-grid" class="chart-board"></div>
     </section>
 
   </main>
