@@ -160,11 +160,8 @@
 
     <!-- ---------- TAB: CATALOG ---------- -->
     <section class="tab-panel" id="tab-catalog">
-      <header class="panel-head">
-        <h1>Catalog</h1>
-        <p>Every design, colour and size in one place. Pick a letter to jump to a group of articles, open a design to see its colours, then open a colour to see the size run. Add a photo to any design so it is recognisable at a glance.</p>
-      </header>
 
+      <div class="cat-sticky">
       <div class="toolbar">
         <label class="toolbar-label">Sales window:</label>
         <select id="catalog-period" class="select period-select"><option value="all" selected>All data</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="thisyear">Latest year</option><option value="custom">Custom range&hellip;</option></select>
@@ -191,6 +188,8 @@
         <button class="seg-btn" data-flag="overstock">Overstock</button>
         <button class="seg-btn" data-flag="nosale">No sale</button>
         <span class="seg-count" id="cat-count"></span>
+      </div>
+
       </div>
 
       <div class="table-scroll cat-scroll">
