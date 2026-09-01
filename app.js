@@ -5298,11 +5298,37 @@ function closeSettings() {
   modalClose('settings-overlay');
 }
 
+/** Settings apply as you change them; this button is the visible confirmation
+ *  and forces everything to disk in one go. */
+function settingsSaveBarHtml() {
+  return '<div class="settings-savebar">' +
+    '<button class="ghost-btn small primary" id="set-save">Save settings</button>' +
+    '<span class="drill-count" id="set-saved-note"></span>' +
+    '</div>';
+}
+
+function wireSettingsSave(wrap) {
+  const btn = wrap.querySelector('#set-save');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    saveTheme(); saveBehaviour(); savePrefs(); saveCatPrefs();
+    saveSnapshotConfigLocal(); saveReplen(); saveReplenBulk(); saveColWidths();
+    const n = wrap.querySelector('#set-saved-note');
+    if (n) {
+      n.textContent = 'Saved at ' + new Date().toLocaleTimeString();
+      setTimeout(() => { if (n) n.textContent = ''; }, 4000);
+    }
+    toast('Settings saved.');
+  });
+}
+
 function renderSettingsBody() {
   const wrap = document.getElementById('settings-body');
+  const finish = () => { wrap.insertAdjacentHTML('beforeend', settingsSaveBarHtml()); wireSettingsSave(wrap); };
   if (settingsTab === 'snapshot') {
     wrap.innerHTML = '<div id="settings-snap-body"></div>';
     renderSnapshotSettings('settings-snap-body');
+    finish();
     return;
   }
   // ---- 01 Dashboard ----
@@ -5337,6 +5363,7 @@ function renderSettingsBody() {
     wrap.querySelector('#set-dash-window').addEventListener('change', function (e) {
       Prefs.defaultPeriod = e.target.value; savePrefs();
     });
+    finish();
     return;
   }
 
@@ -5398,11 +5425,12 @@ function renderSettingsBody() {
       Prefs.perfLimit = Math.max(100, Math.min(5000, parseInt(e.target.value, 10) || 800));
       savePrefs(); renderPerformance();
     });
+    finish();
     return;
   }
 
   // ---- 03 Catalog ----
-  if (settingsTab === 'catalog') { renderCatalogSettings(wrap); return; }
+  if (settingsTab === 'catalog') { renderCatalogSettings(wrap); finish(); return; }
 
   // ---- 04 Pivot Builder ----
   if (settingsTab === 'pivot') {
@@ -5444,6 +5472,7 @@ function renderSettingsBody() {
       const g = document.getElementById('quick-sort');
       if (g) { g.value = e.target.value; renderQuickReport(); }
     });
+    finish();
     return;
   }
 
@@ -5467,6 +5496,7 @@ function renderSettingsBody() {
       ExploreState.page = 1;
       renderExplore();
     });
+    finish();
     return;
   }
 
@@ -5505,6 +5535,7 @@ function renderSettingsBody() {
       Object.assign(Theme, THEME_DEFAULT); saveTheme();
       toast('All settings cleared - please refresh the page.');
     });
+    finish();
     return;
   }
 
@@ -5667,6 +5698,7 @@ function renderSettingsBody() {
   });
   wrap.querySelector('#set-zebra').addEventListener('change', e => { Theme.zebra = e.target.checked; saveTheme(); });
   wrap.querySelector('#set-grid').addEventListener('change', e => { Theme.gridLines = e.target.checked; saveTheme(); });
+  finish();
 }
 
 /* ---- Per-tab preferences (Settings panel, sections 01-06) ---- */
@@ -5845,6 +5877,8 @@ const Catalog = {
   search: '',
   flags: { stockout: false, nosale: false, overstock: false, lowcover: false },
   sort: 'worstcover',
+  sortCol: null,        // clicked column key
+  sortDir: -1,
   expanded: {},
   images: {},          // Article No -> data URL
   lastRows: null
@@ -6010,6 +6044,16 @@ function catalogFiltered(all) {
       [...r.colours.keys()].some(c => String(c).toLowerCase().indexOf(q) !== -1));
   }
 
+  if (Catalog.sortCol) {
+    const c = Catalog.sortCol, dir = Catalog.sortDir;
+    rows.sort((a, b) => {
+      const va = catSortValue(a, c), vb = catSortValue(b, c);
+      if (typeof va === 'string' || typeof vb === 'string') return String(va).localeCompare(String(vb)) * dir;
+      return ((va || 0) - (vb || 0)) * dir;
+    });
+    return rows;
+  }
+
   const s = Catalog.sort;
   rows.sort((a, b) => {
     if (s === 'topseller') return b.sold - a.sold;
@@ -6033,7 +6077,7 @@ function initCatalog() {
     Catalog.search = e.target.value; renderCatalog();
   }, 200));
   document.getElementById('cat-sort').addEventListener('change', e => {
-    Catalog.sort = e.target.value; renderCatalog();
+    Catalog.sort = e.target.value; Catalog.sortCol = null; renderCatalog();
   });
   document.getElementById('cat-expand-all').addEventListener('click', () => {
     const rows = catalogFiltered(buildCatalog().rows).slice(0, 60);
@@ -6088,9 +6132,10 @@ function replenBulkApply(field, value) {
 function replenBulkBarHtml() {
   return '<div class="cat-bulk">' +
     '<span class="toolbar-label">Set for all listed designs:</span>' +
-    '<label class="toolbar-label">LT</label><input type="number" id="bulk-lt" class="text-input" min="0" step="1">' +
-    '<label class="toolbar-label">SF</label><input type="number" id="bulk-sf" class="text-input" min="0" step="0.1">' +
-    '<label class="toolbar-label">MOQ</label><input type="number" id="bulk-moq" class="text-input" min="0" step="1">' +
+    '<label class="toolbar-label">ADC</label><input type="number" id="bulk-adc" class="text-input" min="0" step="0.01" value="' + (Replen.bulk.adc !== undefined ? Replen.bulk.adc : '') + '">' +
+    '<label class="toolbar-label">LT</label><input type="number" id="bulk-lt" class="text-input" min="0" step="1" value="' + (Replen.bulk.lt !== undefined ? Replen.bulk.lt : '') + '">' +
+    '<label class="toolbar-label">SF</label><input type="number" id="bulk-sf" class="text-input" min="0" step="0.1" value="' + (Replen.bulk.sf !== undefined ? Replen.bulk.sf : '') + '">' +
+    '<label class="toolbar-label">MOQ</label><input type="number" id="bulk-moq" class="text-input" min="0" step="1" value="' + (Replen.bulk.moq !== undefined ? Replen.bulk.moq : '') + '">' +
     '<button class="ghost-btn small primary" id="bulk-apply">Apply</button>' +
     '<button class="ghost-btn small" id="bulk-clear">Clear all manual values</button>' +
     '</div>';
@@ -6099,16 +6144,36 @@ function replenBulkBarHtml() {
 function wireReplenBulk() {
   const ap = document.getElementById('bulk-apply');
   if (ap) ap.addEventListener('click', () => {
-    let done = false;
-    [['lt', 'bulk-lt'], ['sf', 'bulk-sf'], ['moq', 'bulk-moq']].forEach(([f, id]) => {
+    // Read every box FIRST. Applying one at a time re-drew the bar and wiped
+    // the boxes that had not been read yet.
+    const picked = [];
+    [['adc', 'bulk-adc'], ['lt', 'bulk-lt'], ['sf', 'bulk-sf'], ['moq', 'bulk-moq']].forEach(([f, id]) => {
       const el = document.getElementById(id);
-      if (el && el.value !== '') { replenBulkApply(f, el.value); done = true; }
+      if (!el) return;
+      if (el.value !== '' && !isNaN(parseFloat(el.value))) {
+        const v = parseFloat(el.value);
+        Replen.bulk[f] = v;
+        picked.push([f, v]);
+      } else delete Replen.bulk[f];
     });
-    if (!done) toast('Fill LT, SF or MOQ first.');
+
+    if (!picked.length) { saveReplenBulk(); toast('Fill ADC, LT, SF or MOQ first.'); return; }
+
+    const rows = Catalog.lastRows || [];
+    if (!rows.length) { toast('Nothing on screen to apply to.'); return; }
+    rows.forEach(d => {
+      const o = Replen.overrides[d.key] || (Replen.overrides[d.key] = {});
+      picked.forEach(([f, v]) => { o[f] = v; });
+    });
+    saveReplen();
+    saveReplenBulk();
+    renderCatalog();
+    toast(picked.map(p => p[0].toUpperCase() + ' ' + p[1]).join(', ') + ' set on ' + rows.length + ' designs.');
   });
   const cl = document.getElementById('bulk-clear');
   if (cl) cl.addEventListener('click', () => {
-    Replen.overrides = {}; saveReplen(); renderCatalog();
+    Replen.overrides = {}; Replen.bulk = {};
+    saveReplen(); saveReplenBulk(); renderCatalog();
     toast('All manual ADC / LT / SF / MOQ / MIT values cleared.');
   });
 }
@@ -6140,30 +6205,32 @@ function renderCatalog() {
     ' \u00b7 ' + built.days + ' days';
 
   const head = '<thead><tr>' +
-    '<th class="cat-c-design">Design</th>' +
-    (catColOn('category') ? '<th>Category</th>' : '') +
-    (catColOn('colours') ? '<th class="cat-c-colours">Colours</th>' : '') +
-    (catColOn('sold') ? '<th class="num">Sold</th>' : '') +
-    (catColOn('opening') ? '<th class="num">Opening</th>' : '') +
-    (catColOn('closing') ? '<th class="num">Closing</th>' : '') +
-    (catColOn('moved') ? '<th class="num">Moved</th>' : '') +
-    (catColOn('adc') ? '<th class="num" title="Average Daily Consumption">ADC</th>' : '') +
-    (catColOn('lt') ? '<th class="num" title="Lead Time in days">LT</th>' : '') +
-    (catColOn('sf') ? '<th class="num" title="Safety Factor">SF</th>' : '') +
-    (catColOn('moq') ? '<th class="num" title="Minimum Order Quantity">MOQ</th>' : '') +
-    (catColOn('ml') ? '<th class="num" title="Max Level = ADC x LT x SF">ML</th>' : '') +
-    (catColOn('mit') ? '<th class="num" title="Material In Transit">MIT</th>' : '') +
-    (catColOn('stockpct') ? '<th class="num" title="(Closing + MIT) as a share of Max Level">Stock %</th>' : '') +
-    (catColOn('reorder') ? '<th class="num" title="ML minus what you have, rounded up to the MOQ">Reorder</th>' : '') +
-    (catColOn('cover') ? '<th class="num">Cover</th>' : '') +
-    (catColOn('sellthru') ? '<th class="num">Sell-thru</th>' : '') +
-    (catColOn('lastsold') ? '<th>Last sold</th>' : '') +
-    (catColOn('status') ? '<th>Status</th>' : '') +
+    '<th class="cat-c-design" data-sc="key">Design' + catSortArrow('key') + '</th>' +
+    (catColOn('category') ? '<th data-sc="category">Category' + catSortArrow('category') + '</th>' : '') +
+    (catColOn('colours') ? '<th class="cat-c-colours" data-sc="colours">Colours' + catSortArrow('colours') + '</th>' : '') +
+    (catColOn('sold') ? '<th class="num" data-sc="sold">Sold' + catSortArrow('sold') + '</th>' : '') +
+    (catColOn('purchased') ? '<th class="num" data-sc="purchased" title="Quantity received in this window">Purchased' + catSortArrow('purchased') + '</th>' : '') +
+    (catColOn('opening') ? '<th class="num" data-sc="obs">Opening' + catSortArrow('obs') + '</th>' : '') +
+    (catColOn('closing') ? '<th class="num" data-sc="cbs">Closing' + catSortArrow('cbs') + '</th>' : '') +
+    (catColOn('moved') ? '<th class="num" data-sc="moved">Moved' + catSortArrow('moved') + '</th>' : '') +
+    (catColOn('adc') ? '<th class="num" title="Average Daily Consumption" data-sc="adc">ADC' + catSortArrow('adc') + '</th>' : '') +
+    (catColOn('lt') ? '<th class="num" title="Lead Time in days" data-sc="lt">LT' + catSortArrow('lt') + '</th>' : '') +
+    (catColOn('sf') ? '<th class="num" title="Safety Factor" data-sc="sf">SF' + catSortArrow('sf') + '</th>' : '') +
+    (catColOn('moq') ? '<th class="num" title="Minimum Order Quantity" data-sc="moq">MOQ' + catSortArrow('moq') + '</th>' : '') +
+    (catColOn('ml') ? '<th class="num" title="Max Level = ADC x LT x SF" data-sc="ml">ML' + catSortArrow('ml') + '</th>' : '') +
+    (catColOn('mit') ? '<th class="num" title="Material In Transit" data-sc="mit">MIT' + catSortArrow('mit') + '</th>' : '') +
+    (catColOn('stockpct') ? '<th class="num" title="(Closing + MIT) as a share of Max Level" data-sc="pct">Stock %' + catSortArrow('pct') + '</th>' : '') +
+    (catColOn('reorder') ? '<th class="num" title="ML minus what you have, rounded up to the MOQ" data-sc="reorder">Reorder' + catSortArrow('reorder') + '</th>' : '') +
+    (catColOn('cover') ? '<th class="num" data-sc="cover">Cover' + catSortArrow('cover') + '</th>' : '') +
+    (catColOn('sellthru') ? '<th class="num" data-sc="sellThrough">Sell-thru' + catSortArrow('sellThrough') + '</th>' : '') +
+    (catColOn('lastsold') ? '<th data-sc="lastSale">Last sold' + catSortArrow('lastSale') + '</th>' : '') +
+    (catColOn('status') ? '<th data-sc="status">Status' + catSortArrow('status') + '</th>' : '') +
     '</tr></thead>';
 
   const body = rows.slice(0, CatPrefs.maxRows || 300).map(d => catalogDesignRow(d)).join('');
 
   const tSold = rows.reduce((a, r) => a + r.sold, 0);
+  const tPurch = rows.reduce((a, r) => a + r.purchased, 0);
   const tObs = rows.reduce((a, r) => a + r.obs, 0);
   const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
   const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
@@ -6173,6 +6240,7 @@ function renderCatalog() {
     '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td>' +
     (fillerCols ? '<td colspan="' + fillerCols + '"></td>' : '') +
     (catColOn('sold') ? '<td class="num">' + fmtNum(tSold) + '</td>' : '') +
+    (catColOn('purchased') ? '<td class="num">' + fmtNum(tPurch) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num">' + fmtNum(tObs) + '</td>' : '') +
     (catColOn('closing') ? '<td class="num">' + fmtNum(tCbs) + '</td>' : '') +
     (catColOn('moved') ? '<td class="num">' + fmtNum(tObs - tCbs) + '</td>' : '') +
@@ -6185,6 +6253,12 @@ function renderCatalog() {
     '</tr></tfoot>';
 
   host.innerHTML = head + '<tbody>' + body + '</tbody>' + foot;
+  host.querySelectorAll('thead th[data-sc]').forEach(th => th.addEventListener('click', () => {
+    const c = th.dataset.sc;
+    if (Catalog.sortCol === c) Catalog.sortDir *= -1;
+    else { Catalog.sortCol = c; Catalog.sortDir = (c === 'key' || c === 'category' || c === 'status') ? 1 : -1; }
+    renderCatalog();
+  }));
   wireCatalogRows();
   wireReplenInputs(host);
   makeTableResizable(host);
@@ -6211,6 +6285,30 @@ function wireReplenInputs(host) {
       renderCatalog();
     });
   });
+}
+
+/** Little arrow on the header cell that is being sorted. */
+function catSortArrow(col) {
+  if (Catalog.sortCol !== col) return '';
+  return '<span class="sort-arrow">' + (Catalog.sortDir === 1 ? '\u25B2' : '\u25BC') + '</span>';
+}
+
+/** Value used when sorting by a clicked column. */
+function catSortValue(d, col) {
+  if (col === 'key') return String(d.key).toLowerCase();
+  if (col === 'category') return String(d.meta['Sub Section'] || d.meta.Section || '').toLowerCase();
+  if (col === 'colours') return d.colourList.length;
+  if (col === 'obs') return d.obs;
+  if (col === 'cbs') return d.cbs;
+  if (col === 'moved') return d.moved === null ? -Infinity : d.moved;
+  if (col === 'cover') return d.cover === Infinity ? 1e12 : d.cover;
+  if (col === 'lastSale') return d.lastSale ? d.lastSale.getTime() : -Infinity;
+  if (col === 'status') return String(d.status).toLowerCase();
+  if (['adc', 'lt', 'sf', 'moq', 'ml', 'mit', 'pct', 'reorder'].indexOf(col) !== -1) {
+    const r = replenFor(d.key, d.sold, catalogDays(), d.cbs);
+    return col === 'pct' ? (isFinite(r.pct) ? r.pct : 1e12) : r[col];
+  }
+  return d[col];
 }
 
 function catalogDesignRow(d) {
@@ -6243,6 +6341,7 @@ function catalogDesignRow(d) {
     (catColOn('category') ? '<td class="cat-cat">' + escapeHtml(d.meta['Sub Section'] || d.meta.Section || '\u2014') + '</td>' : '') +
     (catColOn('colours') ? '<td class="cat-c-colours">' + dots + '</td>' : '') +
     (catColOn('sold') ? '<td class="num">' + fmtNum(d.sold) + '</td>' : '') +
+    (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(d.purchased) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num obs-col">' + (d.hasOBS ? fmtNum(d.obs) : '\u2014') + '</td>' : '') +
     (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(d.cbs) + '</td>' : '') +
     (catColOn('moved') ? '<td class="num ' + (d.moved > 0 ? 'mv-down' : (d.moved < 0 ? 'mv-up' : '')) + '">' +
@@ -6260,17 +6359,51 @@ function catalogDesignRow(d) {
   return html;
 }
 
+/** The colour-coded size bar drawn under a colour row. */
+function catalogStripRow(d, c) {
+  if (!CatPrefs.showStrip) return '';
+  const total = catalogColCount();
+  const blocks = c.sizeList.map(z => {
+    const zr = replenFor(d.key + '|' + c.key + '|' + z.key, z.sold, catalogDays(), z.cbs);
+    const w = Math.max(1, z.cbs);
+    return '<span class="cs-block ' + stockPctClass(zr.pct) + '" style="flex:' + w + '" ' +
+      'title="' + escapeHtml(z.key + ': ' + fmtNum(z.cbs) + ' in stock, ' + fmtNum(z.sold) + ' sold' +
+        (isFinite(zr.pct) ? ', ' + Math.round(zr.pct) + '% of max level' : '')) + '"></span>';
+  }).join('');
+  if (!blocks) return '';
+  return '<tr class="cat-strip-row"><td colspan="' + total + '">' +
+    '<span class="cs-bar">' + blocks + '</span></td></tr>';
+}
+
+/** How many columns the table currently has, counting colspans. */
+function catalogColCount() {
+  return 1 +
+    (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0) +
+    ['sold','purchased','opening','closing','moved','adc','lt','sf','moq','ml','mit','stockpct','reorder',
+     'cover','sellthru','lastsold','status'].filter(catColOn).length;
+}
+
 function catalogColourRow(d, c) {
   const cKey = d.key + '|' + c.key;
   const open = !!Catalog.expanded[cKey];
-  const sizes = c.sizeList.slice(0, CatPrefs.maxSizeChips || 24).map(z =>
-    '<span class="cat-size ' + (z.cbs === 0 ? 'zero' : (z.cbs <= (CatPrefs.lowStockAt || 2) ? 'low' : 'ok')) + '" ' +
-    'title="' + escapeHtml(z.key + ': ' + fmtNum(z.cbs) + ' in stock, ' + fmtNum(z.sold) + ' sold') + '">' +
-    escapeHtml(truncateLabel(z.key, 4)) + '</span>').join('');
+  const sizes = c.sizeList.slice(0, CatPrefs.maxSizeChips || 24).map(z => {
+    // colour every size by its own stock %, using the same four bands
+    const zr = replenFor(d.key + '|' + c.key + '|' + z.key, z.sold, catalogDays(), z.cbs);
+    return '<span class="cat-size ' + stockPctClass(zr.pct) + '" ' +
+    'title="' + escapeHtml(z.key + ': ' + fmtNum(z.cbs) + ' in stock, ' + fmtNum(z.sold) +
+      ' sold, ' + (isFinite(zr.pct) ? Math.round(zr.pct) + '% of max level' : 'no demand')) + '">' +
+    escapeHtml(truncateLabel(z.key, 4)) + '</span>';
+  }).join('');
 
   let html = '<tr class="cat-row cat-colour' + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(cKey) + '">' +
     '<td class="cat-c-design cat-indent">' +
       '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>' +
+      (CatPrefs.showThumbs
+        ? '<button class="cat-thumb cat-thumb-sm" data-img="' + escapeHtml(cKey) + '" title="' +
+          (Catalog.images[cKey] ? 'Click to view, replace or remove this colour photo' : 'Click to add a photo for this colour') + '">' +
+          (Catalog.images[cKey] ? '<img src="' + Catalog.images[cKey] + '" alt="">' : '<span class="cat-thumb-empty">\uFF0B</span>') +
+        '</button>'
+        : '') +
       '<span class="cat-swatch" style="background:' + colourSwatch(c.key) + '"></span>' +
       '<span class="cat-name">' + escapeHtml(c.key) + '</span>' +
     '</td>' +
@@ -6278,6 +6411,7 @@ function catalogColourRow(d, c) {
       ? '<td class="cat-strip" colspan="' + ((catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0)) + '">' + sizes + '</td>'
       : '') +
     (catColOn('sold') ? '<td class="num">' + fmtNum(c.sold) + '</td>' : '') +
+    (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(c.purchased) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num obs-col">' + (c.hasOBS ? fmtNum(c.obs) : '\u2014') + '</td>' : '') +
     (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(c.cbs) + '</td>' : '') +
     (catColOn('moved') ? '<td class="num ' + (c.moved > 0 ? 'mv-down' : (c.moved < 0 ? 'mv-up' : '')) + '">' +
@@ -6289,6 +6423,10 @@ function catalogColourRow(d, c) {
     (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(c.status) + '">' + c.status + '</span></td>' : '') +
   '</tr>';
 
+  // Full-width bar under each colour: one block per size, coloured by its own
+  // stock band, so a broken size run is obvious without opening the row.
+  html += catalogStripRow(d, c);
+
   if (open) {
     c.sizeList.forEach(z => {
       const st = z.cbs === 0 && z.sold > 0 ? 'Stockout' : (z.sold === 0 && z.cbs > 0 ? 'No sale' : (z.sold > 0 ? 'Healthy' : 'Idle'));
@@ -6297,6 +6435,7 @@ function catalogColourRow(d, c) {
         '<td class="cat-c-design cat-indent2"><span class="cat-sizekey">' + escapeHtml(z.key) + '</span></td>' +
         (filler ? '<td colspan="' + filler + '"></td>' : '') +
         (catColOn('sold') ? '<td class="num">' + fmtNum(z.sold) + '</td>' : '') +
+        (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(z.purchased) + '</td>' : '') +
         (catColOn('opening') ? '<td class="num obs-col">' + (z.hasOBS ? fmtNum(z.obs) : '\u2014') + '</td>' : '') +
         (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(z.cbs) + '</td>' : '') +
         (catColOn('moved') ? '<td class="num">' + (z.hasOBS ? fmtNum(z.obs - z.cbs) : '\u2014') + '</td>' : '') +
@@ -6457,7 +6596,7 @@ function exportCatalogCSV() {
    --------------------------------------------------------------- */
 
 const CAT_COLUMNS = [
-  ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'],
+  ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'], ['purchased', 'Purchased'],
   ['opening', 'Opening'], ['closing', 'Closing'], ['moved', 'Moved'],
   ['adc', 'ADC'], ['lt', 'LT'], ['sf', 'SF'], ['moq', 'MOQ'],
   ['ml', 'ML'], ['mit', 'MIT'], ['stockpct', 'Stock %'], ['reorder', 'Reorder'],
@@ -6476,20 +6615,26 @@ const CAT_COLUMNS = [
      Stock % = (closing + MIT) / ML
      Reorder = ML - (closing + MIT), rounded up to the MOQ
    --------------------------------------------------------------- */
-const Replen = { overrides: {} };
+const Replen = { overrides: {}, bulk: {} };   // bulk = last values typed in the "set for all" bar
 
 function loadReplen() {
   try {
     const raw = Store.get('sl_replen');
     if (raw) Replen.overrides = JSON.parse(raw) || {};
   } catch (e) { Replen.overrides = {}; }
+  try {
+    const b = Store.get('sl_replen_bulk');
+    if (b) Replen.bulk = JSON.parse(b) || {};
+  } catch (e) { Replen.bulk = {}; }
 }
 function saveReplen() { Store.set('sl_replen', JSON.stringify(Replen.overrides)); }
+function saveReplenBulk() { Store.set('sl_replen_bulk', JSON.stringify(Replen.bulk)); }
 
 function replenFor(key, sold, days, cbs) {
   const o = Replen.overrides[key] || {};
   const autoAdc = days > 0 ? sold / days : 0;
-  const adc = (o.adc !== undefined && o.adc !== null) ? o.adc : autoAdc;
+  const adc = (o.adc !== undefined && o.adc !== null) ? o.adc
+              : ((CatPrefs.defaultADC > 0) ? CatPrefs.defaultADC : autoAdc);
   const lt = (o.lt !== undefined && o.lt !== null) ? o.lt : (CatPrefs.defaultLT || 15);
   const sf = (o.sf !== undefined && o.sf !== null) ? o.sf : (CatPrefs.defaultSF || 1.5);
   const moq = (o.moq !== undefined && o.moq !== null) ? o.moq : (CatPrefs.defaultMOQ || 12);
@@ -6556,11 +6701,13 @@ const CATPREFS_DEFAULT = {
   showDotCounts: false,
   // size strip
   maxSizeChips: 24,
+  showStrip: true,      // colour-coded size bar under each colour row
   lowStockAt: 2,
   // thresholds
   lowCoverDays: 15,
   overstockDays: 120,
   // replenishment defaults
+  defaultADC: 0,      // 0 = work it out from sales; anything else is used as-is
   defaultLT: 15,      // lead time, days
   defaultSF: 1.5,     // safety factor
   defaultMOQ: 12,     // minimum order quantity
@@ -6715,8 +6862,24 @@ function renderCatalogSettings(wrap) {
     row('Chips',
       '<label class="toolbar-label">Max shown</label>' +
       '<input type="number" id="cs-maxsizes" class="text-input narrow" min="4" max="60" value="' + CatPrefs.maxSizeChips + '">' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-strip"' +
+        (CatPrefs.showStrip ? ' checked' : '') + '> Colour bar under each colour row</label>' +
       '<label class="toolbar-label">Amber when stock is at or below</label>' +
       '<input type="number" id="cs-lowstock" class="text-input narrow" min="0" max="50" value="' + CatPrefs.lowStockAt + '">') +
+
+    '<h3 class="snap-set-title">Replenishment defaults</h3>' +
+    '<p class="drill-subtitle">Starting values for every design. Any figure you type into a row overrides these.</p>' +
+    '<div class="settings-row">' +
+      '<label class="toolbar-label">ADC</label>' +
+      '<input type="number" id="cs-adc" class="text-input narrow" min="0" step="0.01" value="' + (CatPrefs.defaultADC || 0) + '">' +
+      '<span class="drill-count">0 = calculate from sales</span>' +
+      '<label class="toolbar-label">LT</label>' +
+      '<input type="number" id="cs-lt" class="text-input narrow" min="0" step="1" value="' + (CatPrefs.defaultLT || 15) + '"> days' +
+      '<label class="toolbar-label">SF</label>' +
+      '<input type="number" id="cs-sf" class="text-input narrow" min="0" step="0.1" value="' + (CatPrefs.defaultSF || 1.5) + '">' +
+      '<label class="toolbar-label">MOQ</label>' +
+      '<input type="number" id="cs-moq" class="text-input narrow" min="0" step="1" value="' + (CatPrefs.defaultMOQ || 12) + '">' +
+    '</div>' +
 
     '<h3 class="snap-set-title">Status thresholds</h3>' +
     row('Cover days',
@@ -6781,6 +6944,7 @@ function renderCatalogSettings(wrap) {
   bindC('cs-dotcounts', e => { CatPrefs.showDotCounts = e.target.checked; saveCatPrefs(); renderCatalog(); });
 
   bindC('cs-maxsizes', e => { CatPrefs.maxSizeChips = Math.max(4, Math.min(60, parseInt(e.target.value, 10) || 24)); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-strip', e => { CatPrefs.showStrip = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowcover', e => { CatPrefs.lowCoverDays = Math.max(1, parseInt(e.target.value, 10) || 15); saveCatPrefs(); renderCatalog(); });
   bindC('cs-overstock', e => { CatPrefs.overstockDays = Math.max(10, parseInt(e.target.value, 10) || 120); saveCatPrefs(); renderCatalog(); });
@@ -6792,6 +6956,11 @@ function renderCatalogSettings(wrap) {
   bindC('cs-maxrows', e => { CatPrefs.maxRows = Math.max(50, Math.min(2000, parseInt(e.target.value, 10) || 300)); saveCatPrefs(); renderCatalog(); });
   bindC('cs-chipcounts', e => { CatPrefs.showChipCounts = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-meta', e => { CatPrefs.compactMeta = e.target.checked; saveCatPrefs(); renderCatalog(); });
+
+  bindC('cs-adc', e => { CatPrefs.defaultADC = Math.max(0, parseFloat(e.target.value) || 0); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-lt',  e => { CatPrefs.defaultLT  = Math.max(0, parseInt(e.target.value, 10) || 15); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-sf',  e => { CatPrefs.defaultSF  = Math.max(0, parseFloat(e.target.value) || 1.5); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-moq', e => { CatPrefs.defaultMOQ = Math.max(0, parseInt(e.target.value, 10) || 12); saveCatPrefs(); renderCatalog(); });
 
   const rs = wrap.querySelector('#cs-reset');
   if (rs) rs.addEventListener('click', () => {
@@ -6805,7 +6974,7 @@ function renderCatalogSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v25';
+const BUILD_VERSION = 'v27';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
