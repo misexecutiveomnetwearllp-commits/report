@@ -1113,7 +1113,8 @@ body.cat-light-head .cat-table thead th {
   background: #EDE9DD; color: #241C14; border-right: 1px solid #C9C4B6; border-bottom: 2px solid #B9B2A1;
 }
 .cat-table tbody td {
-  padding: var(--cat-pad, 2px) 8px;
+  /* height comes from Settings > Look & Feel, same as every other table */
+  padding: var(--row-pad, 4px) 8px;
   border-right: 1px solid #E4E0D6; border-bottom: 1px solid #E4E0D6;
   vertical-align: middle; font-family: var(--font-mono); background: #fff;
 }
@@ -1253,25 +1254,15 @@ body.cat-no-thumbs .cat-thumb { display: none; }
 
 /* ============ CATALOG: frozen controls + reference-style rows ============ */
 /* Everything above the table stays put while the rows scroll. */
-/* The Catalog tab fills the window and never scrolls the page: the controls
-   stay put and only the table box scrolls, so its header can never slide
-   behind anything. */
-#tab-catalog.active {
-  display: flex; flex-direction: column;
-  height: calc(100vh - 74px); min-height: 380px; overflow: hidden;
-}
-.cat-sticky {
-  flex: 0 0 auto; background: var(--paper);
-  padding-top: 6px; margin-top: -6px;
-  border-bottom: 1px solid var(--line-strong);
-  box-shadow: 0 4px 8px -6px rgba(22,33,44,.35);
-}
+/* The Catalog tab scrolls with the page, exactly like Product Performance. */
+.cat-sticky { background: transparent; padding-top: 2px; }
 .cat-sticky .toolbar { margin-bottom: 6px; }
 /* The table gets its own scroll box: the header then sticks inside it instead
    of disappearing behind the filter block, and wide tables scroll sideways
    inside the box rather than spilling off the page. */
+/* same height as the Product Performance table */
 #tab-catalog .cat-scroll {
-  flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto;
+  max-height: 64vh; overflow: auto;
   border: 1px solid var(--xl-border-strong); border-radius: 3px;
 }
 #tab-catalog .cat-table { width: max-content; min-width: 100%; }
@@ -1440,3 +1431,14 @@ body.presenting .sidebar, body.presenting .main { visibility: hidden; }
 }
 .cat-height-grip:hover::before { background: var(--rust); width: 110px; }
 body.row-resizing { cursor: ns-resize !important; user-select: none; }
+
+
+/* Drill rows in the Catalog follow the same "Drill-down row height" setting
+   used by Product Performance, so every table matches. */
+.cat-table tbody tr.cat-colour > td,
+.cat-table tbody tr.cat-size-row > td {
+  padding-top: calc(var(--row-pad, 4px) * var(--child-row-scale, .7));
+  padding-bottom: calc(var(--row-pad, 4px) * var(--child-row-scale, .7));
+}
+/* the mini tables inside dashboard cards follow it too */
+.dash-mini tbody td { padding: var(--row-pad, 4px) 10px; }

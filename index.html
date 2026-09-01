@@ -70,11 +70,6 @@
 
     <!-- ---------- TAB: IMPORT ---------- -->
     <section class="tab-panel" id="tab-import">
-      <header class="panel-head">
-        <h1>Import your ERP exports</h1>
-        <p>Bring data in two ways: drop the .xls / .xlsx / .csv files your ERP exports, or connect a Google Sheet once and pull straight from it every time. Column order and naming don't need to match between sources — StockLedger reads each one's own header row and lets you confirm what every column means.</p>
-      </header>
-
       <div class="source-switch" id="source-switch">
         <button class="source-tab active" data-source="file">📁 Upload files</button>
         <button class="source-tab" data-source="sheet">🔗 Google Sheet</button>
@@ -138,11 +133,6 @@
 
     <!-- ---------- TAB: EXPLORE ---------- -->
     <section class="tab-panel" id="tab-explore">
-      <header class="panel-head">
-        <h1>Explore the raw data</h1>
-        <p>Search, sort and filter any loaded file, row by row — like scrolling an Excel sheet.</p>
-      </header>
-
       <div class="toolbar" id="explore-toolbar">
         <select id="explore-dataset-select" class="select"></select>
         <input type="search" id="explore-search" class="text-input" placeholder="Search all columns…">
@@ -201,11 +191,6 @@
 
     <!-- ---------- TAB: PIVOT ---------- -->
     <section class="tab-panel" id="tab-pivot">
-      <header class="panel-head">
-        <h1>Pivot builder</h1>
-        <p>Two ways to work: tick columns for an instant nested report (like the pivot in your Google Sheet), or drag fields to build a custom pivot as in Excel.</p>
-      </header>
-
       <div class="seg-control" id="pivot-mode">
         <button class="seg-btn active" data-mode="quick">&#9745; Quick Report (tick columns)</button>
         <button class="seg-btn" data-mode="builder">&#9783; Drag &amp; Drop Builder</button>
@@ -348,12 +333,6 @@
 
     <!-- ---------- TAB: PRODUCT PERFORMANCE ---------- -->
     <section class="tab-panel active" id="tab-performance">
-      <header class="panel-head">
-        <h1>Product performance</h1>
-        <p>What is selling and what is stuck. Sell-through, last sale date, stock age and ABC class for every item, so best performers and dead stock are both obvious at a glance.</p>
-        <p class="head-tip">Tip: in your ERP, <strong>Item Code</strong> is a separate barcode per piece, so the default grouping is <strong>Article No</strong>, where the trend is clearest. You can switch to Style or Sub Section too.</p>
-      </header>
-
       <div class="toolbar">
         <label class="toolbar-label">Group by:</label>
         <select id="perf-groupby" class="select">

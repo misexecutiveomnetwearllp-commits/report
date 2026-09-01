@@ -6551,17 +6551,17 @@ function renderCatalogFilters(all) {
     '<div class="cat-filter-row"><span class="cat-flabel">Cat:</span>' +
       '<button class="cat-chip' + (Catalog.letter === 'all' ? ' active' : '') + '" data-letter="all">All</button>' +
       letterKeys.map(k => '<button class="cat-chip' + (Catalog.letter === k ? ' active' : '') + '" data-letter="' + k + '">' +
-        k + '<span class="cat-chip-n">' + letters[k] + '</span></button>').join('') +
+        k + (CatPrefs.showChipCounts ? '<span class="cat-chip-n">' + letters[k] + '</span>' : '') + '</button>').join('') +
     '</div>' +
     '<div class="cat-filter-row"><span class="cat-flabel">Section:</span>' +
       '<button class="cat-chip' + (Catalog.section === 'all' ? ' active' : '') + '" data-section="all">All</button>' +
       sectionKeys.map(k => '<button class="cat-chip' + (Catalog.section === k ? ' active' : '') + '" data-section="' + escapeHtml(k) + '">' +
-        escapeHtml(truncateLabel(k, 18)) + '<span class="cat-chip-n">' + sections[k] + '</span></button>').join('') +
+        escapeHtml(truncateLabel(k, 18)) + (CatPrefs.showChipCounts ? '<span class="cat-chip-n">' + sections[k] + '</span>' : '') + '</button>').join('') +
     '</div>' +
     '<div class="cat-filter-row"><span class="cat-flabel">Sub-cat:</span>' +
       '<button class="cat-chip' + (Catalog.sub === 'all' ? ' active' : '') + '" data-sub="all">All</button>' +
       subKeys.map(k => '<button class="cat-chip' + (Catalog.sub === k ? ' active' : '') + '" data-sub="' + escapeHtml(k) + '">' +
-        escapeHtml(truncateLabel(k, 20)) + '<span class="cat-chip-n">' + subs[k] + '</span></button>').join('') +
+        escapeHtml(truncateLabel(k, 20)) + (CatPrefs.showChipCounts ? '<span class="cat-chip-n">' + subs[k] + '</span>' : '') + '</button>').join('') +
     '</div>';
 
   wrap.querySelectorAll('[data-letter]').forEach(b => b.addEventListener('click', () => {
@@ -6787,7 +6787,7 @@ const CATPREFS_DEFAULT = {
   // table
   columns: CAT_COLUMNS.map(c => c[0]),
   maxRows: 300,
-  showChipCounts: true,
+  showChipCounts: false,
   compactMeta: true
 };
 
@@ -6807,6 +6807,11 @@ function loadCatPrefs() {
         const known = CAT_COLUMNS.map(c => c[0]);
         CatPrefs.columns = saved.columns.filter(c => known.indexOf(c) !== -1);
         // switch on any column that did not exist when these settings were saved
+        // one-off: the grey counts on filter chips are off by default now
+        if (saved.showChipCounts === true && !saved.chipCountsMigrated) {
+          CatPrefs.showChipCounts = false;
+          CatPrefs.chipCountsMigrated = true;
+        }
         CAT_COLUMNS_ADDED_LATER.forEach(c => {
           if (CatPrefs.columns.indexOf(c) === -1) {
             const at = CatPrefs.columns.indexOf('sold');
@@ -6827,7 +6832,8 @@ function saveCatPrefs() { Store.set('sl_catprefs', JSON.stringify(CatPrefs)); ap
 function applyCatPrefs() {
   const r = document.documentElement;
   r.style.setProperty('--cat-font', CatPrefs.fontSize + 'px');
-  r.style.setProperty('--cat-pad', (CatPrefs.density === 'compact' ? 2 : CatPrefs.density === 'roomy' ? 9 : 5) + 'px');
+  // row height is shared with every other table (Settings > Look & Feel),
+  // so nothing catalog-specific is set here any more
   r.style.setProperty('--cat-accent', CatPrefs.accent);
   r.style.setProperty('--cat-hover', CatPrefs.hoverColor);
   r.style.setProperty('--cat-thumb-w', CatPrefs.thumbW + 'px');
@@ -6908,11 +6914,9 @@ function renderCatalogSettings(wrap) {
 
   wrap.innerHTML =
     '<h3 class="snap-set-title">Table look</h3>' +
-    row('Row density',
-      '<select id="cs-density" class="select">' +
-        ['compact', 'normal', 'roomy'].map(d => '<option value="' + d + '"' + (CatPrefs.density === d ? ' selected' : '') + '>' +
-          d.charAt(0).toUpperCase() + d.slice(1) + '</option>').join('') + '</select>' +
-      '<label class="toolbar-label">Font size</label>' +
+    '<p class="drill-subtitle">Row height and drill-down row height are shared with every other table \u2014 set them in <strong>Look &amp; Feel</strong>.</p>' +
+    row('Font size',
+      '<label class="toolbar-label"></label>' +
       '<input type="range" id="cs-font" min="9" max="16" step="0.5" value="' + CatPrefs.fontSize + '">' +
       '<span class="drill-count" id="cs-font-val">' + CatPrefs.fontSize + 'px</span>') +
     row('Header style',
@@ -7004,7 +7008,6 @@ function renderCatalogSettings(wrap) {
   const bind = (id, fn) => { const el = wrap.querySelector('#' + id); if (el) el.addEventListener('input', fn); };
   const bindC = (id, fn) => { const el = wrap.querySelector('#' + id); if (el) el.addEventListener('change', fn); };
 
-  bindC('cs-density', e => { CatPrefs.density = e.target.value; saveCatPrefs(); renderCatalog(); });
   bind('cs-font', e => {
     CatPrefs.fontSize = parseFloat(e.target.value);
     wrap.querySelector('#cs-font-val').textContent = CatPrefs.fontSize + 'px'; saveCatPrefs();
@@ -7947,7 +7950,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v31';
+const BUILD_VERSION = 'v32';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
