@@ -1613,3 +1613,21 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
   --lvl-8: #ECE9E3;
   --lvl-rail-4: #8C2E1B;
 }
+
+
+/* ============ CATALOG: drill rows step in, like Product Performance ============
+   Build v36. The first cell already carried an --indent value, but nothing ever
+   read it, so every expanded row sat flush under its parent and the nesting was
+   invisible. Each level now steps in 18px, the same distance the drill list on
+   Product Performance uses. The catalog caret sits in the normal text flow
+   (unlike the perf one, which is absolutely positioned), so the indent is plain
+   padding here. */
+#tab-catalog .cat-table tbody td.cat-c-design {
+  padding-left: var(--indent, 10px) !important;
+}
+
+/* the size bar lines up one step in from the row it belongs to */
+#tab-catalog .cat-table tbody tr.cat-strip-row > td {
+  padding-left: var(--indent, 28px) !important;
+  padding-right: 8px !important;
+}

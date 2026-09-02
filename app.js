@@ -6513,7 +6513,7 @@ function catalogNodeRow(n, days) {
 
   let html = '<tr class="cat-row cat-lvl-' + Math.min(n.depth, 8) + (open ? ' is-open' : '') +
       (n.depth === 0 ? ' cat-design' : ' cat-child') + '" data-key="' + escapeHtml(n.path) + '">' +
-    '<td class="cat-c-design" style="--indent:' + (8 + n.depth * 16) + 'px">' +
+    '<td class="cat-c-design" style="--indent:' + (10 + n.depth * 18) + 'px">' +
       (kids.length ? '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>'
                    : '<span class="cat-caret-gap"></span>') +
       (CatPrefs.showThumbs
@@ -6562,7 +6562,7 @@ function catalogStripRow(n, days) {
   // drill-list colour as the row it belongs to.
   return '<tr class="cat-strip-row cat-lvl-' + Math.min(n.depth, 8) + '"><td colspan="' +
     catalogColCount() + '" style="--indent:' +
-    (8 + n.depth * 16) + 'px"><span class="cs-bar">' + blocks + '</span></td></tr>';
+    (10 + (n.depth + 1) * 18) + 'px"><span class="cs-bar">' + blocks + '</span></td></tr>';
 }
 
 function renderCatalogFilters(all) {
@@ -8059,7 +8059,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v35';
+const BUILD_VERSION = 'v36';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
