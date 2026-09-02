@@ -203,7 +203,9 @@ function isJunkRow(row) {
     if (!s) continue;
     textCount++;
     if (/^printed\s+on/i.test(s)) hasPrinted = true;
-    if (/^(grand\s+|sub\s*)?total$/i.test(s)) hasTotalLabel = true;
+    // "Total", "Grand Total", and ERP subtotal labels like "Retail Sales Total"
+    // or "Purchase Total" - anything whose label ends in the word Total.
+    if (/(^|\s)total$/i.test(s)) hasTotalLabel = true;
   }
   if (hasPrinted) return true;                          // footer line
   if (hasTotalLabel && textCount <= 2) return true;     // "Total | 16144"
@@ -5960,80 +5962,68 @@ function buildCatalog() {
   const days = periodDayCount(range, sales.length ? sales : purch);
   const anchor = dataAnchorDate();
 
-  const lv = (CatPrefs.levels && CatPrefs.levels.length ? CatPrefs.levels : ['Article No', 'Colour', 'Size']);
-  const L1 = lv[0] || 'Article No', L2 = lv[1] || 'Colour', L3 = lv[2] || 'Size';
+  // Up to nine levels, in the order set in Settings > 02 Catalog.
+  const levels = (CatPrefs.levels || []).filter(Boolean);
+  if (!levels.length) levels.push('Article No');
 
-  const designs = new Map();
-  function design(key) {
-    let d = designs.get(key);
-    if (!d) {
-      d = { key, sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false,
-            lastSale: null, colours: new Map(), meta: {} };
-      designs.set(key, d);
+  const root = { key: '__root__', path: '', depth: -1, children: new Map(),
+                 sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null, meta: {} };
+
+  function nodeFor(rec) {
+    // walks down one branch, creating the nodes on the way
+    const chain = [];
+    let node = root;
+    for (let i = 0; i < levels.length; i++) {
+      const key = dimKey(rec, levels[i]);
+      let child = node.children.get(key);
+      if (!child) {
+        child = { key, dim: levels[i], depth: i,
+                  path: (node.path ? node.path + '|' : '') + levels[i] + '=' + key,
+                  children: new Map(), sold: 0, purchased: 0, obs: 0, cbs: 0,
+                  hasOBS: false, lastSale: null, meta: {} };
+        node.children.set(key, child);
+      }
+      chain.push(child);
+      node = child;
     }
-    return d;
+    return chain;
   }
-  function colour(d, key) {
-    let c = d.colours.get(key);
-    if (!c) { c = { key, sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null, sizes: new Map() }; d.colours.set(key, c); }
-    return c;
-  }
-  function size(c, key) {
-    let z = c.sizes.get(key);
-    if (!z) { z = { key, sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false }; c.sizes.set(key, z); }
-    return z;
-  }
-  function meta(d, r) {
-    ['Section', 'Sub Section', 'Brand', 'Supplier', 'Style'].forEach(f => {
-      if (!d.meta[f] && r[f]) d.meta[f] = String(r[f]);
-    });
+
+  const META_KEEP = ['Section', 'Sub Section', 'Brand', 'Supplier', 'Style', 'Colour', 'Size'];
+  function addMeta(n, r) {
+    META_KEEP.forEach(f => { if (!n.meta[f] && r[f]) n.meta[f] = String(r[f]); });
   }
 
   sales.forEach(r => {
-    const d = design(dimKey(r, L1));
-    const c = colour(d, dimKey(r, L2));
-    const z = size(c, dimKey(r, L3));
     const q = recQty(r);
-    d.sold += q; c.sold += q; z.sold += q;
-    if (r.Date) {
-      if (!d.lastSale || r.Date > d.lastSale) d.lastSale = r.Date;
-      if (!c.lastSale || r.Date > c.lastSale) c.lastSale = r.Date;
-    }
-    meta(d, r);
+    nodeFor(r).forEach(n => {
+      n.sold += q;
+      if (r.Date && (!n.lastSale || r.Date > n.lastSale)) n.lastSale = r.Date;
+      addMeta(n, r);
+    });
   });
-
   purch.forEach(r => {
-    const d = design(dimKey(r, L1));
-    const c = colour(d, dimKey(r, L2));
-    const z = size(c, dimKey(r, L3));
     const q = recQty(r);
-    d.purchased += q; c.purchased += q; z.purchased += q;
-    meta(d, r);
+    nodeFor(r).forEach(n => { n.purchased += q; addMeta(n, r); });
   });
-
   stock.forEach(r => {
-    const d = design(dimKey(r, L1));
-    const c = colour(d, dimKey(r, L2));
-    const z = size(c, dimKey(r, L3));
-    const cb = recQty(r);
-    const ob = recOpeningQty(r);
-    d.cbs += cb; c.cbs += cb; z.cbs += cb;
-    if (ob !== null) {
-      d.obs += ob; c.obs += ob; z.obs += ob;
-      d.hasOBS = c.hasOBS = z.hasOBS = true;
-    }
-    meta(d, r);
+    const cb = recQty(r), ob = recOpeningQty(r);
+    nodeFor(r).forEach(n => {
+      n.cbs += cb;
+      if (ob !== null) { n.obs += ob; n.hasOBS = true; }
+      addMeta(n, r);
+    });
   });
 
-  const rows = [...designs.values()].map(d => {
-    d.colourList = [...d.colours.values()].map(c => {
-      c.sizeList = [...c.sizes.values()].sort((a, b) => b.cbs - a.cbs || b.sold - a.sold);
-      return Object.assign(c, catalogMetrics(c, days, anchor));
-    }).sort((a, b) => b.sold - a.sold || b.cbs - a.cbs);
-    return Object.assign(d, catalogMetrics(d, days, anchor));
-  });
+  // metrics bottom-up, and a sorted child list on every node
+  (function finish(node) {
+    node.childList = [...node.children.values()];
+    node.childList.forEach(finish);
+    node.childList.sort((a, b) => b.sold - a.sold || b.cbs - a.cbs);
+    if (node !== root) Object.assign(node, catalogMetrics(node, days, anchor));
+  })(root);
 
-  return { rows, days, range, anchor };
+  return { rows: root.childList, days, range, anchor, levels };
 }
 
 /** Available stock. Two ways to read it, set in Settings > 02 Catalog:
@@ -6312,14 +6302,19 @@ function renderCatalog() {
     (catColOn('status') ? '<th data-sc="status">Status' + catSortArrow('status') + '</th>' : '') +
     '</tr></thead>';
 
-  const body = rows.slice(0, CatPrefs.maxRows || 300).map(d => catalogDesignRow(d)).join('');
+  const body = rows.slice(0, CatPrefs.maxRows || 300).map(d => catalogNodeRow(d, built.days)).join('');
 
   const tSold = rows.reduce((a, r) => a + r.sold, 0);
   const tPurch = rows.reduce((a, r) => a + r.purchased, 0);
   const tObs = rows.reduce((a, r) => a + r.obs, 0);
   const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
   const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
-  const tReorder = rows.reduce((a, r) => a + replenFor(r.key, r.sold, built.days, r.cbs).reorder, 0);
+  // totals now use each row's own path, and add up the max level as well
+  const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs, r.moved));
+  const tReorder = reps.reduce((a, x) => a + x.reorder, 0);
+  const totMl = reps.reduce((a, x) => a + x.ml, 0);
+  const tAvail = rows.reduce((a, r) => a + (r.moved || 0), 0);
+  const totPct = totMl > 0 ? (tAvail / totMl) * 100 : 0;
   const fillerCols = (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0);
   const foot = '<tfoot><tr>' +
     '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td>' +
@@ -6329,7 +6324,11 @@ function renderCatalog() {
     (catColOn('opening') ? '<td class="num">' + fmtNum(tObs) + '</td>' : '') +
     (catColOn('closing') ? '<td class="num">' + fmtNum(tCbs) + '</td>' : '') +
     (catColOn('moved') ? '<td class="num">' + fmtNum(rows.reduce((a, r) => a + (r.moved || 0), 0)) + '</td>' : '') +
-    ['adc','lt','sf','moq','ml','mit','stockpct'].filter(catColOn).map(function () { return '<td></td>'; }).join('') +
+    ['adc','lt','sf','moq'].filter(catColOn).map(function () { return '<td></td>'; }).join('') +
+    (catColOn('ml') ? '<td class="num">' + fmtNum(totMl, 0) + '</td>' : '') +
+    (catColOn('mit') ? '<td></td>' : '') +
+    (catColOn('stockpct') ? '<td class="num stock-pct ' + stockPctClass(totPct) + '">' +
+      (totPct > 999 ? '999%+' : fmtNum(totPct, 0) + '%') + '</td>' : '') +
     (catColOn('reorder') ? '<td class="num">' + fmtNum(tReorder) + '</td>' : '') +
     (catColOn('cover') ? '<td class="num"></td>' : '') +
     (catColOn('sellthru') ? '<td class="num">' + fmtNum(tST, 1) + '%</td>' : '') +
@@ -6382,7 +6381,7 @@ function catSortArrow(col) {
 function catSortValue(d, col) {
   if (col === 'key') return String(d.key).toLowerCase();
   if (col === 'category') return String(d.meta['Sub Section'] || d.meta.Section || '').toLowerCase();
-  if (col === 'colours') return d.colourList.length;
+  if (col === 'colours') return (d.childList || []).length;
   if (col === 'obs') return d.obs;
   if (col === 'cbs') return d.cbs;
   if (col === 'moved') return d.moved === null ? -Infinity : d.moved;
@@ -6396,144 +6395,79 @@ function catSortValue(d, col) {
   return d[col];
 }
 
-function catalogDesignRow(d) {
-  const open = !!Catalog.expanded[d.key];
-  const img = Catalog.images[d.key];
-  const maxDots = CatPrefs.maxDots || 10;
-  const dots = d.colourList.slice(0, maxDots).map(c =>
-    '<span class="cat-dotwrap">' +
-      '<span class="cat-dot" title="' + escapeHtml(c.key + ' \u2014 ' + fmtNum(c.cbs) + ' in stock, ' + fmtNum(c.sold) + ' sold') + '" ' +
-      'style="background:' + colourSwatch(c.key) + '"></span>' +
-      (CatPrefs.showDotCounts ? '<span class="cat-dotn">' + fmtNum(c.cbs) + '</span>' : '') +
-    '</span>').join('') +
-    (d.colourList.length > maxDots ? '<span class="cat-more">+' + (d.colourList.length - maxDots) + '</span>' : '');
+/** How many columns the table has right now, for full-width rows. */
+function catalogColCount() {
+  return 1 + ['category','colours','sold','purchased','opening','closing','moved',
+              'adc','lt','sf','moq','ml','mit','stockpct','reorder',
+              'cover','sellthru','lastsold','status'].filter(catColOn).length;
+}
 
-  let html = '<tr class="cat-row cat-design' + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(d.key) + '">' +
-    '<td class="cat-c-design">' +
-      '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>' +
+/** One row per node, at any depth, plus its children when open. */
+function catalogNodeRow(n, days) {
+  const open = !!Catalog.expanded[n.path];
+  const img = Catalog.images[n.path];
+  const kids = n.childList || [];
+  const r = replenFor(n.path, n.sold, days, n.cbs, n.moved);
+  const band = stockPctClass(r.pct);
+
+  // The colour column shows one block per child, tinted by that child's own
+  // stock band - no colour swatches, the colour means stock health.
+  const maxDots = CatPrefs.maxDots || 10;
+  const dots = kids.slice(0, maxDots).map(k => {
+    const kr = replenFor(k.path, k.sold, days, k.cbs, k.moved);
+    return '<span class="cat-band ' + stockPctClass(kr.pct) + '" title="' +
+      escapeHtml(k.key + ' \u2014 ' + fmtNum(k.cbs) + ' in stock, ' + fmtNum(k.sold) + ' sold, ' +
+        (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
+  }).join('') + (kids.length > maxDots ? '<span class="cat-more">+' + (kids.length - maxDots) + '</span>' : '');
+
+  let html = '<tr class="cat-row cat-lvl-' + Math.min(n.depth, 8) + (open ? ' is-open' : '') +
+      (n.depth === 0 ? ' cat-design' : ' cat-child') + '" data-key="' + escapeHtml(n.path) + '">' +
+    '<td class="cat-c-design" style="--indent:' + (8 + n.depth * 16) + 'px">' +
+      (kids.length ? '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>'
+                   : '<span class="cat-caret-gap"></span>') +
       (CatPrefs.showThumbs
-        ? '<button class="cat-thumb" data-img="' + escapeHtml(d.key) + '" title="' +
-          (img ? 'Click to view, replace or remove the photo' : 'Click to add a photo') + '">' +
-          (img ? '<img src="' + img + '" alt="">' : '<span class="cat-thumb-empty">\uFF0B</span>') +
-        '</button>'
+        ? '<button class="cat-thumb" data-img="' + escapeHtml(n.path) + '" title="' +
+          (img ? 'View, replace or remove the photo' : 'Add a photo') + '">' +
+          (img ? '<img src="' + img + '" alt="">' : '<span class="cat-thumb-empty">\uFF0B</span>') + '</button>'
         : '') +
-      '<span class="cat-name">' + escapeHtml(d.key) + '</span>' +
-      (CatPrefs.compactMeta
-        ? '<span class="cat-sub">' + d.colourList.length + ' colours \u00b7 ' +
-          d.colourList.reduce((a, c) => a + c.sizes.size, 0) + ' sizes</span>'
+      '<span class="cat-name">' + escapeHtml(n.key) + '</span>' +
+      (CatPrefs.compactMeta && kids.length
+        ? '<span class="cat-sub">' + kids.length + ' ' + escapeHtml(String(kids[0].dim || '')).toLowerCase() + '</span>'
         : '') +
     '</td>' +
-    (catColOn('category') ? '<td class="cat-cat">' + escapeHtml(d.meta['Sub Section'] || d.meta.Section || '\u2014') + '</td>' : '') +
+    (catColOn('category') ? '<td class="cat-cat">' + escapeHtml(n.meta['Sub Section'] || n.meta.Section || '\u2014') + '</td>' : '') +
     (catColOn('colours') ? '<td class="cat-c-colours">' + dots + '</td>' : '') +
-    (catColOn('sold') ? '<td class="num">' + fmtNum(d.sold) + '</td>' : '') +
-    (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(d.purchased) + '</td>' : '') +
-    (catColOn('opening') ? '<td class="num obs-col">' + (d.hasOBS ? fmtNum(d.obs) : '\u2014') + '</td>' : '') +
-    (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(d.cbs) + '</td>' : '') +
-    (catColOn('moved') ? '<td class="num cat-avail" title="' +
-      ((CatPrefs.availableFormula || 'computed') === 'closing'
-        ? 'Closing balance (CBS)' : 'CBS + Purchased \u2212 Sold') + '">' +
-      fmtNum(d.moved) + '</td>' : '') +
-    replenCells(d.key, replenFor(d.key, d.sold, catalogDays(), d.cbs)) +
-    (catColOn('cover') ? '<td class="num">' + (d.cover === Infinity ? '\u221E' : fmtNum(d.cover, 0) + 'd') + '</td>' : '') +
-    (catColOn('sellthru') ? '<td class="num">' + fmtNum(d.sellThrough, 1) + '%</td>' : '') +
-    (catColOn('lastsold') ? '<td>' + (d.lastSale ? fmtDate(d.lastSale) : '\u2014') + '</td>' : '') +
-    (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(d.status) + '">' + d.status + '</span></td>' : '') +
+    (catColOn('sold') ? '<td class="num">' + fmtNum(n.sold) + '</td>' : '') +
+    (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(n.purchased) + '</td>' : '') +
+    (catColOn('opening') ? '<td class="num obs-col">' + (n.hasOBS ? fmtNum(n.obs) : '\u2014') + '</td>' : '') +
+    (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(n.cbs) + '</td>' : '') +
+    (catColOn('moved') ? '<td class="num cat-avail">' + fmtNum(n.moved) + '</td>' : '') +
+    replenCells(n.path, r) +
+    (catColOn('cover') ? '<td class="num">' + (n.cover === Infinity ? '\u221E' : fmtNum(n.cover, 0) + 'd') + '</td>' : '') +
+    (catColOn('sellthru') ? '<td class="num">' + fmtNum(n.sellThrough, 1) + '%</td>' : '') +
+    (catColOn('lastsold') ? '<td>' + (n.lastSale ? fmtDate(n.lastSale) : '\u2014') + '</td>' : '') +
+    (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(n.status) + '">' + n.status + '</span></td>' : '') +
   '</tr>';
 
-  if (open) {
-    d.colourList.forEach(c => { html += catalogColourRow(d, c); });
-  }
+  // colour-coded bar under the row, one block per child sized by stock
+  if (CatPrefs.showStrip && kids.length) html += catalogStripRow(n, days);
+
+  if (open) kids.forEach(k => { html += catalogNodeRow(k, days); });
   return html;
 }
 
-/** The colour-coded size bar drawn under a colour row. */
-function catalogStripRow(d, c) {
-  if (!CatPrefs.showStrip) return '';
-  const total = catalogColCount();
-  const blocks = c.sizeList.map(z => {
-    const zr = replenFor(d.key + '|' + c.key + '|' + z.key, z.sold, catalogDays(), z.cbs);
-    const w = Math.max(1, z.cbs);
-    return '<span class="cs-block ' + stockPctClass(zr.pct) + '" style="flex:' + w + '" ' +
-      'title="' + escapeHtml(z.key + ': ' + fmtNum(z.cbs) + ' in stock, ' + fmtNum(z.sold) + ' sold' +
-        (isFinite(zr.pct) ? ', ' + Math.round(zr.pct) + '% of max level' : '')) + '"></span>';
+/** The bar under a row: one block per child, width by stock, colour by band. */
+function catalogStripRow(n, days) {
+  const kids = n.childList || [];
+  const blocks = kids.map(k => {
+    const kr = replenFor(k.path, k.sold, days, k.cbs, k.moved);
+    return '<span class="cs-block ' + stockPctClass(kr.pct) + '" style="flex:' + Math.max(1, k.cbs) + '" ' +
+      'title="' + escapeHtml(k.key + ': ' + fmtNum(k.cbs) + ' in stock, ' +
+        (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
   }).join('');
   if (!blocks) return '';
-  return '<tr class="cat-strip-row"><td colspan="' + total + '">' +
-    '<span class="cs-bar">' + blocks + '</span></td></tr>';
-}
-
-/** How many columns the table currently has, counting colspans. */
-function catalogColCount() {
-  return 1 +
-    (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0) +
-    ['sold','purchased','opening','closing','moved','adc','lt','sf','moq','ml','mit','stockpct','reorder',
-     'cover','sellthru','lastsold','status'].filter(catColOn).length;
-}
-
-function catalogColourRow(d, c) {
-  const cKey = d.key + '|' + c.key;
-  const open = !!Catalog.expanded[cKey];
-  const sizes = c.sizeList.slice(0, CatPrefs.maxSizeChips || 24).map(z => {
-    // colour every size by its own stock %, using the same four bands
-    const zr = replenFor(d.key + '|' + c.key + '|' + z.key, z.sold, catalogDays(), z.cbs);
-    return '<span class="cat-size ' + stockPctClass(zr.pct) + '" ' +
-    'title="' + escapeHtml(z.key + ': ' + fmtNum(z.cbs) + ' in stock, ' + fmtNum(z.sold) +
-      ' sold, ' + (isFinite(zr.pct) ? Math.round(zr.pct) + '% of max level' : 'no demand')) + '">' +
-    escapeHtml(truncateLabel(z.key, 4)) + '</span>';
-  }).join('');
-
-  let html = '<tr class="cat-row cat-colour' + (open ? ' is-open' : '') + '" data-key="' + escapeHtml(cKey) + '">' +
-    '<td class="cat-c-design cat-indent">' +
-      '<button class="cat-caret' + (open ? ' open' : '') + '">\u25B8</button>' +
-      (CatPrefs.showThumbs
-        ? '<button class="cat-thumb cat-thumb-sm" data-img="' + escapeHtml(cKey) + '" title="' +
-          (Catalog.images[cKey] ? 'Click to view, replace or remove this colour photo' : 'Click to add a photo for this colour') + '">' +
-          (Catalog.images[cKey] ? '<img src="' + Catalog.images[cKey] + '" alt="">' : '<span class="cat-thumb-empty">\uFF0B</span>') +
-        '</button>'
-        : '') +
-      '<span class="cat-swatch" style="background:' + colourSwatch(c.key) + '"></span>' +
-      '<span class="cat-name">' + escapeHtml(c.key) + '</span>' +
-    '</td>' +
-    (catColOn('category') || catColOn('colours')
-      ? '<td class="cat-strip" colspan="' + ((catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0)) + '">' + sizes + '</td>'
-      : '') +
-    (catColOn('sold') ? '<td class="num">' + fmtNum(c.sold) + '</td>' : '') +
-    (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(c.purchased) + '</td>' : '') +
-    (catColOn('opening') ? '<td class="num obs-col">' + (c.hasOBS ? fmtNum(c.obs) : '\u2014') + '</td>' : '') +
-    (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(c.cbs) + '</td>' : '') +
-    (catColOn('moved') ? '<td class="num cat-avail">' + fmtNum(c.moved) + '</td>' : '') +
-    replenCells(d.key + '|' + c.key, replenFor(d.key + '|' + c.key, c.sold, catalogDays(), c.cbs)) +
-    (catColOn('cover') ? '<td class="num">' + (c.cover === Infinity ? '\u221E' : fmtNum(c.cover, 0) + 'd') + '</td>' : '') +
-    (catColOn('sellthru') ? '<td class="num">' + fmtNum(c.sellThrough, 1) + '%</td>' : '') +
-    (catColOn('lastsold') ? '<td>' + (c.lastSale ? fmtDate(c.lastSale) : '\u2014') + '</td>' : '') +
-    (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(c.status) + '">' + c.status + '</span></td>' : '') +
-  '</tr>';
-
-  // Full-width bar under each colour: one block per size, coloured by its own
-  // stock band, so a broken size run is obvious without opening the row.
-  html += catalogStripRow(d, c);
-
-  if (open) {
-    c.sizeList.forEach(z => {
-      const st = z.cbs === 0 && z.sold > 0 ? 'Stockout' : (z.sold === 0 && z.cbs > 0 ? 'No sale' : (z.sold > 0 ? 'Healthy' : 'Idle'));
-      const filler = (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0);
-      html += '<tr class="cat-row cat-size-row">' +
-        '<td class="cat-c-design cat-indent2"><span class="cat-sizekey">' + escapeHtml(z.key) + '</span></td>' +
-        (filler ? '<td colspan="' + filler + '"></td>' : '') +
-        (catColOn('sold') ? '<td class="num">' + fmtNum(z.sold) + '</td>' : '') +
-        (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(z.purchased) + '</td>' : '') +
-        (catColOn('opening') ? '<td class="num obs-col">' + (z.hasOBS ? fmtNum(z.obs) : '\u2014') + '</td>' : '') +
-        (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(z.cbs) + '</td>' : '') +
-        (catColOn('moved') ? '<td class="num cat-avail">' + fmtNum(availableQty(z)) + '</td>' : '') +
-        replenCells(d.key + '|' + c.key + '|' + z.key, replenFor(d.key + '|' + c.key + '|' + z.key, z.sold, catalogDays(), z.cbs)) +
-        (catColOn('cover') ? '<td class="num"></td>' : '') +
-        (catColOn('sellthru') ? '<td class="num"></td>' : '') +
-        (catColOn('lastsold') ? '<td></td>' : '') +
-        (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(st) + '">' + st + '</span></td>' : '') +
-      '</tr>';
-    });
-  }
-  return html;
+  return '<tr class="cat-strip-row"><td colspan="' + catalogColCount() + '" style="--indent:' +
+    (8 + n.depth * 16) + 'px"><span class="cs-bar">' + blocks + '</span></td></tr>';
 }
 
 function renderCatalogFilters(all) {
@@ -6654,32 +6588,35 @@ function onCatalogImagePicked(e) {
 
 function exportCatalogCSV() {
   if (!Catalog.lastRows || !Catalog.lastRows.length) { toast('Nothing to export yet.'); return; }
-  const headers = ['Article No', 'Section', 'Sub Section', 'Brand', 'Supplier', 'Colour', 'Size',
-                   'Sold', 'Opening', 'Closing', 'Moved', 'Cover days', 'Sell-through %', 'Status'];
+  const headers = ['Path', 'Level', 'Section', 'Sub Section', 'Brand', 'Supplier',
+                   'Sold', 'Purchased', 'Opening', 'Closing', 'Available',
+                   'ADC', 'LT', 'SF', 'MOQ', 'ML', 'MIT', 'Stock %', 'Reorder', 'Status'];
   const out = [];
-  Catalog.lastRows.forEach(d => {
-    d.colourList.forEach(c => {
-      c.sizeList.forEach(z => {
-        out.push([d.key, d.meta.Section || '', d.meta['Sub Section'] || '', d.meta.Brand || '',
-                  d.meta.Supplier || '', c.key, z.key, z.sold, z.hasOBS ? z.obs : '', z.cbs,
-                  z.hasOBS ? (z.obs - z.cbs) : '', '', '', '']);
-      });
-      out.push([d.key, d.meta.Section || '', d.meta['Sub Section'] || '', d.meta.Brand || '',
-                d.meta.Supplier || '', c.key, 'ALL SIZES', c.sold, c.hasOBS ? c.obs : '', c.cbs,
-                c.moved === null ? '' : c.moved,
-                c.cover === Infinity ? '' : Math.round(c.cover), Number(c.sellThrough.toFixed(1)), c.status]);
+  const days = catalogDays();
+  (function walk(nodes, trail) {
+    nodes.forEach(n => {
+      const r = replenFor(n.path, n.sold, days, n.cbs, n.moved);
+      const line = trail.concat([n.key]);
+      out.push([
+        line.join(' > '), n.dim || '', n.meta.Section || '', n.meta['Sub Section'] || '',
+        n.meta.Brand || '', n.meta.Supplier || '',
+        n.sold, n.purchased, n.hasOBS ? n.obs : '', n.cbs, n.moved,
+        Number(r.adc.toFixed(3)), r.lt, r.sf, r.moq, Math.round(r.ml), r.mit,
+        Math.round(r.pct), r.reorder, n.status
+      ]);
+      if (n.childList && n.childList.length) walk(n.childList, line);
     });
-    out.push([d.key, d.meta.Section || '', d.meta['Sub Section'] || '', d.meta.Brand || '',
-              d.meta.Supplier || '', 'ALL COLOURS', '', d.sold, d.hasOBS ? d.obs : '', d.cbs,
-              d.moved === null ? '' : d.moved,
-              d.cover === Infinity ? '' : Math.round(d.cover), Number(d.sellThrough.toFixed(1)), d.status]);
-  });
+  })(Catalog.lastRows, []);
+
   downloadBlob(toCSV(headers, out), 'catalog.csv', 'text/csv');
 }
 
 /* ---------------------------------------------------------------
    15b. CATALOG PREFERENCES + IMAGE VIEWER
    --------------------------------------------------------------- */
+
+const CATALOG_LEVEL_DIMS = ['Article No', 'Item Code', 'Brand', 'Colour', 'Size', 'Style',
+                            'Section', 'Sub Section', 'Supplier'];
 
 const CAT_COLUMNS = [
   ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'], ['purchased', 'Purchased'],
@@ -6716,7 +6653,7 @@ function loadReplen() {
 function saveReplen() { Store.set('sl_replen', JSON.stringify(Replen.overrides)); }
 function saveReplenBulk() { Store.set('sl_replen_bulk', JSON.stringify(Replen.bulk)); }
 
-function replenFor(key, sold, days, cbs) {
+function replenFor(key, sold, days, cbs, availableQtyIn) {
   const o = Replen.overrides[key] || {};
   const autoAdc = days > 0 ? sold / days : 0;
   const adc = (o.adc !== undefined && o.adc !== null) ? o.adc
@@ -6731,8 +6668,12 @@ function replenFor(key, sold, days, cbs) {
   // producing percentages in the tens of thousands.
   const rawMl = adc * lt * sf;
   const ml = Math.max(rawMl, moq > 0 ? moq : 1);
-  const available = cbs + mit;
+  // Stock % = Available stock / Max Level, as specified. "Available" is the
+  // figure in the Available column (plus anything in transit).
+  const baseAvail = (availableQtyIn === undefined || availableQtyIn === null) ? cbs : availableQtyIn;
+  const available = baseAvail + mit;
   let pct = (available / ml) * 100;
+  if (available < 0) pct = 0;
   if (!isFinite(pct)) pct = available > 0 ? 999 : 0;
 
   let reorder = 0;
@@ -6918,7 +6859,7 @@ function openCatImage(key) {
   document.getElementById('cat-img-title').textContent = key;
   const d = (Catalog.lastRows || []).find(r => r.key === key);
   document.getElementById('cat-img-sub').textContent = d
-    ? (d.colourList.length + ' colours \u00b7 ' + fmtNum(d.cbs) + ' in stock \u00b7 ' + fmtNum(d.sold) + ' sold')
+    ? ((d.childList || []).length + ' items \u00b7 ' + fmtNum(d.cbs) + ' in stock \u00b7 ' + fmtNum(d.sold) + ' sold')
     : '';
   document.getElementById('cat-img-big').src = src;
   document.getElementById('cat-img-overlay').style.display = 'flex';
@@ -6955,15 +6896,18 @@ function renderCatalogSettings(wrap) {
     '<h3 class="snap-set-title">Drill sequence</h3>' +
     '<p class="drill-subtitle">Which level opens inside which, top to bottom \u2014 the same idea as the Product Performance expand order.</p>' +
     '<div class="snap-levels">' +
-      [0, 1, 2].map(function (i) {
-        const cur = (CatPrefs.levels && CatPrefs.levels[i]) || ['Article No', 'Colour', 'Size'][i];
+      [0, 1, 2, 3, 4, 5, 6, 7, 8].map(function (i) {
+        const cur = (CatPrefs.levels && CatPrefs.levels[i]) || '';
         return '<div><label class="toolbar-label">Level ' + (i + 1) + '</label>' +
           '<select class="select cs-level" data-i="' + i + '">' +
-            CHART_DIMS.filter(function (d) { return ['Month', 'Week', 'Transaction Date'].indexOf(d) === -1; })
-              .map(function (d) { return '<option value="' + d + '"' + (cur === d ? ' selected' : '') + '>' + d + '</option>'; }).join('') +
+            (i > 0 ? '<option value="">\u2014 none \u2014</option>' : '') +
+            CATALOG_LEVEL_DIMS.map(function (d) {
+              return '<option value="' + d + '"' + (cur === d ? ' selected' : '') + '>' + d + '</option>';
+            }).join('') +
           '</select></div>';
       }).join('') +
     '</div>' +
+    '<p class="drill-subtitle">Up to nine levels. Leave the rest as \u201cnone\u201d \u2014 the table opens in exactly this order.</p>' +
 
     '<h3 class="snap-set-title">Available stock</h3>' +
     '<div class="settings-row"><select id="cs-avail" class="select">' +
@@ -7060,8 +7004,8 @@ function renderCatalogSettings(wrap) {
 
   wrap.querySelectorAll('.cs-level').forEach(sel => sel.addEventListener('change', () => {
     const picked = [...wrap.querySelectorAll('.cs-level')].map(x => x.value);
-    CatPrefs.levels = picked.filter((v, i) => picked.indexOf(v) === i);
-    while (CatPrefs.levels.length < 3) CatPrefs.levels.push('');
+    CatPrefs.levels = picked.filter(v => v).filter((v, i, a) => a.indexOf(v) === i);
+    if (!CatPrefs.levels.length) CatPrefs.levels = ['Article No'];
     saveCatPrefs(); Catalog.expanded = {}; renderCatalog();
   }));
   bindC('cs-avail', e => { CatPrefs.availableFormula = e.target.value; saveCatPrefs(); renderCatalog(); renderPerformance(); });
@@ -7997,7 +7941,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v33';
+const BUILD_VERSION = 'v34';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
