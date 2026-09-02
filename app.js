@@ -5183,8 +5183,15 @@ const THEME_DEFAULT = {
   drillHoverColor: '#D7E8F7',// row colour under the mouse (drill-down rows)
   openFill: '#FDF3E7',       // fill of a row opened in the drill-down
   openBorderColor: '#A6402C',// border of a row opened in the drill-down
-  openBorderWidth: 2         // that border's thickness (px)
+  openBorderWidth: 2,        // that border's thickness (px)
+  // Drill-list level colours. Used by Product Performance AND the Catalog
+  // table, so both drill lists always look the same.
+  lvlFill: ['#FFFFFF', '#F4F7F5', '#F7F4EC', '#F3F1F7', '#FAF6F2'],
+  lvlRail: ['#1F6F5C', '#B9862F', '#4A6FA5', '#8C2E1B']
 };
+
+const LVL_FILL_DEFAULT = THEME_DEFAULT.lvlFill.slice();
+const LVL_RAIL_DEFAULT = THEME_DEFAULT.lvlRail.slice();
 
 const ACCENT_CHOICES = [
   ['#A6402C', 'Rust (default)'],
@@ -5204,7 +5211,8 @@ const FONT_CHOICES = [
   ['mono',  'Mono (data-heavy)',     "'IBM Plex Mono', monospace", "'IBM Plex Mono', monospace"]
 ];
 
-const Theme = Object.assign({}, THEME_DEFAULT);
+const Theme = Object.assign({}, THEME_DEFAULT,
+  { lvlFill: LVL_FILL_DEFAULT.slice(), lvlRail: LVL_RAIL_DEFAULT.slice() });
 
 function loadTheme() {
   try {
@@ -5240,14 +5248,56 @@ function applyTheme() {
   root.style.setProperty('--grid-width', (Theme.gridWidth === undefined ? 1 : Theme.gridWidth) + 'px');
   root.style.setProperty('--xl-hover', Theme.hoverColor || '#FFE3BF');
   root.style.setProperty('--lvl0-open', Theme.openFill || '#FDF3E7');
+  // --lvl-open is what the drill lists actually read, so the "Opened drill row
+  // fill" picker now reaches Product Performance and the Catalog alike.
+  root.style.setProperty('--lvl-open', Theme.openFill || '#FDF3E7');
   root.style.setProperty('--open-bc', Theme.openBorderColor || '#A6402C');
   root.style.setProperty('--open-bw', (Theme.openBorderWidth === undefined ? 2 : Theme.openBorderWidth) + 'px');
+
+  // Drill-list level colours. Levels past the last one you set simply keep
+  // repeating the deepest colour, so nine-level catalogs still look right.
+  const fills = (Theme.lvlFill && Theme.lvlFill.length) ? Theme.lvlFill : LVL_FILL_DEFAULT;
+  for (let i = 0; i <= 8; i++) {
+    root.style.setProperty('--lvl-' + i, fills[Math.min(i, fills.length - 1)]);
+  }
+  const rails = (Theme.lvlRail && Theme.lvlRail.length) ? Theme.lvlRail : LVL_RAIL_DEFAULT;
+  for (let i = 1; i <= 8; i++) {
+    root.style.setProperty('--lvl-rail-' + i, rails[Math.min(i - 1, rails.length - 1)]);
+  }
 
   const b = document.body;
   ['density-compact', 'density-normal', 'density-comfortable'].forEach(c => b.classList.remove(c));
   b.classList.add('density-' + Theme.density);
   b.classList.toggle('no-zebra', !Theme.zebra);
   b.classList.toggle('no-gridlines', !Theme.gridLines);
+}
+
+/** Current drill-level fill / rail colours, always as a fresh array so the
+ *  defaults can never be edited by accident. */
+function lvlFills() {
+  const a = (Theme.lvlFill && Theme.lvlFill.length) ? Theme.lvlFill : LVL_FILL_DEFAULT;
+  return LVL_FILL_DEFAULT.map((d, i) => a[i] || d);
+}
+function lvlRails() {
+  const a = (Theme.lvlRail && Theme.lvlRail.length) ? Theme.lvlRail : LVL_RAIL_DEFAULT;
+  return LVL_RAIL_DEFAULT.map((d, i) => a[i] || d);
+}
+
+/** The colour-picker rows under Settings -> Look & Feel -> Drill list colours. */
+function lvlColorRows() {
+  const fills = lvlFills(), rails = lvlRails();
+  let out = '';
+  for (let i = 0; i < fills.length; i++) {
+    out += '<div class="color-row">' +
+      '<label class="toolbar-label">' + (i === 0 ? 'Top level (row fill)' : 'Level ' + i + ' fill') + '</label>' +
+      '<input type="color" class="lvl-fill" data-i="' + i + '" value="' + fills[i] + '">' +
+      '<span class="hexcode" id="lvl-fill-' + i + '-val">' + fills[i] + '</span>' +
+      (i > 0 ? '<label class="toolbar-label" style="min-width:96px;">left bar</label>' +
+        '<input type="color" class="lvl-rail" data-i="' + (i - 1) + '" value="' + rails[i - 1] + '">' +
+        '<span class="hexcode" id="lvl-rail-' + (i - 1) + '-val">' + rails[i - 1] + '</span>' : '') +
+    '</div>';
+  }
+  return out;
 }
 
 /** Hex color ko halka/gehra karta hai. */
@@ -5562,12 +5612,16 @@ function renderSettingsBody() {
       toast('All loaded files removed.');
     });
     wrap.querySelector('#set-reset-theme').addEventListener('click', function () {
-      Object.assign(Theme, THEME_DEFAULT); saveTheme(); renderSettingsBody(); toast('Look & Feel has been reset.');
+      Object.assign(Theme, THEME_DEFAULT,
+        { lvlFill: LVL_FILL_DEFAULT.slice(), lvlRail: LVL_RAIL_DEFAULT.slice() });
+      saveTheme(); renderSettingsBody(); toast('Look & Feel has been reset.');
     });
     wrap.querySelector('#set-reset-all').addEventListener('click', function () {
       Store.remove('sl_theme'); Store.remove('sl_snapshot_config'); Store.remove('sl_behaviour');
       Store.remove('sl_prefs'); Store.remove('sl_colwidths');
-      Object.assign(Theme, THEME_DEFAULT); saveTheme();
+      Object.assign(Theme, THEME_DEFAULT,
+        { lvlFill: LVL_FILL_DEFAULT.slice(), lvlRail: LVL_RAIL_DEFAULT.slice() });
+      saveTheme();
       toast('All settings cleared - please refresh the page.');
     });
     finish();
@@ -5660,6 +5714,16 @@ function renderSettingsBody() {
       '<span class="drill-count" id="set-openbw-val">' + (Theme.openBorderWidth === undefined ? 2 : Theme.openBorderWidth) + 'px</span>' +
     '</div>' +
 
+    '<h3 class="snap-set-title">Drill list colours</h3>' +
+    '<p class="drill-subtitle">One colour per level, so you can see how deep a row sits. ' +
+      'These apply to the drill list on Product Performance and on Catalog together \u2014 ' +
+      'both tables always match. Levels below 4 keep the deepest colour.</p>' +
+    lvlColorRows() +
+    '<div class="settings-row">' +
+      '<button class="ghost-btn small" id="set-lvl-reset">Reset drill colours</button>' +
+      '<span class="drill-count">back to the built-in shades</span>' +
+    '</div>' +
+
     '<div class="theme-preview">' +
       '<table class="data-table"><thead><tr><th>Article</th><th class="num">Sold</th><th class="num">Stock</th></tr></thead>' +
       '<tbody><tr><td>T-SHIRT-M</td><td class="num">1,538</td><td class="num">2,828</td></tr>' +
@@ -5695,6 +5759,33 @@ function renderSettingsBody() {
       saveTheme();
     });
   }
+  wrap.querySelectorAll('.lvl-fill').forEach(function (el) {
+    el.addEventListener('input', function (e) {
+      const i = parseInt(e.target.dataset.i, 10);
+      const next = lvlFills(); next[i] = e.target.value;
+      Theme.lvlFill = next;
+      const lab = wrap.querySelector('#lvl-fill-' + i + '-val');
+      if (lab) lab.textContent = e.target.value;
+      saveTheme();
+    });
+  });
+  wrap.querySelectorAll('.lvl-rail').forEach(function (el) {
+    el.addEventListener('input', function (e) {
+      const i = parseInt(e.target.dataset.i, 10);
+      const next = lvlRails(); next[i] = e.target.value;
+      Theme.lvlRail = next;
+      const lab = wrap.querySelector('#lvl-rail-' + i + '-val');
+      if (lab) lab.textContent = e.target.value;
+      saveTheme();
+    });
+  });
+  const lvlReset = wrap.querySelector('#set-lvl-reset');
+  if (lvlReset) lvlReset.addEventListener('click', function () {
+    Theme.lvlFill = LVL_FILL_DEFAULT.slice();
+    Theme.lvlRail = LVL_RAIL_DEFAULT.slice();
+    saveTheme(); renderSettingsBody(); toast('Drill list colours reset.');
+  });
+
   bindColor('set-gridcolor', 'gridColor');
   bindColor('set-hovercolor', 'hoverColor');
   bindColor('set-drillhover', 'drillHoverColor');
@@ -6434,6 +6525,7 @@ function catalogNodeRow(n, days) {
       (CatPrefs.compactMeta && kids.length
         ? '<span class="cat-sub">' + kids.length + ' ' + escapeHtml(String(kids[0].dim || '')).toLowerCase() + '</span>'
         : '') +
+      '<button class="cat-popout" title="Open full details in a separate window">\u29C9</button>' +
     '</td>' +
     (catColOn('category') ? '<td class="cat-cat">' + escapeHtml(n.meta['Sub Section'] || n.meta.Section || '\u2014') + '</td>' : '') +
     (catColOn('colours') ? '<td class="cat-c-colours">' + dots + '</td>' : '') +
@@ -6466,7 +6558,10 @@ function catalogStripRow(n, days) {
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
   }).join('');
   if (!blocks) return '';
-  return '<tr class="cat-strip-row"><td colspan="' + catalogColCount() + '" style="--indent:' +
+  // The bar carries its parent's level class, so it is tinted with the same
+  // drill-list colour as the row it belongs to.
+  return '<tr class="cat-strip-row cat-lvl-' + Math.min(n.depth, 8) + '"><td colspan="' +
+    catalogColCount() + '" style="--indent:' +
     (8 + n.depth * 16) + 'px"><span class="cs-bar">' + blocks + '</span></td></tr>';
 }
 
@@ -6539,12 +6634,35 @@ function wireCatalogRows() {
       openCatImage(btn.dataset.img);
     });
   });
-  host.querySelectorAll('tr.cat-design, tr.cat-colour').forEach(tr => {
-    tr.addEventListener('click', () => {
-      const c = tr.querySelector('.cat-caret');
-      if (c) c.click();
+  // Full-details window, exactly like the pop-out on Product Performance.
+  host.querySelectorAll('.cat-popout').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      openCatalogDrill(btn.closest('tr'));
     });
   });
+  // Every row is clickable, at any depth. Previously only the top level and
+  // the old "cat-colour" class were wired, so nested rows did nothing.
+  host.querySelectorAll('tr.cat-row').forEach(tr => {
+    tr.addEventListener('click', () => {
+      if (!Behaviour.inlineExpand) { openCatalogDrill(tr); return; }
+      const c = tr.querySelector('.cat-caret');
+      if (c) c.click();
+      else openCatalogDrill(tr);   // deepest level has nothing left to open
+    });
+  });
+}
+
+/** Opens the drill window for a catalog row. The row's data-key is already
+ *  stored as "Field=Value|Field=Value|...", the same shape the drill window
+ *  wants, so the whole branch carries across instead of just the last level. */
+function openCatalogDrill(tr) {
+  if (!tr || !tr.dataset.key) return;
+  const path = String(tr.dataset.key).split('|').filter(Boolean).map(seg => {
+    const i = seg.indexOf('=');
+    return { field: seg.slice(0, i), value: seg.slice(i + 1) };
+  }).filter(p => p.field);
+  if (path.length) openDrillPath(path);
 }
 
 /* ---- photos, kept in this browser ---- */
@@ -7941,7 +8059,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v34';
+const BUILD_VERSION = 'v35';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

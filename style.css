@@ -1470,3 +1470,146 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
 .cat-row.is-open > td { background: var(--lvl0-open, #FDF3E7) !important; }
 .cat-row:hover > td { background: var(--cat-hover, #EAF3FC) !important; }
 .cat-strip-row > td { padding-left: var(--indent, 8px) !important; }
+
+
+/* ============================================================================
+   CATALOG DRILL LIST — same look as the Product Performance drill list
+   ============================================================================
+   Build v35. The Catalog table used to have its own fixed blue tints, so its
+   expanded rows looked nothing like the drill list on Product Performance.
+   Everything below drives the Catalog rows from the very same variables the
+   Product Performance rows use, so the two drill lists always match and both
+   change together from Settings -> Look & Feel -> Drill list colours.
+
+   Levels beyond 4 keep repeating the deepest colour (set in applyTheme), so a
+   nine-level catalog still reads cleanly.
+   -------------------------------------------------------------------------- */
+
+/* --- one flat colour per level, exactly like #perf-table --- */
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-0 > td { background: var(--lvl-0) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-1 > td { background: var(--lvl-1) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-2 > td { background: var(--lvl-2) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-3 > td { background: var(--lvl-3) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-4 > td { background: var(--lvl-4) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-5 > td { background: var(--lvl-5) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-6 > td { background: var(--lvl-6) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-7 > td { background: var(--lvl-7) !important; }
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-8 > td { background: var(--lvl-8) !important; }
+
+/* the size bar under a row is tinted with its parent's level colour */
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-0 > td { background: var(--lvl-0) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-1 > td { background: var(--lvl-1) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-2 > td { background: var(--lvl-2) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-3 > td { background: var(--lvl-3) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-4 > td { background: var(--lvl-4) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-5 > td { background: var(--lvl-5) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-6 > td { background: var(--lvl-6) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-7 > td { background: var(--lvl-7) !important; }
+#tab-catalog .cat-table tbody tr.cat-strip-row.cat-lvl-8 > td { background: var(--lvl-8) !important; }
+
+/* --- left rail marks the depth, thickening as you go deeper ---
+   The frozen first column already carries a 1px divider shadow, so the rail
+   is added alongside it instead of replacing it. */
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-1 > td.cat-c-design {
+  box-shadow: inset 3px 0 0 var(--lvl-rail-1), 1px 0 0 var(--xl-border-strong);
+}
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-2 > td.cat-c-design {
+  box-shadow: inset 6px 0 0 var(--lvl-rail-2), 1px 0 0 var(--xl-border-strong);
+}
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-3 > td.cat-c-design {
+  box-shadow: inset 9px 0 0 var(--lvl-rail-3), 1px 0 0 var(--xl-border-strong);
+}
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-4 > td.cat-c-design,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-5 > td.cat-c-design,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-6 > td.cat-c-design,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-7 > td.cat-c-design,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-8 > td.cat-c-design {
+  box-shadow: inset 12px 0 0 var(--lvl-rail-4), 1px 0 0 var(--xl-border-strong);
+}
+
+/* --- the row you opened stays highlighted, with the same border as perf --- */
+#tab-catalog .cat-table tbody tr.cat-row.is-open > td {
+  background: var(--lvl-open) !important;
+  font-weight: 600;
+  box-shadow:
+    inset 0 var(--open-bw, 2px) 0 0 var(--open-bc, #A6402C),
+    inset 0 calc(var(--open-bw, 2px) * -1) 0 0 var(--open-bc, #A6402C);
+}
+#tab-catalog .cat-table tbody tr.cat-row.is-open > td.cat-c-design {
+  box-shadow:
+    inset 0 var(--open-bw, 2px) 0 0 var(--open-bc, #A6402C),
+    inset 0 calc(var(--open-bw, 2px) * -1) 0 0 var(--open-bc, #A6402C),
+    inset var(--open-bw, 2px) 0 0 0 var(--open-bc, #A6402C),
+    1px 0 0 var(--xl-border-strong);
+}
+#tab-catalog .cat-table tbody tr.cat-row.is-open > td:last-child {
+  box-shadow:
+    inset 0 var(--open-bw, 2px) 0 0 var(--open-bc, #A6402C),
+    inset 0 calc(var(--open-bw, 2px) * -1) 0 0 var(--open-bc, #A6402C),
+    inset calc(var(--open-bw, 2px) * -1) 0 0 0 var(--open-bc, #A6402C);
+}
+
+/* --- hover: top-level rows keep the Catalog's own colour, every drill level
+       uses the shared drill hover, so the two never get confused --- */
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-0:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-0:hover > td.cat-c-design {
+  background: var(--cat-hover, #EAF3FC) !important;
+}
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-1:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-2:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-3:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-4:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-5:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-6:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-7:hover > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-8:hover > td {
+  background: var(--drill-hover, #D7E8F7) !important;
+}
+
+/* --- drill rows sit shorter than their parent, same slider as perf
+       (Settings -> Look & Feel -> "Drill-down row height") --- */
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-1 > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-2 > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-3 > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-4 > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-5 > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-6 > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-7 > td,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-8 > td {
+  padding-top: calc(var(--row-pad, 4px) * var(--child-row-scale, .7));
+  padding-bottom: calc(var(--row-pad, 4px) * var(--child-row-scale, .7));
+  line-height: 1.25;
+}
+
+/* deeper names go quieter, the way the perf drill list does */
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-1 .cat-name,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-2 .cat-name,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-3 .cat-name,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-4 .cat-name,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-5 .cat-name,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-6 .cat-name,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-7 .cat-name,
+#tab-catalog .cat-table tbody tr.cat-row.cat-lvl-8 .cat-name {
+  font-weight: 600; color: var(--text-soft);
+}
+
+/* --- pop-out button, same as the one on Product Performance rows --- */
+.cat-popout {
+  all: unset; cursor: pointer; margin-left: 9px; opacity: 0;
+  font-size: 12px; color: var(--text-soft); transition: opacity .12s, color .12s;
+  vertical-align: middle;
+}
+.cat-row:hover .cat-popout { opacity: .65; }
+.cat-popout:hover { opacity: 1 !important; color: var(--rust); }
+
+/* the whole row is clickable now, at every depth */
+#tab-catalog .cat-table tbody tr.cat-row { cursor: pointer; }
+
+/* fallbacks for the deeper levels, in case the theme has not been applied yet */
+:root {
+  --lvl-5: #F5F2EC;
+  --lvl-6: #F2EFE9;
+  --lvl-7: #EFECE6;
+  --lvl-8: #ECE9E3;
+  --lvl-rail-4: #8C2E1B;
+}
