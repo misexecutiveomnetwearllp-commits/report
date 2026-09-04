@@ -5425,7 +5425,10 @@ function renderSettingsBody() {
       '<h3 class="snap-set-title">Chart layout</h3>' +
       '<label class="toolbar-checkbox"><input type="checkbox" id="set-boards-lock"' +
         (Boards.locked ? ' checked' : '') + '> Lock the chart layout (last saved arrangement stays put and cannot be edited)</label>' +
-      '<p class="drill-subtitle" style="margin-top:6px;">Applies to both the Dashboard and the Product Performance charts. Unlock to move, resize, add or remove charts.</p>' +
+      '<p class="drill-subtitle" style="margin-top:6px;">Applies to both the Dashboard and the Product Performance charts. ' +
+        'While it is on, nothing can be moved, resized, added, removed, recoloured or re-pointed at different data \u2014 ' +
+        'and the per-card data dropdowns are hidden. Clicking a bar to highlight still works, and so does the enlarge button. ' +
+        'Unlock to make changes again.</p>' +
       '<h3 class="snap-set-title">Default sales window</h3>' +
       '<div class="settings-row"><select id="set-dash-window" class="select">' +
         PERIOD_CHOICES.map(function (o) {
@@ -7193,7 +7196,8 @@ const CHART_TYPES = [
   ['area', 'Area'],
   ['pie', 'Pie'],
   ['doughnut', 'Doughnut'],
-  ['table', 'Table']
+  ['table', 'Table'],
+  ['kpi', 'KPI tile (one big number)']
 ];
 
 const CHART_SOURCES = [
@@ -7481,12 +7485,18 @@ function openChartEditor(cfg) {
 }
 
 /* ---------------------------------------------------------------
-   16b. CHART BOARDS — move, resize and edit charts
+   16b. CHART BOARDS — move, resize, recolour and edit charts
    ---------------------------------------------------------------
    The same board runs on the Dashboard and on Product Performance.
    Cards can be dragged into a new order, resized from the corner,
-   edited or removed, and everything is remembered. A lock switch
-   in Settings freezes the layout so it cannot be changed by mistake.
+   recoloured, edited or removed, and everything is remembered.
+   A lock switch in Settings freezes the lot so nothing can be
+   changed by mistake.
+
+   Clicking a bar, slice or table row cross-highlights the board the
+   way Power BI does: the thing you clicked stays in full colour, the
+   rest of that chart fades, every other card re-reads its numbers —
+   and nothing is rebuilt, so no card ever jumps out of its place.
    --------------------------------------------------------------- */
 
 const BOARD_DEFS = {
@@ -7494,16 +7504,66 @@ const BOARD_DEFS = {
   perf: { key: 'sl_perf_charts', grid: 'perf-grid', filterBar: 'perf-chart-filters' }
 };
 
+/* ---- colour palettes ----------------------------------------------------
+   Every chart can either follow a named palette or carry its own colours.
+   The neon sets come from the reference dashboards. ------------------------ */
+const CHART_PALETTES = [
+  { id: 'rust',    name: 'Rust (house)',  colors: ['#A6402C', '#1F6F5C', '#B9862F', '#4A6FA5', '#7A4CA0', '#C6784B', '#3E8E7E', '#8C5B3F', '#5B7553', '#9C4F6B'] },
+  { id: 'neon',    name: 'Neon',          colors: ['#22D3EE', '#E252C4', '#8B5CF6', '#34D399', '#FBBF24', '#F472B6', '#38BDF8', '#A3E635', '#FB7185', '#C084FC'] },
+  { id: 'aurora',  name: 'Aurora',        colors: ['#F0509B', '#7B5CFA', '#2DD4BF', '#FDBA4D', '#4CC9F0', '#B14AED', '#54D98C', '#FF6B6B', '#8AB4F8', '#F9A8D4'] },
+  { id: 'ocean',   name: 'Ocean',         colors: ['#1D6FA5', '#2E9CCA', '#25CED1', '#5B8FB9', '#0F4C75', '#3282B8', '#57A0D3', '#7FB3D5', '#154C79', '#48A9A6'] },
+  { id: 'berry',   name: 'Berry',         colors: ['#8E2C6B', '#C2296F', '#E4467C', '#F06D9B', '#6A2C70', '#B83B5E', '#F08A5D', '#A64C88', '#D6558F', '#7B3F7A'] },
+  { id: 'forest',  name: 'Forest',        colors: ['#1F6F5C', '#2F8F5B', '#6BA368', '#A3C48B', '#3E5E3A', '#57876B', '#89B47C', '#2C5E4F', '#7FA98A', '#456B4E'] },
+  { id: 'sunset',  name: 'Sunset',        colors: ['#F76B3C', '#F9A03F', '#FBCB43', '#E14D2A', '#C1462F', '#FF8C61', '#FFB55A', '#D94F2B', '#F4A259', '#B8412B'] },
+  { id: 'mono',    name: 'Monochrome',    colors: ['#2B3947', '#455B6E', '#5E7A91', '#7B96AC', '#9BB2C4', '#B7C8D6', '#3A4C5C', '#6B879E', '#8CA5B9', '#A8BECE'] }
+];
+
+function paletteById(id) {
+  return CHART_PALETTES.find(p => p.id === id) || CHART_PALETTES[0];
+}
+
+/** Colours for one chart. A chart with its own `colors` wins; otherwise the
+ *  chart's palette; otherwise the board default; otherwise the house colours. */
+function chartColours(boardId, cfg) {
+  if (cfg.colors && cfg.colors.length) return cfg.colors;
+  if (cfg.palette && cfg.palette !== 'board') return paletteById(cfg.palette).colors;
+  return paletteById(BoardTheme.palette || 'rust').colors;
+}
+
+/** Faded version of a colour, for the bars you did NOT click. */
+function fadeColour(hex, alpha) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '');
+  if (!m) return hex;
+  return 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' +
+    parseInt(m[3], 16) + ',' + (alpha === undefined ? 0.22 : alpha) + ')';
+}
+
+/* ---- table columns a table card can show ---- */
+const BOARD_TABLE_COLS = [
+  ['name',  'Name'],
+  ['value', 'Value'],
+  ['share', 'Share %'],
+  ['rank',  'Rank'],
+  ['cum',   'Running %']
+];
+const BOARD_TABLE_COLS_DEFAULT = ['name', 'value', 'share'];
+
+function tableColsOf(cfg) {
+  const c = (cfg.tcols && cfg.tcols.length) ? cfg.tcols : BOARD_TABLE_COLS_DEFAULT;
+  // "name" always stays, otherwise the rows have nothing to say
+  return c.indexOf('name') === -1 ? ['name'].concat(c) : c;
+}
+
 const PERF_DEFAULT_CHARTS = [
-  { id: 'p1', title: 'Top sellers',          type: 'bar',      source: 'sales',    dim: 'Article No',  measure: 'qty', topN: 12, w: 520, h: 300 },
-  { id: 'p2', title: 'Stock by sub section', type: 'bar',      source: 'stock',    dim: 'Sub Section', measure: 'qty', topN: 12, w: 520, h: 300 },
-  { id: 'p3', title: 'Sales by month',       type: 'column',   source: 'sales',    dim: 'Month',       measure: 'qty', topN: 24, w: 520, h: 300 },
-  { id: 'p4', title: 'Share by section',     type: 'doughnut', source: 'sales',    dim: 'Section',     measure: 'qty', topN: 8,  w: 520, h: 300 }
+  { id: 'p1', title: 'Top sellers',          type: 'bar',      source: 'sales', dim: 'Article No',  measure: 'qty', topN: 12, w: 520, h: 300 },
+  { id: 'p2', title: 'Stock by sub section', type: 'bar',      source: 'stock', dim: 'Sub Section', measure: 'qty', topN: 12, w: 520, h: 300 },
+  { id: 'p3', title: 'Sales by month',       type: 'column',   source: 'sales', dim: 'Month',       measure: 'qty', topN: 24, w: 520, h: 300 },
+  { id: 'p4', title: 'Share by section',     type: 'doughnut', source: 'sales', dim: 'Section',     measure: 'qty', topN: 8,  w: 520, h: 300 }
 ];
 
 const Boards = {
-  dash: { charts: [], filters: [], instances: {} },
-  perf: { charts: [], filters: [], instances: {} },
+  dash: { charts: [], filters: [], instances: {}, order: {} },
+  perf: { charts: [], filters: [], instances: {}, order: {} },
   locked: false,
   drag: null
 };
@@ -7522,14 +7582,26 @@ function loadBoards() {
 function saveBoard(id) { Store.set(BOARD_DEFS[id].key, JSON.stringify(Boards[id].charts)); }
 function setBoardsLocked(v) { Boards.locked = !!v; Store.set('sl_boards_locked', v ? '1' : '0'); renderAllBoards(); }
 
+/** One place to ask "may I change the board right now?". */
+function boardEditable(quiet) {
+  if (!Boards.locked) return true;
+  if (!quiet) toast('The dashboard is locked \u2014 unlock it in Settings \u203A Charts & layout.');
+  return false;
+}
+
 function renderAllBoards() {
   renderBoard('dash');
   renderBoard('perf');
 }
 
-/* ---- data for one chart, honouring that board's cross filters ---- */
-function boardAggregate(boardId, cfg) {
-  const filters = Boards[boardId].filters;
+/* ---- data for one chart -------------------------------------------------
+   A chart never filters itself. Clicking "Brand: LEVIS" filters every other
+   card, but the Brand chart keeps all its brands on screen and simply
+   highlights the one you picked — the Power BI rule. -------------------- */
+function boardAggregate(boardId, cfg, opts) {
+  const o = opts || {};
+  // base = the shape of the data with nothing highlighted at all
+  const filters = o.base ? [] : Boards[boardId].filters.filter(f => f.dim !== cfg.dim);
   let recs = dashRecordsFor(cfg.source).filter(r => filters.every(f => dashDimKey(r, f.dim) === f.value));
   const map = new Map(), seen = new Map();
   recs.forEach(r => {
@@ -7558,14 +7630,59 @@ function boardAggregate(boardId, cfg) {
   return entries;
 }
 
+/** The categories a chart shows, worked out once with no filters at all and
+ *  then remembered. This is what stops bars re-sorting and jumping about
+ *  every time you click something. */
+function boardOrder(boardId, cfg, force) {
+  const B = Boards[boardId];
+  const sig = [cfg.source, cfg.dim, cfg.measure, cfg.topN].join('|');
+  const cached = B.order[cfg.id];
+  if (!force && cached && cached.sig === sig) return cached.keys;
+  const keys = boardAggregate(boardId, cfg, { base: true }).map(e => e[0]);
+  B.order[cfg.id] = { sig, keys };
+  return keys;
+}
+
+/** Values for a chart, laid out on its remembered category order. */
+function boardSeries(boardId, cfg) {
+  const keys = boardOrder(boardId, cfg);
+  const map = new Map(boardAggregate(boardId, cfg));
+  return { labels: keys, values: keys.map(k => map.get(k) || 0) };
+}
+
+/** Which value of this chart's own dimension is currently picked, if any. */
+function boardPick(boardId, cfg) {
+  const f = Boards[boardId].filters.find(x => x.dim === cfg.dim);
+  return f ? f.value : null;
+}
+
+/** One number for a KPI tile — the grand total, honouring every filter. */
+function boardKpiValue(boardId, cfg) {
+  const filters = Boards[boardId].filters;
+  const recs = dashRecordsFor(cfg.source).filter(r => filters.every(f => dashDimKey(r, f.dim) === f.value));
+  if (cfg.measure === 'rows') return recs.length;
+  if (cfg.measure === 'items') {
+    const s = new Set();
+    recs.forEach(r => { const c = r['Item Code'] || r['Article No']; if (c) s.add(String(c)); });
+    return s.size;
+  }
+  return recs.reduce((a, r) => a + recQty(r), 0);
+}
+
+/* ---- drawing ------------------------------------------------------------ */
+
 function renderBoard(boardId) {
   const def = BOARD_DEFS[boardId];
   const grid = document.getElementById(def.grid);
   if (!grid) return;
   const B = Boards[boardId];
 
+  // an enlarged card lives in the overlay, not in the grid - put it back first
+  if (Maxed.boardId === boardId) closeCardMax();
+
   Object.keys(B.instances).forEach(k => { try { B.instances[k].destroy(); } catch (e) {} });
   B.instances = {};
+  B.order = {};        // a full render means the data or the cards changed
 
   renderBoardFilters(boardId);
 
@@ -7576,55 +7693,87 @@ function renderBoard(boardId) {
 
   const locked = Boards.locked;
   grid.className = 'chart-board' + (locked ? ' locked' : '');
-  grid.innerHTML = B.charts.map((cfg, i) =>
-    '<div class="board-card" data-cid="' + cfg.id + '" data-idx="' + i + '"' +
-      (locked ? '' : ' draggable="true"') +
-      ' style="width:' + (cfg.w || 520) + 'px;height:' + (cfg.h || 300) + 'px">' +
-      '<div class="board-head">' +
-        (locked ? '' : '<span class="board-grip" title="Drag to move">\u2630</span>') +
-        '<h3>' + escapeHtml(cfg.title) + '</h3>' +
-        '<span class="board-meta">' + escapeHtml(cfg.source) + ' \u00b7 ' + escapeHtml(cfg.dim) + '</span>' +
-        '<span class="spacer"></span>' +
-        (locked ? '<span class="board-lockicon" title="Layout is locked in Settings">\uD83D\uDD12</span>' :
-          '<button class="dash-ico" data-act="edit" title="Edit">\u270E</button>' +
-          '<button class="dash-ico" data-act="dup" title="Duplicate">\u29C9</button>' +
-          '<button class="dash-ico" data-act="del" title="Remove">\u2715</button>') +
-      '</div>' +
-      (cfg.type === 'table'
-        ? '<div class="board-body"><table class="data-table dash-mini" id="bt-' + boardId + '-' + cfg.id + '"></table></div>'
-        : '<div class="board-body"><canvas id="bc-' + boardId + '-' + cfg.id + '"></canvas></div>') +
-      (locked ? '' : '<span class="board-resize" title="Drag to resize"></span>') +
-    '</div>').join('');
+  grid.innerHTML = B.charts.map((cfg, i) => boardCardHtml(boardId, cfg, i, locked)).join('');
 
   B.charts.forEach(cfg => drawBoardChart(boardId, cfg));
   wireBoardCard(boardId, grid);
 }
 
+function boardCardHtml(boardId, cfg, i, locked) {
+  const isKpi = cfg.type === 'kpi';
+  return '<div class="board-card' + (isKpi ? ' kpi-card' : '') + '" data-cid="' + cfg.id + '" data-idx="' + i + '"' +
+      (locked ? '' : ' draggable="true"') +
+      ' style="width:' + (cfg.w || (isKpi ? 240 : 520)) + 'px;height:' + (cfg.h || (isKpi ? 150 : 300)) + 'px">' +
+      '<div class="board-head">' +
+        (locked ? '' : '<span class="board-grip" title="Drag to move">\u2630</span>') +
+        '<h3>' + escapeHtml(cfg.title) + '</h3>' +
+        '<span class="board-meta">' + escapeHtml(cfg.source) + ' \u00b7 ' + escapeHtml(cfg.dim) + '</span>' +
+        '<span class="spacer"></span>' +
+        '<button class="dash-ico" data-act="max" title="Enlarge to fill the browser tab">\u26F6</button>' +
+        (locked
+          ? '<span class="board-lockicon" title="The dashboard is locked in Settings">\uD83D\uDD12</span>'
+          : '<button class="dash-ico" data-act="data" title="Change the data shown">\u25BE</button>' +
+            '<button class="dash-ico" data-act="edit" title="Edit">\u270E</button>' +
+            '<button class="dash-ico" data-act="dup" title="Duplicate">\u29C9</button>' +
+            '<button class="dash-ico" data-act="del" title="Remove">\u2715</button>') +
+      '</div>' +
+      (locked ? '' : boardQuickBarHtml(cfg)) +
+      (cfg.type === 'table'
+        ? '<div class="board-body"><table class="data-table dash-mini" id="bt-' + boardId + '-' + cfg.id + '"></table></div>'
+        : isKpi
+          ? '<div class="board-body kpi-body" id="bk-' + boardId + '-' + cfg.id + '"></div>'
+          : '<div class="board-body"><canvas id="bc-' + boardId + '-' + cfg.id + '"></canvas></div>') +
+      (locked ? '' : '<span class="board-resize" title="Drag to resize"></span>') +
+    '</div>';
+}
+
+/** The little strip under a card heading: swap the data without opening the
+ *  editor. Hidden while the board is locked. */
+function boardQuickBarHtml(cfg) {
+  const isKpi = cfg.type === 'kpi';
+  return '<div class="board-quick" data-open="0">' +
+    '<label>Show</label>' +
+    '<select class="select mini" data-q="source">' + CHART_SOURCES.map(s =>
+      '<option value="' + s[0] + '"' + (cfg.source === s[0] ? ' selected' : '') + '>' + s[1] + '</option>').join('') + '</select>' +
+    '<label>' + (isKpi ? 'Of' : 'By') + '</label>' +
+    '<select class="select mini" data-q="dim">' + CHART_DIMS.map(d =>
+      '<option value="' + d + '"' + (cfg.dim === d ? ' selected' : '') + '>' + d + '</option>').join('') + '</select>' +
+    '<select class="select mini" data-q="measure">' + CHART_MEASURES.map(m =>
+      '<option value="' + m[0] + '"' + (cfg.measure === m[0] ? ' selected' : '') + '>' + m[1] + '</option>').join('') + '</select>' +
+    (isKpi ? '' :
+      '<label>Top</label><input type="number" class="text-input narrow" data-q="topN" min="3" max="50" value="' + (cfg.topN || 10) + '">') +
+    '<select class="select mini" data-q="palette" title="Colours">' +
+      '<option value="board"' + (!cfg.palette || cfg.palette === 'board' ? ' selected' : '') + '>Board colours</option>' +
+      CHART_PALETTES.map(p => '<option value="' + p.id + '"' + (cfg.palette === p.id ? ' selected' : '') + '>' + p.name + '</option>').join('') +
+    '</select>' +
+  '</div>';
+}
+
 function drawBoardChart(boardId, cfg) {
-  const data = boardAggregate(boardId, cfg);
-  const labels = data.map(d => d[0]);
-  const values = data.map(d => d[1]);
   const B = Boards[boardId];
 
-  if (cfg.type === 'table') {
-    const el = document.getElementById('bt-' + boardId + '-' + cfg.id);
-    if (!el) return;
-    const total = values.reduce((a, b) => a + b, 0);
-    el.innerHTML = '<thead><tr><th>' + escapeHtml(cfg.dim) + '</th><th class="num">Qty</th><th class="num">Share</th></tr></thead>' +
-      '<tbody>' + data.map(([k, v]) =>
-        '<tr class="dash-trow" data-v="' + escapeHtml(k) + '"><td>' + escapeHtml(k) + '</td>' +
-        '<td class="num">' + fmtNum(v) + '</td><td class="num">' +
-        (total ? fmtNum(v / total * 100, 1) + '%' : '\u2014') + '</td></tr>').join('') +
-      '</tbody><tfoot><tr><td>Total</td><td class="num">' + fmtNum(total) + '</td><td class="num">100%</td></tr></tfoot>';
-    el.querySelectorAll('.dash-trow').forEach(tr =>
-      tr.addEventListener('click', () => addBoardFilter(boardId, cfg.dim, tr.dataset.v)));
-    return;
-  }
+  if (cfg.type === 'kpi') { drawBoardKpi(boardId, cfg); return; }
+
+  const series = boardSeries(boardId, cfg);
+  const labels = series.labels, values = series.values;
+  const pick = boardPick(boardId, cfg);
+  const colours = chartColours(boardId, cfg);
+
+  if (cfg.type === 'table') { drawBoardTable(boardId, cfg, labels, values, pick); return; }
 
   const canvas = document.getElementById('bc-' + boardId + '-' + cfg.id);
   if (!canvas || typeof Chart === 'undefined') return;
   const isPie = cfg.type === 'pie' || cfg.type === 'doughnut';
   const chartType = cfg.type === 'column' ? 'bar' : cfg.type === 'area' ? 'line' : cfg.type;
+  const perCategory = isPie || cfg.multi;
+
+  // The colour of every bar / slice. When something is picked, the rest fade
+  // instead of disappearing, so the shape of the chart stays readable.
+  const fill = labels.map((lb, i) => {
+    const base = perCategory ? colours[i % colours.length] : colours[0];
+    return (pick && lb !== pick) ? fadeColour(base, .18) : base;
+  });
+  const line = cfg.type === 'line' || cfg.type === 'area';
 
   B.instances[cfg.id] = makeChart(canvas.getContext('2d'), {
     type: chartType,
@@ -7632,19 +7781,23 @@ function drawBoardChart(boardId, cfg) {
       labels: labels,
       datasets: [{
         label: cfg.title, data: values,
-        backgroundColor: isPie ? labels.map((_, i) => CHART_COLORS[i % CHART_COLORS.length]) : CHART_COLORS[0],
-        borderColor: (cfg.type === 'line' || cfg.type === 'area') ? CHART_COLORS[0] : undefined,
+        backgroundColor: line ? fadeColour(colours[0], cfg.type === 'area' ? .22 : .08) : fill,
+        borderColor: line ? colours[0] : (pick ? fill : undefined),
+        borderWidth: line ? 2 : (pick ? 1.5 : 0),
+        pointBackgroundColor: line ? labels.map(lb => (pick && lb !== pick) ? fadeColour(colours[0], .3) : colours[0]) : undefined,
+        pointRadius: line ? (pick ? labels.map(lb => lb === pick ? 5 : 2) : 3) : undefined,
         fill: cfg.type === 'area', tension: .25
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
+      animation: { duration: 220 },
       indexAxis: cfg.type === 'bar' ? 'y' : 'x',
       onClick: (evt, els) => { if (els && els.length) addBoardFilter(boardId, cfg.dim, labels[els[0].index]); },
       plugins: {
         legend: { display: isPie, position: 'right',
           labels: { font: { size: 10 }, boxWidth: 10, color: boardTextColour() } },
-        tooltip: { callbacks: { afterLabel: () => 'Click to filter' } }
+        tooltip: { callbacks: { afterLabel: () => pick ? 'Click again to clear' : 'Click to highlight' } }
       },
       scales: isPie ? {} : {
         x: { ticks: { font: { size: 10 }, color: boardTextColour() }, grid: { color: boardGridColour() } },
@@ -7654,12 +7807,91 @@ function drawBoardChart(boardId, cfg) {
   });
 }
 
+function drawBoardTable(boardId, cfg, labels, values, pick) {
+  const el = document.getElementById('bt-' + boardId + '-' + cfg.id);
+  if (!el) return;
+  const cols = tableColsOf(cfg);
+  const total = values.reduce((a, b) => a + b, 0);
+  const head = cols.map(c => {
+    if (c === 'name') return '<th>' + escapeHtml(cfg.dim) + '</th>';
+    if (c === 'value') return '<th class="num">' + (cfg.measure === 'rows' ? 'Rows' : cfg.measure === 'items' ? 'Items' : 'Qty') + '</th>';
+    if (c === 'share') return '<th class="num">Share</th>';
+    if (c === 'rank') return '<th class="num">#</th>';
+    return '<th class="num">Running</th>';
+  }).join('');
+
+  let run = 0;
+  const body = labels.map((k, i) => {
+    const v = values[i];
+    run += v;
+    const cells = cols.map(c => {
+      if (c === 'name') return '<td>' + escapeHtml(k) + '</td>';
+      if (c === 'value') return '<td class="num">' + fmtNum(v) + '</td>';
+      if (c === 'share') return '<td class="num">' + (total ? fmtNum(v / total * 100, 1) + '%' : '\u2014') + '</td>';
+      if (c === 'rank') return '<td class="num">' + (i + 1) + '</td>';
+      return '<td class="num">' + (total ? fmtNum(run / total * 100, 1) + '%' : '\u2014') + '</td>';
+    }).join('');
+    const cls = 'dash-trow' + (pick ? (k === pick ? ' picked' : ' dimmed') : '');
+    return '<tr class="' + cls + '" data-v="' + escapeHtml(k) + '">' + cells + '</tr>';
+  }).join('');
+
+  const foot = cols.map((c, i) => {
+    if (i === 0) return '<td>Total</td>';
+    if (c === 'value') return '<td class="num">' + fmtNum(total) + '</td>';
+    if (c === 'share' || c === 'cum') return '<td class="num">100%</td>';
+    return '<td></td>';
+  }).join('');
+
+  el.innerHTML = '<thead><tr>' + head + '</tr></thead><tbody>' + body +
+    '</tbody><tfoot><tr>' + foot + '</tr></tfoot>';
+  el.querySelectorAll('.dash-trow').forEach(tr =>
+    tr.addEventListener('click', () => addBoardFilter(boardId, cfg.dim, tr.dataset.v)));
+}
+
+/** A big-number tile, like the ones across the top of the reference boards. */
+function drawBoardKpi(boardId, cfg) {
+  const el = document.getElementById('bk-' + boardId + '-' + cfg.id);
+  if (!el) return;
+  const value = boardKpiValue(boardId, cfg);
+  const colours = chartColours(boardId, cfg);
+  const series = boardSeries(boardId, cfg);
+  const top = series.labels.length
+    ? series.labels[0] + ' \u00b7 ' + fmtNum(series.values[0])
+    : 'no rows in this window';
+  const unit = cfg.measure === 'rows' ? 'rows' : cfg.measure === 'items' ? 'items' : 'pcs';
+
+  el.innerHTML =
+    '<div class="kpi-big" style="color:' + colours[0] + '">' + fmtNum(value) + '</div>' +
+    '<div class="kpi-unit">' + unit + '</div>' +
+    '<div class="kpi-foot">Top ' + escapeHtml(cfg.dim) + ': <strong>' + escapeHtml(top) + '</strong></div>';
+}
+
+/* ---- cross-highlighting -------------------------------------------------
+   Nothing here rebuilds the grid. The cards keep their exact position and
+   size; only the numbers inside them change. --------------------------- */
 function addBoardFilter(boardId, dim, value) {
   const F = Boards[boardId].filters;
   const i = F.findIndex(f => f.dim === dim);
   if (i >= 0) { if (F[i].value === value) F.splice(i, 1); else F[i].value = value; }
   else F.push({ dim, value });
-  renderBoard(boardId);
+  refreshBoardData(boardId);
+}
+
+/** Redraws the contents of every card in place. */
+function refreshBoardData(boardId) {
+  const B = Boards[boardId];
+  const grid = document.getElementById(BOARD_DEFS[boardId].grid);
+  const live = grid && (grid.querySelector('.board-card') || Maxed.boardId === boardId);
+  if (!live) { renderBoard(boardId); return; }
+  renderBoardFilters(boardId);
+  B.charts.forEach(cfg => {
+    const inst = B.instances[cfg.id];
+    if (inst) { try { inst.destroy(); } catch (e) {} delete B.instances[cfg.id]; }
+    drawBoardChart(boardId, cfg);
+  });
+  grid.classList.toggle('has-pick', B.filters.length > 0);
+  paintMaxFilters();
+  resizeMaxed();
 }
 
 function renderBoardFilters(boardId) {
@@ -7667,18 +7899,18 @@ function renderBoardFilters(boardId) {
   if (!wrap) return;
   const F = Boards[boardId].filters;
   if (!F.length) { wrap.innerHTML = ''; return; }
-  wrap.innerHTML = '<span class="toolbar-label">Filtered by:</span>' +
+  wrap.innerHTML = '<span class="toolbar-label">Highlighting:</span>' +
     F.map((f, i) => '<span class="filter-chip">' + escapeHtml(f.dim) + ': <strong>' +
       escapeHtml(f.value) + '</strong><button data-fi="' + i + '">&times;</button></span>').join('') +
     '<button class="ghost-btn small" data-clear-all="1">Clear all</button>';
   wrap.querySelectorAll('[data-fi]').forEach(b => b.addEventListener('click', () => {
-    F.splice(parseInt(b.dataset.fi, 10), 1); renderBoard(boardId);
+    F.splice(parseInt(b.dataset.fi, 10), 1); refreshBoardData(boardId);
   }));
   const ca = wrap.querySelector('[data-clear-all]');
-  if (ca) ca.addEventListener('click', () => { Boards[boardId].filters = []; renderBoard(boardId); });
+  if (ca) ca.addEventListener('click', () => { Boards[boardId].filters = []; refreshBoardData(boardId); });
 }
 
-/* ---- move, resize, edit ---- */
+/* ---- move, resize, edit, enlarge ---------------------------------------- */
 function wireBoardCard(boardId, grid) {
   const B = Boards[boardId];
 
@@ -7688,12 +7920,37 @@ function wireBoardCard(boardId, grid) {
       const card = btn.closest('.board-card');
       const i = B.charts.findIndex(c => c.id === card.dataset.cid);
       const act = btn.dataset.act;
+
+      if (act === 'max') { toggleCardMax(boardId, card); return; }
+      if (!boardEditable()) return;
       if (act === 'del') { B.charts.splice(i, 1); saveBoard(boardId); renderBoard(boardId); }
       else if (act === 'edit') openBoardChartEditor(boardId, B.charts[i]);
-      else if (act === 'dup') {
+      else if (act === 'data') {
+        const q = card.querySelector('.board-quick');
+        if (q) q.dataset.open = q.dataset.open === '1' ? '0' : '1';
+      } else if (act === 'dup') {
         const copy = Object.assign({}, B.charts[i], { id: 'c' + Date.now(), title: B.charts[i].title + ' (copy)' });
         B.charts.splice(i + 1, 0, copy); saveBoard(boardId); renderBoard(boardId);
       }
+    });
+  });
+
+  // the quick data / colour strip on each card
+  grid.querySelectorAll('.board-quick').forEach(bar => {
+    bar.addEventListener('click', e => e.stopPropagation());
+    bar.querySelectorAll('[data-q]').forEach(inp => {
+      inp.addEventListener('change', e => {
+        if (!boardEditable()) return;
+        const card = bar.closest('.board-card');
+        const cfg = B.charts.find(c => c.id === card.dataset.cid);
+        if (!cfg) return;
+        const field = e.target.dataset.q;
+        if (field === 'topN') cfg.topN = Math.max(3, Math.min(50, parseInt(e.target.value, 10) || 10));
+        else cfg[field] = e.target.value;
+        delete B.order[cfg.id];          // the categories change, so re-read them
+        saveBoard(boardId);
+        renderBoard(boardId);
+      });
     });
   });
 
@@ -7739,8 +7996,8 @@ function wireBoardCard(boardId, grid) {
       const start = { x: e.clientX, y: e.clientY, w: card.offsetWidth, h: card.offsetHeight };
 
       const move = ev => {
-        const w = Math.max(260, start.w + (ev.clientX - start.x));
-        const h = Math.max(180, start.h + (ev.clientY - start.y));
+        const w = Math.max(200, start.w + (ev.clientX - start.x));
+        const h = Math.max(130, start.h + (ev.clientY - start.y));
         card.style.width = w + 'px';
         card.style.height = h + 'px';
         const inst = B.instances[cfg.id];
@@ -7758,11 +8015,106 @@ function wireBoardCard(boardId, grid) {
   });
 }
 
+/* ---- enlarge ------------------------------------------------------------
+   Fills the browser tab only. No fullscreen call, so the window chrome,
+   tab bar and address bar all stay where they are. ---------------------- */
+const Maxed = { boardId: null, cardId: null, home: null, next: null };
+
+/** A plain fixed panel inside the page. No requestFullscreen anywhere, so the
+ *  browser tab bar, address bar and window frame all stay exactly as they are —
+ *  the card grows to fill the tab and nothing more. */
+function ensureMaxOverlay() {
+  let el = document.getElementById('board-max-overlay');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'board-max-overlay';
+  el.className = 'board-max-overlay';
+  el.style.display = 'none';
+  el.innerHTML =
+    '<div class="board-max-bar">' +
+      '<span class="board-max-title" id="board-max-title"></span>' +
+      '<span class="board-max-filters" id="board-max-filters"></span>' +
+      '<span class="spacer"></span>' +
+      '<button class="ghost-btn small" id="board-max-close" title="Back to the board (Esc)">\u2715 Close</button>' +
+    '</div>' +
+    '<div class="board-max-stage" id="board-max-stage"></div>';
+  document.body.appendChild(el);
+  el.querySelector('#board-max-close').addEventListener('click', closeCardMax);
+  el.addEventListener('click', e => { if (e.target === el) closeCardMax(); });
+  return el;
+}
+
+function toggleCardMax(boardId, card) {
+  if (Maxed.cardId === card.dataset.cid) { closeCardMax(); return; }
+  if (Maxed.cardId) closeCardMax();
+
+  const ov = ensureMaxOverlay();
+  const cfg = Boards[boardId].charts.find(c => c.id === card.dataset.cid);
+  Maxed.boardId = boardId;
+  Maxed.cardId = card.dataset.cid;
+  Maxed.home = card.parentNode;
+  Maxed.next = card.nextSibling;
+
+  card.classList.add('is-max');
+  card.removeAttribute('draggable');
+  document.getElementById('board-max-stage').appendChild(card);
+  document.getElementById('board-max-title').textContent = cfg ? cfg.title : '';
+  ov.style.display = 'flex';
+  document.body.classList.add('card-maxed');
+  paintMaxFilters();
+  resizeMaxed();
+}
+
+function closeCardMax() {
+  if (!Maxed.cardId) return false;
+  const card = document.querySelector('.board-card.is-max');
+  if (card) {
+    card.classList.remove('is-max');
+    if (!Boards.locked) card.setAttribute('draggable', 'true');
+    if (Maxed.home) Maxed.home.insertBefore(card, Maxed.next);
+  }
+  const ov = document.getElementById('board-max-overlay');
+  if (ov) ov.style.display = 'none';
+  document.body.classList.remove('card-maxed');
+  const boardId = Maxed.boardId;
+  Maxed.boardId = null; Maxed.cardId = null; Maxed.home = null; Maxed.next = null;
+  if (boardId) setTimeout(() => {
+    const inst = Boards[boardId].instances[card && card.dataset.cid];
+    if (inst && inst.resize) { try { inst.resize(); } catch (e) {} }
+  }, 60);
+  return true;
+}
+
+function resizeMaxed() {
+  if (!Maxed.cardId) return;
+  // let the layout settle before Chart.js measures the new box
+  setTimeout(() => {
+    const inst = Boards[Maxed.boardId] && Boards[Maxed.boardId].instances[Maxed.cardId];
+    if (inst && inst.resize) { try { inst.resize(); } catch (e) {} }
+  }, 60);
+}
+
+/** The enlarged card shows the same highlight chips as the board behind it. */
+function paintMaxFilters() {
+  const el = document.getElementById('board-max-filters');
+  if (!el || !Maxed.boardId) return;
+  const F = Boards[Maxed.boardId].filters;
+  el.innerHTML = F.length
+    ? F.map(f => '<span class="filter-chip">' + escapeHtml(f.dim) + ': <strong>' +
+        escapeHtml(f.value) + '</strong></span>').join('')
+    : '';
+}
+
+/* ---- the chart editor --------------------------------------------------- */
 function openBoardChartEditor(boardId, cfg) {
+  if (!boardEditable()) return;
   const editing = !!cfg;
   const B = Boards[boardId];
   const c = cfg || { id: 'c' + Date.now(), title: '', type: 'column', source: 'sales',
-                     dim: 'Brand', measure: 'qty', topN: 10, w: 520, h: 300 };
+                     dim: 'Brand', measure: 'qty', topN: 10, w: 520, h: 300,
+                     palette: 'board', tcols: BOARD_TABLE_COLS_DEFAULT.slice() };
+  const cols = tableColsOf(c);
+  const own = (c.colors && c.colors.length) ? c.colors : chartColours(boardId, c);
 
   const pop = document.createElement('div');
   pop.className = 'modal-backdrop';
@@ -7784,15 +8136,53 @@ function openBoardChartEditor(boardId, cfg) {
         '<option value="' + m[0] + '"' + (c.measure === m[0] ? ' selected' : '') + '>' + m[1] + '</option>').join('') + '</select>' +
       '<label class="toolbar-label">Top</label>' +
       '<input type="number" id="ce-topn" class="text-input narrow" min="3" max="50" value="' + (c.topN || 10) + '"></div>' +
+
+    '<h4 class="ce-sub">Colours</h4>' +
+    '<div class="settings-row"><label class="toolbar-label">Palette</label>' +
+      '<select id="ce-palette" class="select">' +
+        '<option value="board"' + (!c.palette || c.palette === 'board' ? ' selected' : '') + '>Follow the board</option>' +
+        CHART_PALETTES.map(p => '<option value="' + p.id + '"' + (c.palette === p.id ? ' selected' : '') + '>' + p.name + '</option>').join('') +
+      '</select>' +
+      '<label class="toolbar-checkbox"><input type="checkbox" id="ce-multi"' + (c.multi ? ' checked' : '') +
+        '> A different colour for every bar</label></div>' +
+    '<div class="ce-swatches" id="ce-swatches">' +
+      own.slice(0, 6).map((hex, i) =>
+        '<span class="ce-sw"><input type="color" data-ci="' + i + '" value="' + hex + '"></span>').join('') +
+      '<button class="ghost-btn small" id="ce-colreset">Use the palette</button>' +
+    '</div>' +
+
+    '<h4 class="ce-sub">Table columns</h4>' +
+    '<div class="settings-row ce-tcols">' + BOARD_TABLE_COLS.map(([k, label]) =>
+      '<label class="toolbar-checkbox"><input type="checkbox" data-tc="' + k + '"' +
+        (cols.indexOf(k) !== -1 ? ' checked' : '') + (k === 'name' ? ' disabled' : '') + '> ' + label + '</label>').join('') +
+      '<span class="drill-count">only used when the type is Table</span></div>' +
+
     '<div class="settings-row"><label class="toolbar-label">Size</label>' +
-      '<input type="number" id="ce-w" class="text-input narrow" min="260" step="20" value="' + (c.w || 520) + '"> \u00d7 ' +
-      '<input type="number" id="ce-h" class="text-input narrow" min="180" step="20" value="' + (c.h || 300) + '"> px' +
+      '<input type="number" id="ce-w" class="text-input narrow" min="200" step="20" value="' + (c.w || 520) + '"> \u00d7 ' +
+      '<input type="number" id="ce-h" class="text-input narrow" min="130" step="20" value="' + (c.h || 300) + '"> px' +
       '<span class="drill-count">or drag the corner of the card</span></div>' +
     '<div class="modal-actions"><button class="ghost-btn primary small" id="ce-save">' +
       (editing ? 'Save chart' : 'Add chart') + '</button>' +
       '<span class="spacer"></span><button class="ghost-btn small" id="ce-cancel">Cancel</button></div>' +
     '</div>';
   document.body.appendChild(pop);
+
+  let customColors = (c.colors && c.colors.length) ? c.colors.slice() : null;
+  pop.querySelectorAll('#ce-swatches input[type="color"]').forEach(inp => {
+    inp.addEventListener('input', e => {
+      if (!customColors) customColors = own.slice();
+      customColors[parseInt(e.target.dataset.ci, 10)] = e.target.value;
+    });
+  });
+  pop.querySelector('#ce-colreset').onclick = () => {
+    customColors = null;
+    const pal = pop.querySelector('#ce-palette').value;
+    const list = pal === 'board' ? paletteById(BoardTheme.palette || 'rust').colors : paletteById(pal).colors;
+    pop.querySelectorAll('#ce-swatches input[type="color"]').forEach((inp, i) => { inp.value = list[i] || '#888888'; });
+  };
+  pop.querySelector('#ce-palette').addEventListener('change', () => {
+    if (!customColors) pop.querySelector('#ce-colreset').click();
+  });
 
   pop.querySelector('#ce-cancel').onclick = () => pop.remove();
   pop.addEventListener('click', e => { if (e.target === pop) pop.remove(); });
@@ -7804,14 +8194,180 @@ function openBoardChartEditor(boardId, cfg) {
     c.dim = pop.querySelector('#ce-dim').value;
     c.measure = pop.querySelector('#ce-measure').value;
     c.topN = Math.max(3, Math.min(50, parseInt(pop.querySelector('#ce-topn').value, 10) || 10));
-    c.w = Math.max(260, parseInt(pop.querySelector('#ce-w').value, 10) || 520);
-    c.h = Math.max(180, parseInt(pop.querySelector('#ce-h').value, 10) || 300);
+    c.palette = pop.querySelector('#ce-palette').value;
+    c.multi = pop.querySelector('#ce-multi').checked;
+    if (customColors) c.colors = customColors; else delete c.colors;
+    c.tcols = [...pop.querySelectorAll('[data-tc]')].filter(x => x.checked).map(x => x.dataset.tc);
+    if (!c.tcols.length) c.tcols = BOARD_TABLE_COLS_DEFAULT.slice();
+    c.w = Math.max(200, parseInt(pop.querySelector('#ce-w').value, 10) || 520);
+    c.h = Math.max(130, parseInt(pop.querySelector('#ce-h').value, 10) || 300);
     if (!editing) B.charts.push(c);
+    delete B.order[c.id];
     saveBoard(boardId);
     pop.remove();
     renderBoard(boardId);
     toast(editing ? 'Chart updated.' : 'Chart added.');
   };
+}
+
+/* ---------------------------------------------------------------
+   16c. READY-MADE DASHBOARDS
+   ---------------------------------------------------------------
+   Six finished layouts you can drop straight onto the Dashboard.
+   Applying one replaces the cards and the colour scheme; after that
+   every card is a normal card — edit it, recolour it, swap its data,
+   add more. Nothing here is fixed.
+   --------------------------------------------------------------- */
+
+const DASH_TEMPLATES = [
+  {
+    id: 'salesstock',
+    name: 'Sales & Stock',
+    note: 'Big numbers across the top, a sold-vs-purchased trend, and the section split. The closest match to a retail control board.',
+    theme: { bg: '#141A2E', card: '#1C2440', fg: '#E8EDF7', grid: '#2C3757', palette: 'neon' },
+    charts: [
+      { id: 't1a', title: 'Units sold',        type: 'kpi',      source: 'sales',    dim: 'Article No',  measure: 'qty',   w: 250, h: 150 },
+      { id: 't1b', title: 'Units purchased',   type: 'kpi',      source: 'purchase', dim: 'Article No',  measure: 'qty',   w: 250, h: 150, palette: 'aurora' },
+      { id: 't1c', title: 'Items in stock',    type: 'kpi',      source: 'stock',    dim: 'Item Code',   measure: 'items', w: 250, h: 150, palette: 'ocean' },
+      { id: 't1d', title: 'Stock on hand',     type: 'kpi',      source: 'stock',    dim: 'Sub Section', measure: 'qty',   w: 250, h: 150, palette: 'berry' },
+      { id: 't1e', title: 'Units sold by month',   type: 'area',     source: 'sales', dim: 'Month',   measure: 'qty', topN: 24, w: 700, h: 330 },
+      { id: 't1f', title: 'Sales by product section', type: 'doughnut', source: 'sales', dim: 'Section', measure: 'qty', topN: 8, w: 400, h: 330, multi: true },
+      { id: 't1g', title: 'Stock by sub section',  type: 'bar',      source: 'stock', dim: 'Sub Section', measure: 'qty', topN: 10, w: 540, h: 320, palette: 'ocean' },
+      { id: 't1h', title: 'Top selling articles',  type: 'table',    source: 'sales', dim: 'Article No',  measure: 'qty', topN: 12, w: 560, h: 320, tcols: ['name', 'value', 'share', 'rank'] }
+    ]
+  },
+  {
+    id: 'midnight',
+    name: 'Midnight Analytics',
+    note: 'Deep purple with ring charts and a wide trend, in the style of the neon analytics boards.',
+    theme: { bg: '#1A0F2E', card: '#251643', fg: '#EDE6FA', grid: '#3A2560', palette: 'aurora' },
+    charts: [
+      { id: 't2a', title: 'Sold',              type: 'kpi',      source: 'sales',    dim: 'Brand',       measure: 'qty', w: 240, h: 145 },
+      { id: 't2b', title: 'Purchased',         type: 'kpi',      source: 'purchase', dim: 'Brand',       measure: 'qty', w: 240, h: 145, palette: 'neon' },
+      { id: 't2c', title: 'Distinct items',    type: 'kpi',      source: 'sales',    dim: 'Item Code',   measure: 'items', w: 240, h: 145, palette: 'berry' },
+      { id: 't2d', title: 'Sales trend',       type: 'line',     source: 'sales',    dim: 'Month',       measure: 'qty', topN: 24, w: 760, h: 340 },
+      { id: 't2e', title: 'Share by brand',    type: 'doughnut', source: 'sales',    dim: 'Brand',       measure: 'qty', topN: 8,  w: 360, h: 340, multi: true },
+      { id: 't2f', title: 'Sales by colour',   type: 'doughnut', source: 'sales',    dim: 'Colour',      measure: 'qty', topN: 8,  w: 360, h: 300, multi: true, palette: 'neon' },
+      { id: 't2g', title: 'Sales by size',     type: 'column',   source: 'sales',    dim: 'Size',        measure: 'qty', topN: 12, w: 520, h: 300, palette: 'berry' },
+      { id: 't2h', title: 'Top suppliers',     type: 'bar',      source: 'purchase', dim: 'Supplier',    measure: 'qty', topN: 10, w: 480, h: 300, palette: 'ocean' }
+    ]
+  },
+  {
+    id: 'executive',
+    name: 'Executive Light',
+    note: 'A bright board with one headline chart and a row of smaller ones. Good for printing and for sharing.',
+    theme: { bg: '#F4F6FA', card: '#FFFFFF', fg: '#1F2933', grid: '#E1E6EC', palette: 'ocean' },
+    charts: [
+      { id: 't3a', title: 'Units sold',        type: 'kpi',    source: 'sales',    dim: 'Section',     measure: 'qty', w: 250, h: 145 },
+      { id: 't3b', title: 'Units purchased',   type: 'kpi',    source: 'purchase', dim: 'Section',     measure: 'qty', w: 250, h: 145, palette: 'forest' },
+      { id: 't3c', title: 'Sales vs month',    type: 'column', source: 'sales',    dim: 'Month',       measure: 'qty', topN: 24, w: 720, h: 330 },
+      { id: 't3d', title: 'Purchases by month', type: 'column', source: 'purchase', dim: 'Month',      measure: 'qty', topN: 24, w: 520, h: 300, palette: 'forest' },
+      { id: 't3e', title: 'Top brands',        type: 'bar',    source: 'sales',    dim: 'Brand',       measure: 'qty', topN: 10, w: 500, h: 300 },
+      { id: 't3f', title: 'Sales by section',  type: 'pie',    source: 'sales',    dim: 'Section',     measure: 'qty', topN: 8,  w: 400, h: 300, multi: true, palette: 'sunset' },
+      { id: 't3g', title: 'Stock summary',     type: 'table',  source: 'stock',    dim: 'Sub Section', measure: 'qty', topN: 14, w: 560, h: 320, tcols: ['name', 'value', 'share', 'cum'] }
+    ]
+  },
+  {
+    id: 'compact',
+    name: 'Small Multiples',
+    note: 'Many small panels at once — every dimension on one screen, useful when you want the whole picture in a glance.',
+    theme: { bg: '#EDF3FA', card: '#FFFFFF', fg: '#1B2A3A', grid: '#DCE6F0', palette: 'ocean' },
+    charts: [
+      { id: 't4a', title: 'By brand',       type: 'column', source: 'sales', dim: 'Brand',       measure: 'qty', topN: 8,  w: 330, h: 230 },
+      { id: 't4b', title: 'By section',     type: 'column', source: 'sales', dim: 'Section',     measure: 'qty', topN: 8,  w: 330, h: 230 },
+      { id: 't4c', title: 'By sub section', type: 'column', source: 'sales', dim: 'Sub Section', measure: 'qty', topN: 8,  w: 330, h: 230 },
+      { id: 't4d', title: 'By colour',      type: 'column', source: 'sales', dim: 'Colour',      measure: 'qty', topN: 8,  w: 330, h: 230, multi: true },
+      { id: 't4e', title: 'By size',        type: 'column', source: 'sales', dim: 'Size',        measure: 'qty', topN: 10, w: 330, h: 230 },
+      { id: 't4f', title: 'By supplier',    type: 'bar',    source: 'sales', dim: 'Supplier',    measure: 'qty', topN: 8,  w: 330, h: 230 },
+      { id: 't4g', title: 'Sales by month', type: 'line',   source: 'sales', dim: 'Month',       measure: 'qty', topN: 24, w: 680, h: 260 },
+      { id: 't4h', title: 'Stock by section', type: 'doughnut', source: 'stock', dim: 'Section', measure: 'qty', topN: 8, w: 330, h: 260, multi: true }
+    ]
+  },
+  {
+    id: 'controlroom',
+    name: 'Control Room',
+    note: 'Dense and dark, the way a wall display looks. Lots of panels, high-contrast colours, no wasted space.',
+    theme: { bg: '#0E1116', card: '#181D25', fg: '#E6EAF0', grid: '#2A313C', palette: 'neon' },
+    charts: [
+      { id: 't5a', title: 'Sold',          type: 'kpi',    source: 'sales',    dim: 'Brand',      measure: 'qty', w: 210, h: 130 },
+      { id: 't5b', title: 'Purchased',     type: 'kpi',    source: 'purchase', dim: 'Brand',      measure: 'qty', w: 210, h: 130, palette: 'aurora' },
+      { id: 't5c', title: 'Stock',         type: 'kpi',    source: 'stock',    dim: 'Brand',      measure: 'qty', w: 210, h: 130, palette: 'ocean' },
+      { id: 't5d', title: 'Lines sold',    type: 'kpi',    source: 'sales',    dim: 'Item Code',  measure: 'rows', w: 210, h: 130, palette: 'berry' },
+      { id: 't5e', title: 'Sales trend',   type: 'area',   source: 'sales',    dim: 'Month',      measure: 'qty', topN: 24, w: 620, h: 280 },
+      { id: 't5f', title: 'Purchase trend', type: 'area',  source: 'purchase', dim: 'Month',      measure: 'qty', topN: 24, w: 620, h: 280, palette: 'aurora' },
+      { id: 't5g', title: 'Top articles',  type: 'bar',    source: 'sales',    dim: 'Article No', measure: 'qty', topN: 12, w: 410, h: 300 },
+      { id: 't5h', title: 'Top colours',   type: 'bar',    source: 'sales',    dim: 'Colour',     measure: 'qty', topN: 12, w: 410, h: 300, multi: true },
+      { id: 't5i', title: 'Top sizes',     type: 'bar',    source: 'sales',    dim: 'Size',       measure: 'qty', topN: 12, w: 410, h: 300, palette: 'ocean' },
+      { id: 't5j', title: 'Article detail', type: 'table', source: 'sales',    dim: 'Article No', measure: 'qty', topN: 15, w: 640, h: 300, tcols: ['name', 'rank', 'value', 'share', 'cum'] }
+    ]
+  },
+  {
+    id: 'classic',
+    name: 'Retail Classic',
+    note: 'The standard StockLedger board on paper colours — what the Dashboard has always looked like.',
+    theme: { bg: '#F6F1E4', card: '#FFFDF8', fg: '#241C14', grid: '#E4DBC6', palette: 'rust' },
+    charts: null   // null means "the built-in default set"
+  }
+];
+
+function applyDashTemplate(tplId) {
+  if (!boardEditable()) return;
+  const t = DASH_TEMPLATES.find(x => x.id === tplId);
+  if (!t) return;
+  Boards.dash.charts = t.charts ? JSON.parse(JSON.stringify(t.charts)) : DEFAULT_CHARTS.slice();
+  Boards.dash.filters = [];
+  Boards.dash.order = {};
+  saveBoard('dash');
+  if (t.theme) {
+    Object.assign(BoardTheme, t.theme, { preset: 'template:' + t.id });
+    saveBoardTheme();      // this repaints every board for us
+  } else renderBoard('dash');
+  toast('"' + t.name + '" applied. Every card is still yours to edit.');
+}
+
+/** A tiny CSS mock of each layout, so the gallery shows the shape and the
+ *  colours before you commit to it. */
+function templateThumb(t) {
+  const pal = paletteById((t.theme && t.theme.palette) || 'rust').colors;
+  const shapes = [
+    'k', 'k', 'k', 'wide', 'half', 'half'
+  ];
+  return '<span class="tpl-thumb" style="background:' + (t.theme ? t.theme.bg : '#F6F1E4') + '">' +
+    shapes.map((s, i) =>
+      '<span class="tt ' + s + '" style="background:' + (t.theme ? t.theme.card : '#fff') + '">' +
+        '<i style="background:' + pal[i % pal.length] + '"></i></span>').join('') +
+  '</span>';
+}
+
+function openTemplateGallery() {
+  if (!boardEditable()) return;
+  const pop = document.createElement('div');
+  pop.className = 'modal-backdrop';
+  pop.innerHTML = '<div class="modal-box tpl-gallery">' +
+    '<h3>Ready-made dashboards</h3>' +
+    '<p class="drill-subtitle">Pick a starting point. It sets the cards and the colour scheme in one go \u2014 ' +
+      'after that you can edit, recolour, resize or replace anything on it, exactly like a board you built yourself. ' +
+      'Your current cards are replaced, so copy anything you want to keep first.</p>' +
+    '<div class="tpl-grid">' +
+      DASH_TEMPLATES.map(t =>
+        '<button class="tpl-card" data-tpl="' + t.id + '">' +
+          templateThumb(t) +
+          '<strong>' + escapeHtml(t.name) + '</strong>' +
+          '<span>' + escapeHtml(t.note) + '</span>' +
+          '<span class="tpl-count">' + (t.charts ? t.charts.length : DEFAULT_CHARTS.length) + ' cards</span>' +
+        '</button>').join('') +
+    '</div>' +
+    '<div class="modal-actions"><span class="spacer"></span>' +
+      '<button class="ghost-btn small" id="tpl-cancel">Close</button></div>' +
+    '</div>';
+  document.body.appendChild(pop);
+
+  pop.querySelector('#tpl-cancel').onclick = () => pop.remove();
+  pop.addEventListener('click', e => { if (e.target === pop) pop.remove(); });
+  pop.querySelectorAll('.tpl-card').forEach(b => b.addEventListener('click', () => {
+    applyDashTemplate(b.dataset.tpl);
+    pop.remove();
+  }));
 }
 
 function initBoards() {
@@ -7820,44 +8376,48 @@ function initBoards() {
    ['perf', 'perf-add-chart', 'perf-reset', 'perf-clear-filters', PERF_DEFAULT_CHARTS]]
   .forEach(([id, addId, resetId, clearId, defaults]) => {
     const add = document.getElementById(addId);
-    if (add) add.addEventListener('click', () => {
-      if (Boards.locked) { toast('The layout is locked - unlock it in Settings.'); return; }
-      openBoardChartEditor(id, null);
-    });
+    if (add) add.addEventListener('click', () => openBoardChartEditor(id, null));
     const reset = document.getElementById(resetId);
     if (reset) reset.addEventListener('click', () => {
+      if (!boardEditable()) return;
       Boards[id].charts = defaults.slice();
       Boards[id].filters = [];
+      Boards[id].order = {};
       saveBoard(id); renderBoard(id);
       toast('Charts reset to the standard set.');
     });
     const clear = document.getElementById(clearId);
-    if (clear) clear.addEventListener('click', () => { Boards[id].filters = []; renderBoard(id); });
-    const pres = document.getElementById(id + '-present');
-    if (pres) pres.addEventListener('click', () => enterPresent(id));
+    if (clear) clear.addEventListener('click', () => { Boards[id].filters = []; refreshBoardData(id); });
+  });
+
+  const tpl = document.getElementById('dash-templates');
+  if (tpl) tpl.addEventListener('click', openTemplateGallery);
+
+  // Esc leaves an enlarged card
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && Maxed.cardId) { e.preventDefault(); closeCardMax(); }
   });
 }
 
 /* ---------------------------------------------------------------
-   16c. PRESENT MODE + BOARD BACKGROUNDS
+   16d. BOARD BACKGROUNDS
    ---------------------------------------------------------------
-   Present: the board fills the screen with the sidebar and toolbars
-   out of the way, one chart at a time or all together, and clicking
-   still cross-filters. Esc leaves.
-   Background: pick the canvas colour, the card colour and the text
-   colour, or take one of the presets.
+   Pick the canvas colour, the card colour, the text colour and the
+   default chart palette, or take one of the presets.
    --------------------------------------------------------------- */
 
 const BOARD_PRESETS = [
-  { id: 'paper',  name: 'Paper',        bg: '#F6F1E4', card: '#FFFDF8', fg: '#241C14', grid: '#E4DBC6' },
-  { id: 'white',  name: 'Clean white',  bg: '#FFFFFF', card: '#FFFFFF', fg: '#1F2933', grid: '#E3E6EA' },
-  { id: 'grey',   name: 'Soft grey',    bg: '#EEF1F4', card: '#FFFFFF', fg: '#1F2933', grid: '#D8DEE4' },
-  { id: 'navy',   name: 'Dark navy',    bg: '#121B2A', card: '#1B2739', fg: '#E7EDF3', grid: '#2A3A50' },
-  { id: 'char',   name: 'Charcoal',     bg: '#1C1C1E', card: '#2A2A2D', fg: '#EDEDEF', grid: '#3A3A3E' },
-  { id: 'forest', name: 'Deep green',   bg: '#10231C', card: '#183129', fg: '#E4F0EA', grid: '#27453A' }
+  { id: 'paper',  name: 'Paper',       bg: '#F6F1E4', card: '#FFFDF8', fg: '#241C14', grid: '#E4DBC6', palette: 'rust' },
+  { id: 'white',  name: 'Clean white', bg: '#FFFFFF', card: '#FFFFFF', fg: '#1F2933', grid: '#E3E6EA', palette: 'ocean' },
+  { id: 'grey',   name: 'Soft grey',   bg: '#EEF1F4', card: '#FFFFFF', fg: '#1F2933', grid: '#D8DEE4', palette: 'ocean' },
+  { id: 'navy',   name: 'Dark navy',   bg: '#121B2A', card: '#1B2739', fg: '#E7EDF3', grid: '#2A3A50', palette: 'neon' },
+  { id: 'char',   name: 'Charcoal',    bg: '#1C1C1E', card: '#2A2A2D', fg: '#EDEDEF', grid: '#3A3A3E', palette: 'neon' },
+  { id: 'plum',   name: 'Deep plum',   bg: '#1A0F2E', card: '#251643', fg: '#EDE6FA', grid: '#3A2560', palette: 'aurora' },
+  { id: 'forest', name: 'Deep green',  bg: '#10231C', card: '#183129', fg: '#E4F0EA', grid: '#27453A', palette: 'forest' }
 ];
 
-const BoardTheme = { bg: '#F6F1E4', card: '#FFFDF8', fg: '#241C14', grid: '#E4DBC6', preset: 'paper' };
+const BoardTheme = { bg: '#F6F1E4', card: '#FFFDF8', fg: '#241C14', grid: '#E4DBC6',
+                     preset: 'paper', palette: 'rust' };
 
 function loadBoardTheme() {
   try {
@@ -7890,132 +8450,13 @@ function isDarkColour(hex) {
 function boardTextColour() { return BoardTheme.fg || '#241C14'; }
 function boardGridColour() { return BoardTheme.grid || '#E4DBC6'; }
 
-/* ---- present mode ---- */
-const Present = { boardId: null, home: null, index: -1 };
-
-function ensurePresentDom() {
-  if (document.getElementById('present-overlay')) return;
-  const d = document.createElement('div');
-  d.id = 'present-overlay';
-  d.className = 'present-overlay';
-  d.style.display = 'none';
-  d.innerHTML =
-    '<div class="present-bar">' +
-      '<span class="present-title" id="present-title"></span>' +
-      '<span class="present-filters" id="present-filters"></span>' +
-      '<span class="spacer"></span>' +
-      '<button class="ghost-btn small" id="present-prev" title="Previous chart">\u2039</button>' +
-      '<span class="present-count" id="present-count"></span>' +
-      '<button class="ghost-btn small" id="present-next" title="Next chart">\u203A</button>' +
-      '<button class="ghost-btn small" id="present-all" title="Show every chart">Show all</button>' +
-      '<button class="ghost-btn small" id="present-full" title="Full screen">\u26F6</button>' +
-      '<button class="ghost-btn small" id="present-exit" title="Leave (Esc)">\u2715 Exit</button>' +
-    '</div>' +
-    '<div class="present-stage" id="present-stage"></div>';
-  document.body.appendChild(d);
-
-  document.getElementById('present-exit').addEventListener('click', exitPresent);
-  document.getElementById('present-prev').addEventListener('click', () => stepPresent(-1));
-  document.getElementById('present-next').addEventListener('click', () => stepPresent(1));
-  document.getElementById('present-all').addEventListener('click', () => { Present.index = -1; layoutPresent(); });
-  document.getElementById('present-full').addEventListener('click', togglePresentFullscreen);
-
-  document.addEventListener('keydown', e => {
-    if (!Present.boardId) return;
-    if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); stepPresent(1); }
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); stepPresent(-1); }
-    else if (e.key === 'Home') { e.preventDefault(); Present.index = -1; layoutPresent(); }
-  });
-}
-
-function enterPresent(boardId) {
-  ensurePresentDom();
-  const grid = document.getElementById(BOARD_DEFS[boardId].grid);
-  if (!grid) return;
-
-  Present.boardId = boardId;
-  Present.home = grid.parentNode;
-  Present.index = -1;
-
-  document.getElementById('present-stage').appendChild(grid);
-  document.getElementById('present-title').textContent =
-    (boardId === 'dash' ? 'Dashboard' : 'Product Performance');
-  document.getElementById('present-overlay').style.display = 'flex';
-  document.body.classList.add('presenting');
-  modalOpen('present-overlay', exitPresent);
-  layoutPresent();
-  togglePresentFullscreen(true);
-}
-
-function exitPresent() {
-  const boardId = Present.boardId;
-  if (!boardId) return;
-  const grid = document.getElementById(BOARD_DEFS[boardId].grid);
-  if (grid && Present.home) Present.home.appendChild(grid);
-  document.getElementById('present-overlay').style.display = 'none';
-  document.body.classList.remove('presenting');
-  modalClose('present-overlay');
-  if (document.fullscreenElement && document.exitFullscreen) {
-    try { document.exitFullscreen(); } catch (e) {}
-  }
-  Present.boardId = null; Present.index = -1;
-  if (grid) grid.classList.remove('present-single');
-  renderBoard(boardId);
-}
-
-function stepPresent(dir) {
-  const B = Boards[Present.boardId];
-  if (!B || !B.charts.length) return;
-  if (Present.index === -1) Present.index = dir > 0 ? 0 : B.charts.length - 1;
-  else Present.index = (Present.index + dir + B.charts.length) % B.charts.length;
-  layoutPresent();
-}
-
-/** Either every chart scaled up, or one chart filling the stage. */
-function layoutPresent() {
-  const boardId = Present.boardId;
-  if (!boardId) return;
-  const B = Boards[boardId];
-  const grid = document.getElementById(BOARD_DEFS[boardId].grid);
-  if (!grid) return;
-
-  const single = Present.index >= 0;
-  grid.classList.toggle('present-single', single);
-  [...grid.querySelectorAll('.board-card')].forEach((card, i) => {
-    card.style.display = (!single || i === Present.index) ? '' : 'none';
-    card.style.width = ''; card.style.height = '';   // let CSS size them on stage
-  });
-
-  document.getElementById('present-count').textContent = single
-    ? (Present.index + 1) + ' / ' + B.charts.length
-    : B.charts.length + ' charts';
-
-  const pf = document.getElementById('present-filters');
-  pf.innerHTML = B.filters.length
-    ? B.filters.map(f => '<span class="filter-chip">' + escapeHtml(f.dim) + ': <strong>' +
-        escapeHtml(f.value) + '</strong></span>').join('')
-    : '';
-
-  Object.keys(B.instances).forEach(k => {
-    const inst = B.instances[k];
-    if (inst && inst.resize) { try { inst.resize(); } catch (e) {} }
-  });
-}
-
-function togglePresentFullscreen(force) {
-  const el = document.getElementById('present-overlay');
-  if (!el) return;
-  const on = !!document.fullscreenElement;
-  if (force === true && on) return;
-  if (!on && el.requestFullscreen) { try { el.requestFullscreen(); } catch (e) {} }
-  else if (on && force !== true && document.exitFullscreen) { try { document.exitFullscreen(); } catch (e) {} }
-}
-
 /* ---- background settings UI ---- */
 function renderBoardBackgroundSettings(wrap) {
   const html =
     '<h3 class="snap-set-title">Chart background</h3>' +
-    '<p class="drill-subtitle">Applies to the Dashboard, the Product Performance charts and Present mode.</p>' +
+    '<p class="drill-subtitle">Applies to the Dashboard and the Product Performance charts. ' +
+      'A preset sets the canvas, the cards, the text and the default chart colours together; ' +
+      'change any one of them below and the rest stay put.</p>' +
     '<div class="swatch-grid">' +
       BOARD_PRESETS.map(p =>
         '<button class="swatch bg-preset' + (BoardTheme.preset === p.id ? ' active' : '') + '" data-preset="' + p.id + '">' +
@@ -8032,6 +8473,16 @@ function renderBoardBackgroundSettings(wrap) {
       '<input type="color" id="bt-fg" value="' + BoardTheme.fg + '"><span class="hexcode">' + BoardTheme.fg + '</span>' +
       '<label class="toolbar-label">Grid lines</label>' +
       '<input type="color" id="bt-grid" value="' + (BoardTheme.grid || '#E4DBC6') + '"><span class="hexcode">' + (BoardTheme.grid || '#E4DBC6') + '</span>' +
+    '</div>' +
+    '<h3 class="snap-set-title">Default chart colours</h3>' +
+    '<p class="drill-subtitle">Every chart set to "Follow the board" uses this palette. ' +
+      'A chart with its own palette or its own picked colours keeps them.</p>' +
+    '<div class="pal-grid">' +
+      CHART_PALETTES.map(p =>
+        '<button class="pal-btn' + ((BoardTheme.palette || 'rust') === p.id ? ' active' : '') + '" data-pal="' + p.id + '">' +
+          '<span class="pal-strip">' + p.colors.slice(0, 8).map(c =>
+            '<i style="background:' + c + '"></i>').join('') + '</span>' + p.name +
+        '</button>').join('') +
     '</div>';
 
   const holder = document.createElement('div');
@@ -8043,6 +8494,12 @@ function renderBoardBackgroundSettings(wrap) {
     if (!p) return;
     BoardTheme.bg = p.bg; BoardTheme.card = p.card; BoardTheme.fg = p.fg;
     BoardTheme.grid = p.grid; BoardTheme.preset = p.id;
+    if (p.palette) BoardTheme.palette = p.palette;
+    saveBoardTheme();
+    renderSettingsBody();
+  }));
+  holder.querySelectorAll('.pal-btn').forEach(b => b.addEventListener('click', () => {
+    BoardTheme.palette = b.dataset.pal;
     saveBoardTheme();
     renderSettingsBody();
   }));
@@ -8059,7 +8516,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v36';
+const BUILD_VERSION = 'v37';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -8091,8 +8548,8 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('col-resize', initColResize);
   safeInit('catalog-prefs', loadCatPrefs);
   safeInit('catalog', initCatalog);
-  safeInit('board-theme', loadBoardTheme);
   safeInit('boards', initBoards);
+  safeInit('board-theme', loadBoardTheme);
   safeInit('prefs-apply', applyPrefsToControls);
   safeInit('snapshot', initSnapshot);
   safeInit('session', initSession);
