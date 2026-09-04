@@ -1780,3 +1780,7 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
   padding: 0 !important;
   border-right: none !important;
 }
+
+/* status pills for the two renamed bands (v43) */
+.cs-low-stock { background: #F7DED7; color: #8C2E1B; }
+.cs-medium-stock { background: #FBEBD2; color: #8A6118; }

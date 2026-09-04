@@ -5995,7 +5995,7 @@ const Catalog = {
   section: 'all',
   sub: 'all',
   search: '',
-  flags: { stockout: false, nosale: false, overstock: false, lowcover: false, healthy: false },
+  flags: { stockout: false, nosale: false, overstock: false, lowstock: false, medium: false, healthy: false },
   sort: 'worstcover',
   sortCol: null,        // clicked column key
   sortDir: -1,
@@ -6173,16 +6173,12 @@ function catalogMetrics(x, days, anchor) {
   // of its max level - yet 202 days of cover labelled it "Overstock". Roughly
   // one row in four carried a word that contradicted its own colour.
   const pct = replenFor(x.path, x.sold, days, x.cbs, x).pct;
-  const lowPct = CatPrefs.lowCoverPct === undefined ? 33 : CatPrefs.lowCoverPct;
-  const overPct = CatPrefs.overstockPct === undefined ? 100 : CatPrefs.overstockPct;
 
   let status;
   if (x.cbs === 0 && x.sold > 0) status = 'Stockout';        // sold out entirely
   else if (x.cbs === 0 && x.sold === 0) status = 'Idle';     // nothing either way
   else if (x.sold === 0) status = 'No sale';                 // stock sitting, nothing moved
-  else if (pct > overPct) status = 'Overstock';
-  else if (pct < lowPct) status = 'Low cover';
-  else status = 'Healthy';
+  else status = stockBandStatus(pct);                        // the band, word for word
   return { avgDaily, cover, sellThrough, daysSince, status, pct };
 }
 
@@ -6200,11 +6196,13 @@ function catalogFiltered(all) {
   if (Catalog.sub !== 'all') rows = rows.filter(r => (r.meta['Sub Section'] || '(blank)') === Catalog.sub);
 
   const f = Catalog.flags;
+  // one chip per status word, so what you filter is what the column says
   if (f.stockout) rows = rows.filter(r => r.status === 'Stockout');
-  if (f.nosale) rows = rows.filter(r => r.sold === 0);
-  if (f.overstock) rows = rows.filter(r => r.status === 'Overstock');
-  if (f.lowcover) rows = rows.filter(r => r.status === 'Low cover');
+  if (f.nosale) rows = rows.filter(r => r.status === 'No sale');
+  if (f.lowstock) rows = rows.filter(r => r.status === 'Low stock');
+  if (f.medium) rows = rows.filter(r => r.status === 'Medium stock');
   if (f.healthy) rows = rows.filter(r => r.status === 'Healthy');
+  if (f.overstock) rows = rows.filter(r => r.status === 'Overstock');
 
   const q = Catalog.search.trim().toLowerCase();
   if (q) {
@@ -6311,17 +6309,18 @@ function initCatalog() {
 
 /** Colour key + the two formulas, shown above the catalog table. */
 function replenLegendHtml() {
+  const b = stockBands();
   const bands = [
-    ['0\u201333%', '#ea9999', 'Low stock'],
-    ['>33\u201366%', '#ffd966', 'Medium stock'],
-    ['>66\u2013100%', '#b6d7a8', 'Good / healthy'],
-    ['>100%', '#b4a7d6', 'Overstock']
+    ['0\u2013' + b.low + '%', '#ea9999', 'Low stock'],
+    ['>' + b.low + '\u2013' + b.mid + '%', '#ffd966', 'Medium stock'],
+    ['>' + b.mid + '\u2013' + b.good + '%', '#b6d7a8', 'Healthy'],
+    ['>' + b.good + '%', '#b4a7d6', 'Overstock']
   ];
   return '<div class="stock-legend"><span class="sl-title">Stock %</span>' +
     bands.map(b => '<span class="sl-item"><span class="sl-sw" style="background:' + b[1] + '"></span>' +
       b[0] + ' \u00b7 ' + b[2] + '</span>').join('') +
     '<span class="sl-note">ML = ADC \u00d7 LT \u00d7 SF, at least MOQ per item in the row \u00b7 ' +
-    'Stock % = (Closing + MIT) \u00f7 ML \u00b7 Status follows these same bands</span></div>';
+    'Stock % = (Closing + MIT) \u00f7 ML \u00b7 the Status column uses these exact bands</span></div>';
 }
 
 /** Sets one field on every design currently listed. */
@@ -7004,12 +7003,33 @@ function replenFor(key, sold, days, cbs, dist) {
 }
 
 /** 0-33 red, 33-66 yellow, 66-100 green, over 100 purple. */
+/* ---- the Stock % bands -------------------------------------------------
+   These four bands are the single definition used by the cell colour, the
+   legend under the toolbar AND the Status column. Before v43 the Status
+   column had its own thresholds, so a row at 40% was coloured "Medium stock"
+   by the legend and simultaneously labelled "Healthy" - 139 rows of your
+   catalogue carried a word that contradicted their own colour.
+   Edit them in Settings > 02 Catalog and all three move together. ------- */
+function stockBands() {
+  const p = CatPrefs;
+  const low = p.bandLow === undefined ? 33 : p.bandLow;
+  const mid = p.bandMid === undefined ? 66 : p.bandMid;
+  const good = p.bandGood === undefined ? 100 : p.bandGood;
+  return { low, mid: Math.max(low, mid), good: Math.max(low, mid, good) };
+}
+
 function stockPctClass(pct) {
-  if (pct > 100) return 'sp-over';
-  if (pct > 66) return 'sp-good';
-  if (pct > 33) return 'sp-mid';
+  const b = stockBands();
+  if (pct > b.good) return 'sp-over';
+  if (pct > b.mid) return 'sp-good';
+  if (pct > b.low) return 'sp-mid';
   return 'sp-low';
 }
+
+/** The word for a band - exactly the same four steps as the colour. */
+const STOCK_BAND_NAME = { 'sp-low': 'Low stock', 'sp-mid': 'Medium stock',
+                          'sp-good': 'Healthy', 'sp-over': 'Overstock' };
+function stockBandStatus(pct) { return STOCK_BAND_NAME[stockPctClass(pct)]; }
 
 function replenCells(key, r) {
   const inp = (field, val, step) =>
@@ -7062,8 +7082,9 @@ const CATPREFS_DEFAULT = {
   lowStockAt: 2,
   // thresholds
   stripUntil: 'opening',  // colour bar under a row stops after this column
-  lowCoverPct: 33,        // Stock % under this reads "Low cover"
-  overstockPct: 100,      // Stock % over this reads "Overstock"
+  bandLow: 33,            // up to here: Low stock
+  bandMid: 66,            // up to here: Medium stock
+  bandGood: 100,          // up to here: Healthy; above it: Overstock
   // replenishment defaults
   defaultADC: 0,      // 0 = work it out from sales; anything else is used as-is
   levels: ['Article No', 'Colour', 'Size'],   // the three drill levels, in order
@@ -7308,18 +7329,21 @@ function renderCatalogSettings(wrap) {
       'column to the last. Pick where it should stop instead. A column that is switched off ' +
       'is skipped, and the bar falls back to the full width.</p>' +
 
-    '<h3 class="snap-set-title">Status thresholds</h3>' +
-    row('Cover days',
-      '<label class="toolbar-label">Low cover under</label>' +
-      '<input type="number" id="cs-lowcover" class="text-input narrow" min="1" max="99" value="' +
-        (CatPrefs.lowCoverPct === undefined ? 33 : CatPrefs.lowCoverPct) + '"> % of max level' +
-      '<label class="toolbar-label">Overstock over</label>' +
-      '<input type="number" id="cs-overstock" class="text-input narrow" min="10" max="900" value="' +
-        (CatPrefs.overstockPct === undefined ? 100 : CatPrefs.overstockPct) + '"> % of max level') +
-    '<p class="drill-subtitle">The Status column reads the same Stock % that colours the row, ' +
-      'so the word always matches the colour. It used to be judged on days of cover, ' +
-      'which is a different measure \u2014 a wide, thin range came out as \u201cOverstock\u201d ' +
-      'even when it held about one piece per size. The Cover column still shows days.</p>' +
+    '<h3 class="snap-set-title">Stock % bands</h3>' +
+    (function () {
+      const b = stockBands();
+      return row('Bands',
+        '<label class="toolbar-label">Low stock up to</label>' +
+        '<input type="number" id="cs-band-low" class="text-input narrow" min="1" max="998" value="' + b.low + '">%' +
+        '<label class="toolbar-label">Medium up to</label>' +
+        '<input type="number" id="cs-band-mid" class="text-input narrow" min="2" max="999" value="' + b.mid + '">%' +
+        '<label class="toolbar-label">Healthy up to</label>' +
+        '<input type="number" id="cs-band-good" class="text-input narrow" min="3" max="2000" value="' + b.good + '">%' +
+        '<span class="drill-count">above that: Overstock</span>');
+    })() +
+    '<p class="drill-subtitle">These four bands drive the Stock % cell colour, the legend above the ' +
+      'table and the Status column \u2014 all three from one place, so the word can never disagree ' +
+      'with the colour again. Stockout, No sale and Idle come first, whatever the percentage.</p>' +
 
     '<h3 class="snap-set-title">Columns</h3>' +
     '<div class="snap-checklist">' +
@@ -7385,8 +7409,9 @@ function renderCatalogSettings(wrap) {
   bindC('cs-strip', e => { CatPrefs.showStrip = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
   bindC('cs-stripuntil', e => { CatPrefs.stripUntil = e.target.value; saveCatPrefs(); renderCatalog(); });
-  bindC('cs-lowcover', e => { CatPrefs.lowCoverPct = Math.max(1, parseInt(e.target.value, 10) || 33); saveCatPrefs(); renderCatalog(); });
-  bindC('cs-overstock', e => { CatPrefs.overstockPct = Math.max(10, parseInt(e.target.value, 10) || 100); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-band-low', e => { CatPrefs.bandLow = Math.max(1, parseInt(e.target.value, 10) || 33); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-band-mid', e => { CatPrefs.bandMid = Math.max(2, parseInt(e.target.value, 10) || 66); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-band-good', e => { CatPrefs.bandGood = Math.max(3, parseInt(e.target.value, 10) || 100); saveCatPrefs(); renderCatalog(); });
 
   wrap.querySelectorAll('.cs-col').forEach(cb => cb.addEventListener('change', () => {
     CatPrefs.columns = [...wrap.querySelectorAll('.cs-col:checked')].map(x => x.value);
@@ -8745,7 +8770,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v42';
+const BUILD_VERSION = 'v43';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
