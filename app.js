@@ -6053,7 +6053,7 @@ function buildCatalog() {
 
   const root = { key: '__root__', path: '', depth: -1, children: new Map(),
                  sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null,
-                 meta: {}, skus: null };
+                 meta: {}, skuMap: null };
 
   function nodeFor(rec) {
     // walks down one branch, creating the nodes on the way
@@ -6067,8 +6067,8 @@ function buildCatalog() {
                   path: (node.path ? node.path + '|' : '') + levels[i] + '=' + key,
                   children: new Map(), sold: 0, purchased: 0, obs: 0, cbs: 0,
                   hasOBS: false, lastSale: null, meta: {},
-                  // only the deepest level keeps the set; parents just add up
-                  skus: (i === levels.length - 1) ? new Set() : null };
+                  // only the deepest level tracks each unit; parents merge
+                  skuMap: (i === levels.length - 1) ? new Map() : null };
         node.children.set(key, child);
       }
       chain.push(child);
@@ -6102,20 +6102,24 @@ function buildCatalog() {
     const q = recQty(r), sku = skuOf(r);
     nodeFor(r).forEach(n => {
       n.sold += q;
-      if (n.skus) n.skus.add(sku);
+      if (n.skuMap) n.skuMap.set(sku, (n.skuMap.get(sku) || 0) + q);
       if (r.Date && (!n.lastSale || r.Date > n.lastSale)) n.lastSale = r.Date;
       addMeta(n, r);
     });
   });
   purch.forEach(r => {
     const q = recQty(r), sku = skuOf(r);
-    nodeFor(r).forEach(n => { n.purchased += q; if (n.skus) n.skus.add(sku); addMeta(n, r); });
+    nodeFor(r).forEach(n => {
+      n.purchased += q;
+      if (n.skuMap && !n.skuMap.has(sku)) n.skuMap.set(sku, 0);   // stocked, never sold
+      addMeta(n, r);
+    });
   });
   stock.forEach(r => {
     const cb = recQty(r), ob = recOpeningQty(r), sku = skuOf(r);
     nodeFor(r).forEach(n => {
       n.cbs += cb;
-      if (n.skus) n.skus.add(sku);
+      if (n.skuMap && !n.skuMap.has(sku)) n.skuMap.set(sku, 0);
       if (ob !== null) { n.obs += ob; n.hasOBS = true; }
       addMeta(n, r);
     });
@@ -6126,12 +6130,27 @@ function buildCatalog() {
     node.childList = [...node.children.values()];
     node.childList.forEach(finish);
     node.childList.sort((a, b) => b.sold - a.sold || b.cbs - a.cbs);
-    // How many stock-keeping units sit under this row. The deepest level counts
-    // them directly; every level above just adds up its children.
-    node.skuCount = node.skus
-      ? Math.max(1, node.skus.size)
-      : Math.max(1, node.childList.reduce((a, c) => a + (c.skuCount || 1), 0));
-    node.skus = null;                        // the set has done its job, let it go
+    // Every row keeps the sales of each stock-keeping unit beneath it, sorted,
+    // with a running total. That is what lets the max level answer "how much of
+    // this is fast enough to justify more than the minimum order" for any
+    // lead time you type in - see maxLevelFor.
+    let arr;
+    if (node.skuMap) {
+      arr = Float64Array.from(node.skuMap.values());
+      node.skuMap = null;
+    } else {
+      let total = 0;
+      node.childList.forEach(c => { total += c.skuSold.length; });
+      arr = new Float64Array(total);
+      let at = 0;
+      node.childList.forEach(c => { arr.set(c.skuSold, at); at += c.skuSold.length; });
+    }
+    arr.sort();
+    const cum = new Float64Array(arr.length + 1);
+    for (let i = 0; i < arr.length; i++) cum[i + 1] = cum[i] + arr[i];
+    node.skuSold = arr;
+    node.skuCum = cum;
+    node.skuCount = Math.max(1, arr.length);
     if (node !== root) Object.assign(node, catalogMetrics(node, days, anchor));
   })(root);
 
@@ -6144,14 +6163,27 @@ function catalogMetrics(x, days, anchor) {
   const opening = x.sold + x.cbs;
   const sellThrough = opening > 0 ? (x.sold / opening) * 100 : 0;
   const daysSince = x.lastSale ? Math.round((anchor - x.lastSale) / 86400000) : null;
+
+  // Status is read off the SAME Stock % that colours the row, so the word and
+  // the colour can never disagree.
+  //
+  // It used to be judged on days of cover instead, which measures something
+  // different and punished breadth. "Gharara sait" held 128 pieces spread over
+  // 116 article/colour/size combinations - about one piece each, and only 55%
+  // of its max level - yet 202 days of cover labelled it "Overstock". Roughly
+  // one row in four carried a word that contradicted its own colour.
+  const pct = replenFor(x.path, x.sold, days, x.cbs, x).pct;
+  const lowPct = CatPrefs.lowCoverPct === undefined ? 33 : CatPrefs.lowCoverPct;
+  const overPct = CatPrefs.overstockPct === undefined ? 100 : CatPrefs.overstockPct;
+
   let status;
-  if (x.cbs === 0 && x.sold > 0) status = 'Stockout';
-  else if (x.sold === 0 && x.cbs > 0) status = 'No sale';
-  else if (cover !== Infinity && cover < (CatPrefs.lowCoverDays || 15) && x.sold > 0) status = 'Low cover';
-  else if (cover === Infinity || cover > (CatPrefs.overstockDays || 120)) status = 'Overstock';
-  else if (x.sold > 0) status = 'Healthy';
-  else status = 'Idle';
-  return { avgDaily, cover, sellThrough, daysSince, status };
+  if (x.cbs === 0 && x.sold > 0) status = 'Stockout';        // sold out entirely
+  else if (x.cbs === 0 && x.sold === 0) status = 'Idle';     // nothing either way
+  else if (x.sold === 0) status = 'No sale';                 // stock sitting, nothing moved
+  else if (pct > overPct) status = 'Overstock';
+  else if (pct < lowPct) status = 'Low cover';
+  else status = 'Healthy';
+  return { avgDaily, cover, sellThrough, daysSince, status, pct };
 }
 
 function catalogStatusClass(s) {
@@ -6288,7 +6320,8 @@ function replenLegendHtml() {
   return '<div class="stock-legend"><span class="sl-title">Stock %</span>' +
     bands.map(b => '<span class="sl-item"><span class="sl-sw" style="background:' + b[1] + '"></span>' +
       b[0] + ' \u00b7 ' + b[2] + '</span>').join('') +
-    '<span class="sl-note">ML = ADC \u00d7 LT \u00d7 SF \u00b7 Stock % = (Closing + MIT) \u00f7 ML</span></div>';
+    '<span class="sl-note">ML = ADC \u00d7 LT \u00d7 SF, at least MOQ per item in the row \u00b7 ' +
+    'Stock % = (Closing + MIT) \u00f7 ML \u00b7 Status follows these same bands</span></div>';
 }
 
 /** Sets one field on every design currently listed. */
@@ -6297,8 +6330,11 @@ function replenBulkApply(field, value) {
   if (!rows.length) { toast('Nothing on screen to apply to.'); return; }
   const v = parseFloat(value);
   if (isNaN(v)) { toast('Enter a number first.'); return; }
+  // Keyed by path, not key. Overrides are stored and read by path everywhere
+  // else, so writing them under the plain name meant nothing ever picked them
+  // up and the button looked dead.
   rows.forEach(d => {
-    const o = Replen.overrides[d.key] || (Replen.overrides[d.key] = {});
+    const o = Replen.overrides[d.path] || (Replen.overrides[d.path] = {});
     o[field] = v;
   });
   saveReplen();
@@ -6339,7 +6375,7 @@ function wireReplenBulk() {
     const rows = Catalog.lastRows || [];
     if (!rows.length) { toast('Nothing on screen to apply to.'); return; }
     rows.forEach(d => {
-      const o = Replen.overrides[d.key] || (Replen.overrides[d.key] = {});
+      const o = Replen.overrides[d.path] || (Replen.overrides[d.path] = {});
       picked.forEach(([f, v]) => { o[f] = v; });
     });
     saveReplen();
@@ -6411,7 +6447,7 @@ function renderCatalog() {
   const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
   const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
   // totals now use each row's own path, and add up the max level as well
-  const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs, r.skuCount));
+  const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs, r));
   const tReorder = reps.reduce((a, x) => a + x.reorder, 0);
   const totMl = reps.reduce((a, x) => a + x.ml, 0);
   const tOnHand = rows.reduce((a, r) => a + (r.cbs || 0), 0);
@@ -6491,7 +6527,7 @@ function catSortValue(d, col) {
     // path, not key: overrides are stored per path, and the max level needs the
     // row's own unit count. Sorting used to read a different number from the
     // one on screen.
-    const r = replenFor(d.path, d.sold, catalogDays(), d.cbs, d.skuCount);
+    const r = replenFor(d.path, d.sold, catalogDays(), d.cbs, d);
     return col === 'pct' ? (isFinite(r.pct) ? r.pct : 1e12) : r[col];
   }
   return d[col];
@@ -6509,14 +6545,14 @@ function catalogNodeRow(n, days) {
   const open = !!Catalog.expanded[n.path];
   const img = Catalog.images[n.path];
   const kids = n.childList || [];
-  const r = replenFor(n.path, n.sold, days, n.cbs, n.skuCount);
+  const r = replenFor(n.path, n.sold, days, n.cbs, n);
   const band = stockPctClass(r.pct);
 
   // The colour column shows one block per child, tinted by that child's own
   // stock band - no colour swatches, the colour means stock health.
   const maxDots = CatPrefs.maxDots || 10;
   const dots = kids.slice(0, maxDots).map(k => {
-    const kr = replenFor(k.path, k.sold, days, k.cbs, k.skuCount);
+    const kr = replenFor(k.path, k.sold, days, k.cbs, k);
     return '<span class="cat-band ' + stockPctClass(kr.pct) + '" title="' +
       escapeHtml(k.key + ' \u2014 ' + fmtNum(k.cbs) + ' in stock, ' + fmtNum(k.sold) + ' sold, ' +
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
@@ -6539,7 +6575,7 @@ function catalogNodeRow(n, days) {
       '<button class="cat-popout" title="Open full details in a separate window">\u29C9</button>' +
     '</td>' +
     (catColOn('category') ? '<td class="cat-cat">' + escapeHtml(n.meta['Sub Section'] || n.meta.Section || '\u2014') + '</td>' : '') +
-    (catColOn('colours') ? '<td class="cat-c-colours">' + dots + '</td>' : '') +
+    (catColOn('colours') ? '<td class="cat-c-colours"><span class="cat-bands">' + dots + '</span></td>' : '') +
     (catColOn('sold') ? '<td class="num">' + fmtNum(n.sold) + '</td>' : '') +
     (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(n.purchased) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num obs-col">' + (n.hasOBS ? fmtNum(n.obs) : '\u2014') + '</td>' : '') +
@@ -6562,7 +6598,7 @@ function catalogNodeRow(n, days) {
 function catalogStripRow(n, days) {
   const kids = n.childList || [];
   const blocks = kids.map(k => {
-    const kr = replenFor(k.path, k.sold, days, k.cbs, k.skuCount);
+    const kr = replenFor(k.path, k.sold, days, k.cbs, k);
     return '<span class="cs-block ' + stockPctClass(kr.pct) + '" style="flex:' + Math.max(1, k.cbs) + '" ' +
       'title="' + escapeHtml(k.key + ': ' + fmtNum(k.cbs) + ' in stock, ' +
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
@@ -6723,7 +6759,7 @@ function exportCatalogCSV() {
   const days = catalogDays();
   (function walk(nodes, trail) {
     nodes.forEach(n => {
-      const r = replenFor(n.path, n.sold, days, n.cbs, n.skuCount);
+      const r = replenFor(n.path, n.sold, days, n.cbs, n);
       const line = trail.concat([n.key]);
       out.push([
         line.join(' > '), n.dim || '', n.meta.Section || '', n.meta['Sub Section'] || '',
@@ -6781,7 +6817,58 @@ function loadReplen() {
 function saveReplen() { Store.set('sl_replen', JSON.stringify(Replen.overrides)); }
 function saveReplenBulk() { Store.set('sl_replen_bulk', JSON.stringify(Replen.bulk)); }
 
-function replenFor(key, sold, days, cbs, skuCount) {
+/** The max level of a row.
+ *
+ *  A summary row like "T-SHIRT" is not one garment - it covers hundreds of
+ *  article/colour/size combinations, and each of those needs its own minimum on
+ *  the shelf. So the row's max level is the sum of its units' max levels:
+ *
+ *      ML = SUM over units of  max( that unit's ADC x LT x SF , MOQ )
+ *
+ *  Two earlier versions of this got it wrong. Up to v38 the whole row was
+ *  floored at a single MOQ, so T-SHIRT came out at 151 against 4,582 in stock,
+ *  Stock % read 3,033%, and every row on the page turned the same "Overstock"
+ *  colour. v39 floored it at MOQ x unit count, which fixed the percentages but
+ *  made the sum jump in one step - the demand side never showed until it beat
+ *  the whole floor at once, so typing a new LT or SF moved nothing.
+ *
+ *  Doing the sum properly fixes both. Fast-selling units pass the minimum one
+ *  at a time as the lead time grows, so the total responds to every change,
+ *  and a row of slow sellers still sits at its honest floor.
+ *
+ *  `dist` is the row's sorted unit sales with a running total, built in
+ *  buildCatalog. A bare number means "this many units, sales spread evenly";
+ *  nothing at all means a single unit, which is the plain textbook formula.
+ */
+function maxLevelFor(dist, adc, lt, sf, moq, days, soldTotal) {
+  const floor = moq > 0 ? moq : 1;
+  const sorted = dist && dist.skuSold;
+  const units = Math.max(1, sorted ? sorted.length : (typeof dist === 'number' ? dist : (dist && dist.skuCount) || 1));
+
+  // The demand each unit has to cover. An ADC typed on the row overrides what
+  // was actually sold, so scale the units to match what was typed.
+  const wanted = adc * days;                       // what the row "sells" per period
+  if (!sorted || !sorted.length || !(soldTotal > 0)) {
+    // no spread to work from: treat the units as identical
+    const each = Math.max(0, wanted) / units;
+    return { ml: units * Math.max((each / days) * lt * sf, floor), units };
+  }
+  const scale = wanted / soldTotal;                // 1 unless ADC was overridden
+  const c = scale * lt * sf / days;                // unit sales x c = its demand cover
+  if (!(c > 0)) return { ml: units * floor, units };
+
+  // Units selling less than this can never beat the minimum order, so they sit
+  // at the floor; the rest are driven by their own demand. Binary search finds
+  // the split, and the running total sums the fast half in one step.
+  const threshold = floor / c;
+  const cum = dist.skuCum;
+  let lo = 0, hi = sorted.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] < threshold) lo = mid + 1; else hi = mid; }
+  const ml = floor * lo + c * (cum[sorted.length] - cum[lo]);
+  return { ml, units };
+}
+
+function replenFor(key, sold, days, cbs, dist) {
   const o = Replen.overrides[key] || {};
   const autoAdc = days > 0 ? sold / days : 0;
   const adc = (o.adc !== undefined && o.adc !== null) ? o.adc
@@ -6791,20 +6878,9 @@ function replenFor(key, sold, days, cbs, skuCount) {
   const moq = (o.moq !== undefined && o.moq !== null) ? o.moq : (CatPrefs.defaultMOQ || 12);
   const mit = (o.mit !== undefined && o.mit !== null) ? o.mit : 0;
 
-  // A max level below the minimum order quantity makes no sense: you could never
-  // order that little. Flooring at MOQ also stops slow sellers (ADC near zero)
-  // producing percentages in the tens of thousands.
-  //
-  // The floor has to count the ROW, not one garment. A summary row like
-  // "T-SHIRT" is not a single item - it is thousands of item codes, and every
-  // one of them needs its own minimum on the shelf. Flooring such a row at a
-  // bare MOQ was the v38 bug: T-SHIRT came out with a max level of 151 against
-  // 4,582 in stock, so Stock % read 3,033% and every row on the page turned the
-  // same "Overstock" colour. The floor is now MOQ x however many stock-keeping
-  // units sit under the row, which is 1 for a real item and 7,842 for T-SHIRT.
-  const units = Math.max(1, skuCount || 1);
   const rawMl = adc * lt * sf;
-  const ml = Math.max(rawMl, (moq > 0 ? moq : 1) * units);
+  const lvl = maxLevelFor(dist, adc, lt, sf, moq, days, sold);
+  const ml = lvl.ml, units = lvl.units;
   // Stock % = Closing stock / Max Level.
   // CBS from the ERP already equals OBS + purchased - sold, so it IS the stock
   // on hand. The old "CBS + purchased - sold" column counted the same movements
@@ -6885,8 +6961,8 @@ const CATPREFS_DEFAULT = {
   showStrip: true,      // colour-coded size bar under each colour row
   lowStockAt: 2,
   // thresholds
-  lowCoverDays: 15,
-  overstockDays: 120,
+  lowCoverPct: 33,        // Stock % under this reads "Low cover"
+  overstockPct: 100,      // Stock % over this reads "Overstock"
   // replenishment defaults
   defaultADC: 0,      // 0 = work it out from sales; anything else is used as-is
   levels: ['Article No', 'Colour', 'Size'],   // the three drill levels, in order
@@ -7118,9 +7194,15 @@ function renderCatalogSettings(wrap) {
     '<h3 class="snap-set-title">Status thresholds</h3>' +
     row('Cover days',
       '<label class="toolbar-label">Low cover under</label>' +
-      '<input type="number" id="cs-lowcover" class="text-input narrow" min="1" max="120" value="' + CatPrefs.lowCoverDays + '"> days' +
+      '<input type="number" id="cs-lowcover" class="text-input narrow" min="1" max="99" value="' +
+        (CatPrefs.lowCoverPct === undefined ? 33 : CatPrefs.lowCoverPct) + '"> % of max level' +
       '<label class="toolbar-label">Overstock over</label>' +
-      '<input type="number" id="cs-overstock" class="text-input narrow" min="10" max="900" value="' + CatPrefs.overstockDays + '"> days') +
+      '<input type="number" id="cs-overstock" class="text-input narrow" min="10" max="900" value="' +
+        (CatPrefs.overstockPct === undefined ? 100 : CatPrefs.overstockPct) + '"> % of max level') +
+    '<p class="drill-subtitle">The Status column reads the same Stock % that colours the row, ' +
+      'so the word always matches the colour. It used to be judged on days of cover, ' +
+      'which is a different measure \u2014 a wide, thin range came out as \u201cOverstock\u201d ' +
+      'even when it held about one piece per size. The Cover column still shows days.</p>' +
 
     '<h3 class="snap-set-title">Columns</h3>' +
     '<div class="snap-checklist">' +
@@ -7185,8 +7267,8 @@ function renderCatalogSettings(wrap) {
   bindC('cs-maxsizes', e => { CatPrefs.maxSizeChips = Math.max(4, Math.min(60, parseInt(e.target.value, 10) || 24)); saveCatPrefs(); renderCatalog(); });
   bindC('cs-strip', e => { CatPrefs.showStrip = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
-  bindC('cs-lowcover', e => { CatPrefs.lowCoverDays = Math.max(1, parseInt(e.target.value, 10) || 15); saveCatPrefs(); renderCatalog(); });
-  bindC('cs-overstock', e => { CatPrefs.overstockDays = Math.max(10, parseInt(e.target.value, 10) || 120); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-lowcover', e => { CatPrefs.lowCoverPct = Math.max(1, parseInt(e.target.value, 10) || 33); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-overstock', e => { CatPrefs.overstockPct = Math.max(10, parseInt(e.target.value, 10) || 100); saveCatPrefs(); renderCatalog(); });
 
   wrap.querySelectorAll('.cs-col').forEach(cb => cb.addEventListener('change', () => {
     CatPrefs.columns = [...wrap.querySelectorAll('.cs-col:checked')].map(x => x.value);
@@ -8545,7 +8627,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v39';
+const BUILD_VERSION = 'v41';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

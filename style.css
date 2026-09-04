@@ -1746,3 +1746,31 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
 
 /* ---- board cards keep still while the numbers change ---- */
 .chart-board .board-card { transition: none; }
+
+
+/* ============ CATALOG: keep the colour chips inside their own column ========
+   Build v41. The chips were loose inline-blocks with no width limit, so a row
+   with many children stretched the Colours cell and pushed Sold / Purchased /
+   Opening off to the right. They now sit in a fixed-width flex box that wraps
+   to at most two lines and clips; the "+N" tail says how many are not shown.
+   Width follows the chip size, so the Settings slider still works.
+   -------------------------------------------------------------------------- */
+.cat-table td.cat-c-colours,
+.cat-table th.cat-c-colours {
+  width: var(--cat-colours-w, 132px);
+  min-width: var(--cat-colours-w, 132px);
+  max-width: var(--cat-colours-w, 132px);
+  overflow: hidden;
+}
+.cat-bands {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  /* two rows of chips, then clip */
+  max-height: calc(var(--cat-dot, 12px) * 2 + 5px);
+  overflow: hidden;
+}
+.cat-bands .cat-band { margin-right: 0; flex: 0 0 auto; }
+.cat-bands .cat-more { margin-left: 0; white-space: nowrap; align-self: center; }
