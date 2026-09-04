@@ -1784,3 +1784,74 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
 /* status pills for the two renamed bands (v43) */
 .cs-low-stock { background: #F7DED7; color: #8C2E1B; }
 .cs-medium-stock { background: #FBEBD2; color: #8A6118; }
+
+
+/* ============================================================================
+   DASHBOARD v44 — dark-theme tables, whole-board expand, new chart types
+   ========================================================================= */
+
+/* ---- tables inside a card follow the board colours -----------------------
+   The mini tables were fixed to the paper palette, so on a dark board they
+   were near-black text on a near-black card. Everything below reads from the
+   board theme instead, so they stay legible whichever background you pick. */
+.board-card .data-table.dash-mini,
+.board-card .data-table.dash-mini td,
+.board-card .data-table.dash-mini th {
+  color: var(--board-fg, var(--text));
+  border-color: var(--board-grid, var(--line));
+  background: transparent;
+}
+.board-card .data-table.dash-mini thead th {
+  background: color-mix(in srgb, var(--board-fg, #241C14) 12%, transparent);
+  color: var(--board-fg, var(--text));
+  border-bottom: 1px solid var(--board-grid, var(--line-strong));
+}
+.board-card .data-table.dash-mini tbody tr:nth-child(even) > td {
+  background: color-mix(in srgb, var(--board-fg, #241C14) 5%, transparent);
+}
+.board-card .data-table.dash-mini tbody tr:hover > td {
+  background: color-mix(in srgb, var(--board-fg, #241C14) 14%, transparent);
+}
+.board-card .data-table.dash-mini tfoot td {
+  background: color-mix(in srgb, var(--board-fg, #241C14) 10%, transparent);
+  color: var(--board-fg, var(--text));
+  border-top: 1px solid var(--board-grid, var(--line-strong));
+  font-weight: 700;
+}
+/* older engines that have no color-mix still need readable rows */
+@supports not (background: color-mix(in srgb, red 50%, blue)) {
+  body.board-dark .board-card .data-table.dash-mini thead th,
+  body.board-dark .board-card .data-table.dash-mini tfoot td { background: rgba(255,255,255,.10); }
+  body.board-dark .board-card .data-table.dash-mini tbody tr:nth-child(even) > td { background: rgba(255,255,255,.05); }
+  body.board-dark .board-card .data-table.dash-mini tbody tr:hover > td { background: rgba(255,255,255,.14); }
+}
+.board-card .board-head h3,
+.board-card .board-meta,
+.board-card .kpi-unit,
+.board-card .kpi-foot { color: var(--board-fg, var(--text)); }
+.board-card .board-meta { opacity: .6; }
+
+/* ---- the whole board enlarged --------------------------------------------
+   Same fixed panel as a single card: it fills the browser tab, no more. */
+.board-max-stage .chart-board.board-maxed-grid {
+  width: 100%; height: 100%; margin: 0;
+  overflow: auto; align-content: flex-start;
+}
+.board-max-stage .chart-board.board-maxed-grid .board-card { position: relative; }
+
+/* ---- custom SVG chart types ---------------------------------------------- */
+.svg-chart { width: 100%; height: 100%; display: block; overflow: visible; }
+.svg-chart text { font-family: var(--font-body); fill: var(--board-fg, var(--text)); }
+.svg-chart .sc-label { font-size: 10px; }
+.svg-chart .sc-value { font-size: 10px; opacity: .75; }
+.svg-chart .sc-axis { stroke: var(--board-grid, var(--line)); stroke-width: 1; }
+.svg-chart .sc-cell { cursor: pointer; transition: opacity .12s; }
+.svg-chart .sc-cell:hover { opacity: .82; }
+.svg-chart .sc-dim { opacity: .18; }
+.svg-chart .sc-tick { font-size: 9px; opacity: .6; }
+.svg-chart .sc-title { font-size: 10.5px; font-weight: 600; }
+.sc-empty {
+  display: flex; align-items: center; justify-content: center; height: 100%;
+  font-size: 11.5px; opacity: .6; text-align: center; padding: 10px;
+  color: var(--board-fg, var(--text));
+}
