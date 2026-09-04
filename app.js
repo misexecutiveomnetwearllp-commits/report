@@ -2019,9 +2019,7 @@ function buildAnalysis(dim, targetDays) {
       ? Math.round((anchor - (s.ageWeighted / s.ageQtySum)) / 86400000)
       : (s.oldestStock ? Math.round((anchor - s.oldestStock) / 86400000) : null);
     const oldestAgeDays = s.oldestStock ? Math.round((anchor - s.oldestStock) / 86400000) : null;
-    // OBS - CBS = is period mein stock kitna ghata (ya badha)
-    const movement = availableQty({ cbs: s.stock, purchased: s.purchased, sold: s.sold });
-    return Object.assign({}, s, { avgDaily, daysCover, suggested, sellThrough, daysSinceLastSale, stockAgeDays, oldestAgeDays, movement });
+    return Object.assign({}, s, { avgDaily, daysCover, suggested, sellThrough, daysSinceLastSale, stockAgeDays, oldestAgeDays });
   });
 
   // ABC classification — Pareto on quantity sold
@@ -2953,7 +2951,6 @@ function renderPerformance() {
   ]
   .concat(hasOBS ? [['opening', 'Opening (OBS)', true]] : [])
   .concat([['stock', stockLabel, true]])
-  .concat([['movement', 'Available', true]])
   .concat([
     ['sellThrough', 'Sell-through', true],
     ['lastSale', 'Last sold', false],
@@ -3071,10 +3068,6 @@ function perfMetricCells(r) {
     else if (k === 'purchased') out += '<td class="num cat-purch">' + fmtNum(r.purchased || 0) + '</td>';
     else if (k === 'opening') out += '<td class="num obs-col">' + (r.hasOpening ? fmtNum(r.opening) : '\u2014') + '</td>';
     else if (k === 'stock') out += '<td class="num cbs-col">' + fmtNum(r.stock) + '</td>';
-    else if (k === 'movement') out += '<td class="num cat-avail" title="' +
-        ((CatPrefs.availableFormula || 'computed') === 'closing'
-          ? 'Closing balance (CBS)' : 'CBS + Purchased \u2212 Sold') + '">' +
-        fmtNum(r.movement || 0) + '</td>';
     else if (k === 'sellThrough') out += '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>';
     else if (k === 'daysCover') out += '<td class="num">' + (r.daysCover === Infinity ? '\u221E' : fmtNum(r.daysCover, 0)) + '</td>';
     else if (k === 'lastSale') out += '<td>' + (r.lastSale ? fmtDate(r.lastSale) : '\u2014') + '</td>';
@@ -3250,8 +3243,6 @@ function perfFootHtml(rows, cols) {
     else if (k === 'purchased') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.purchased || 0), 0)) + '</td>';
     else if (k === 'opening') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.hasOpening ? r.opening : 0), 0)) + '</td>';
     else if (k === 'stock') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.stock, 0)) + '</td>';
-    else if (k === 'movement')
-      out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.movement || 0), 0)) + '</td>';
     else if (k === 'sellThrough') {
       const sold = rows.reduce((s, r) => s + r.sold, 0), stock = rows.reduce((s, r) => s + r.stock, 0);
       out += '<td class="num">' + (sold + stock > 0 ? fmtNum(sold / (sold + stock) * 100, 1) + '%' : '\u2014') + '</td>';
@@ -6120,22 +6111,12 @@ function buildCatalog() {
   return { rows: root.childList, days, range, anchor, levels };
 }
 
-/** Available stock. Two ways to read it, set in Settings > 02 Catalog:
- *  "closing"  - CBS as the ERP reports it (CBS already = OBS + purchased - sold)
- *  "computed" - CBS + purchased - sold, as asked for                            */
-function availableQty(x) {
-  if ((CatPrefs.availableFormula || 'computed') === 'closing') return x.cbs !== undefined ? x.cbs : x.stock;
-  const cbs = x.cbs !== undefined ? x.cbs : (x.stock || 0);
-  return cbs + (x.purchased || 0) - (x.sold || 0);
-}
-
 function catalogMetrics(x, days, anchor) {
   const avgDaily = x.sold / days;
   const cover = avgDaily > 0 ? x.cbs / avgDaily : (x.cbs > 0 ? Infinity : 0);
   const opening = x.sold + x.cbs;
   const sellThrough = opening > 0 ? (x.sold / opening) * 100 : 0;
   const daysSince = x.lastSale ? Math.round((anchor - x.lastSale) / 86400000) : null;
-  const moved = availableQty(x);   // the "Available" column
   let status;
   if (x.cbs === 0 && x.sold > 0) status = 'Stockout';
   else if (x.sold === 0 && x.cbs > 0) status = 'No sale';
@@ -6143,7 +6124,7 @@ function catalogMetrics(x, days, anchor) {
   else if (cover === Infinity || cover > (CatPrefs.overstockDays || 120)) status = 'Overstock';
   else if (x.sold > 0) status = 'Healthy';
   else status = 'Idle';
-  return { avgDaily, cover, sellThrough, daysSince, moved, status };
+  return { avgDaily, cover, sellThrough, daysSince, status };
 }
 
 function catalogStatusClass(s) {
@@ -6381,7 +6362,6 @@ function renderCatalog() {
     (catColOn('purchased') ? '<th class="num" data-sc="purchased" title="Quantity received in this window">Purchased' + catSortArrow('purchased') + '</th>' : '') +
     (catColOn('opening') ? '<th class="num" data-sc="obs">Opening' + catSortArrow('obs') + '</th>' : '') +
     (catColOn('closing') ? '<th class="num" data-sc="cbs">Closing' + catSortArrow('cbs') + '</th>' : '') +
-    (catColOn('moved') ? '<th class="num" data-sc="moved" title="Available stock quantity">Available' + catSortArrow('moved') + '</th>' : '') +
     (catColOn('adc') ? '<th class="num" title="Average Daily Consumption" data-sc="adc">ADC' + catSortArrow('adc') + '</th>' : '') +
     (catColOn('lt') ? '<th class="num" title="Lead Time in days" data-sc="lt">LT' + catSortArrow('lt') + '</th>' : '') +
     (catColOn('sf') ? '<th class="num" title="Safety Factor" data-sc="sf">SF' + catSortArrow('sf') + '</th>' : '') +
@@ -6404,11 +6384,11 @@ function renderCatalog() {
   const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
   const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
   // totals now use each row's own path, and add up the max level as well
-  const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs, r.moved));
+  const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs));
   const tReorder = reps.reduce((a, x) => a + x.reorder, 0);
   const totMl = reps.reduce((a, x) => a + x.ml, 0);
-  const tAvail = rows.reduce((a, r) => a + (r.moved || 0), 0);
-  const totPct = totMl > 0 ? (tAvail / totMl) * 100 : 0;
+  const tOnHand = rows.reduce((a, r) => a + (r.cbs || 0), 0);
+  const totPct = totMl > 0 ? (tOnHand / totMl) * 100 : 0;
   const fillerCols = (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0);
   const foot = '<tfoot><tr>' +
     '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td>' +
@@ -6417,7 +6397,6 @@ function renderCatalog() {
     (catColOn('purchased') ? '<td class="num">' + fmtNum(tPurch) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num">' + fmtNum(tObs) + '</td>' : '') +
     (catColOn('closing') ? '<td class="num">' + fmtNum(tCbs) + '</td>' : '') +
-    (catColOn('moved') ? '<td class="num">' + fmtNum(rows.reduce((a, r) => a + (r.moved || 0), 0)) + '</td>' : '') +
     ['adc','lt','sf','moq'].filter(catColOn).map(function () { return '<td></td>'; }).join('') +
     (catColOn('ml') ? '<td class="num">' + fmtNum(totMl, 0) + '</td>' : '') +
     (catColOn('mit') ? '<td></td>' : '') +
@@ -6478,7 +6457,6 @@ function catSortValue(d, col) {
   if (col === 'colours') return (d.childList || []).length;
   if (col === 'obs') return d.obs;
   if (col === 'cbs') return d.cbs;
-  if (col === 'moved') return d.moved === null ? -Infinity : d.moved;
   if (col === 'cover') return d.cover === Infinity ? 1e12 : d.cover;
   if (col === 'lastSale') return d.lastSale ? d.lastSale.getTime() : -Infinity;
   if (col === 'status') return String(d.status).toLowerCase();
@@ -6491,7 +6469,7 @@ function catSortValue(d, col) {
 
 /** How many columns the table has right now, for full-width rows. */
 function catalogColCount() {
-  return 1 + ['category','colours','sold','purchased','opening','closing','moved',
+  return 1 + ['category','colours','sold','purchased','opening','closing',
               'adc','lt','sf','moq','ml','mit','stockpct','reorder',
               'cover','sellthru','lastsold','status'].filter(catColOn).length;
 }
@@ -6501,14 +6479,14 @@ function catalogNodeRow(n, days) {
   const open = !!Catalog.expanded[n.path];
   const img = Catalog.images[n.path];
   const kids = n.childList || [];
-  const r = replenFor(n.path, n.sold, days, n.cbs, n.moved);
+  const r = replenFor(n.path, n.sold, days, n.cbs);
   const band = stockPctClass(r.pct);
 
   // The colour column shows one block per child, tinted by that child's own
   // stock band - no colour swatches, the colour means stock health.
   const maxDots = CatPrefs.maxDots || 10;
   const dots = kids.slice(0, maxDots).map(k => {
-    const kr = replenFor(k.path, k.sold, days, k.cbs, k.moved);
+    const kr = replenFor(k.path, k.sold, days, k.cbs);
     return '<span class="cat-band ' + stockPctClass(kr.pct) + '" title="' +
       escapeHtml(k.key + ' \u2014 ' + fmtNum(k.cbs) + ' in stock, ' + fmtNum(k.sold) + ' sold, ' +
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
@@ -6536,7 +6514,6 @@ function catalogNodeRow(n, days) {
     (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(n.purchased) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num obs-col">' + (n.hasOBS ? fmtNum(n.obs) : '\u2014') + '</td>' : '') +
     (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(n.cbs) + '</td>' : '') +
-    (catColOn('moved') ? '<td class="num cat-avail">' + fmtNum(n.moved) + '</td>' : '') +
     replenCells(n.path, r) +
     (catColOn('cover') ? '<td class="num">' + (n.cover === Infinity ? '\u221E' : fmtNum(n.cover, 0) + 'd') + '</td>' : '') +
     (catColOn('sellthru') ? '<td class="num">' + fmtNum(n.sellThrough, 1) + '%</td>' : '') +
@@ -6555,7 +6532,7 @@ function catalogNodeRow(n, days) {
 function catalogStripRow(n, days) {
   const kids = n.childList || [];
   const blocks = kids.map(k => {
-    const kr = replenFor(k.path, k.sold, days, k.cbs, k.moved);
+    const kr = replenFor(k.path, k.sold, days, k.cbs);
     return '<span class="cs-block ' + stockPctClass(kr.pct) + '" style="flex:' + Math.max(1, k.cbs) + '" ' +
       'title="' + escapeHtml(k.key + ': ' + fmtNum(k.cbs) + ' in stock, ' +
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
@@ -6710,18 +6687,18 @@ function onCatalogImagePicked(e) {
 function exportCatalogCSV() {
   if (!Catalog.lastRows || !Catalog.lastRows.length) { toast('Nothing to export yet.'); return; }
   const headers = ['Path', 'Level', 'Section', 'Sub Section', 'Brand', 'Supplier',
-                   'Sold', 'Purchased', 'Opening', 'Closing', 'Available',
+                   'Sold', 'Purchased', 'Opening', 'Closing',
                    'ADC', 'LT', 'SF', 'MOQ', 'ML', 'MIT', 'Stock %', 'Reorder', 'Status'];
   const out = [];
   const days = catalogDays();
   (function walk(nodes, trail) {
     nodes.forEach(n => {
-      const r = replenFor(n.path, n.sold, days, n.cbs, n.moved);
+      const r = replenFor(n.path, n.sold, days, n.cbs);
       const line = trail.concat([n.key]);
       out.push([
         line.join(' > '), n.dim || '', n.meta.Section || '', n.meta['Sub Section'] || '',
         n.meta.Brand || '', n.meta.Supplier || '',
-        n.sold, n.purchased, n.hasOBS ? n.obs : '', n.cbs, n.moved,
+        n.sold, n.purchased, n.hasOBS ? n.obs : '', n.cbs,
         Number(r.adc.toFixed(3)), r.lt, r.sf, r.moq, Math.round(r.ml), r.mit,
         Math.round(r.pct), r.reorder, n.status
       ]);
@@ -6741,7 +6718,7 @@ const CATALOG_LEVEL_DIMS = ['Article No', 'Item Code', 'Brand', 'Colour', 'Size'
 
 const CAT_COLUMNS = [
   ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'], ['purchased', 'Purchased'],
-  ['opening', 'Opening'], ['closing', 'Closing'], ['moved', 'Available'],
+  ['opening', 'Opening'], ['closing', 'Closing'],
   ['adc', 'ADC'], ['lt', 'LT'], ['sf', 'SF'], ['moq', 'MOQ'],
   ['ml', 'ML'], ['mit', 'MIT'], ['stockpct', 'Stock %'], ['reorder', 'Reorder'],
   ['cover', 'Cover'], ['sellthru', 'Sell-thru'], ['lastsold', 'Last sold'],
@@ -6774,7 +6751,7 @@ function loadReplen() {
 function saveReplen() { Store.set('sl_replen', JSON.stringify(Replen.overrides)); }
 function saveReplenBulk() { Store.set('sl_replen_bulk', JSON.stringify(Replen.bulk)); }
 
-function replenFor(key, sold, days, cbs, availableQtyIn) {
+function replenFor(key, sold, days, cbs) {
   const o = Replen.overrides[key] || {};
   const autoAdc = days > 0 ? sold / days : 0;
   const adc = (o.adc !== undefined && o.adc !== null) ? o.adc
@@ -6789,20 +6766,24 @@ function replenFor(key, sold, days, cbs, availableQtyIn) {
   // producing percentages in the tens of thousands.
   const rawMl = adc * lt * sf;
   const ml = Math.max(rawMl, moq > 0 ? moq : 1);
-  // Stock % = Available stock / Max Level, as specified. "Available" is the
-  // figure in the Available column (plus anything in transit).
-  const baseAvail = (availableQtyIn === undefined || availableQtyIn === null) ? cbs : availableQtyIn;
-  const available = baseAvail + mit;
-  let pct = (available / ml) * 100;
-  if (available < 0) pct = 0;
-  if (!isFinite(pct)) pct = available > 0 ? 999 : 0;
+  // Stock % = Closing stock / Max Level.
+  // CBS from the ERP already equals OBS + purchased - sold, so it IS the stock
+  // on hand. The old "CBS + purchased - sold" column counted the same movements
+  // a second time and was removed in v38.
+  // Anything you type into "In transit" is added on top, because that stock is
+  // paid for and on its way; leave that column at 0 and this is exactly
+  // Closing / Max Level.
+  const onHand = (cbs || 0) + mit;
+  let pct = (onHand / ml) * 100;
+  if (onHand < 0) pct = 0;
+  if (!isFinite(pct)) pct = onHand > 0 ? 999 : 0;
 
   let reorder = 0;
-  if (ml > available) {
-    const gap = ml - available;
+  if (ml > onHand) {
+    const gap = ml - onHand;
     reorder = moq > 0 ? Math.ceil(gap / moq) * moq : Math.ceil(gap);
   }
-  return { adc, lt, sf, moq, ml, rawMl, mit, available, pct, reorder,
+  return { adc, lt, sf, moq, ml, rawMl, mit, onHand, pct, reorder,
            isAuto: { adc: o.adc === undefined, lt: o.lt === undefined, sf: o.sf === undefined,
                      moq: o.moq === undefined, mit: o.mit === undefined } };
 }
@@ -6828,7 +6809,9 @@ function replenCells(key, r) {
          (catColOn('ml') ? '<td class="num cat-ml">' + fmtNum(r.ml, 0) + '</td>' : '') +
          (catColOn('mit') ? '<td class="num cat-edit">' + inp('mit', r.mit, '1') + '</td>' : '') +
          (catColOn('stockpct') ? '<td class="num stock-pct ' + stockPctClass(r.pct) +
-           '" title="' + escapeHtml('Available ' + fmtNum(r.available) + ' vs max level ' + fmtNum(r.ml, 1)) + '">' +
+           '" title="' + escapeHtml('Closing ' + fmtNum(r.onHand - r.mit) +
+             (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
+             ' vs max level ' + fmtNum(r.ml, 1)) + '">' +
            (r.pct > 999 ? '999%+' : fmtNum(r.pct, 0) + '%') + '</td>' : '') +
          (catColOn('reorder') ? '<td class="num cat-reorder' + (r.reorder > 0 ? ' has' : '') + '">' +
             (r.reorder > 0 ? fmtNum(r.reorder) : '\u2014') + '</td>' : '');
@@ -6862,7 +6845,6 @@ const CATPREFS_DEFAULT = {
   // replenishment defaults
   defaultADC: 0,      // 0 = work it out from sales; anything else is used as-is
   levels: ['Article No', 'Colour', 'Size'],   // the three drill levels, in order
-  availableFormula: 'computed',               // computed | closing
   defaultLT: 30,      // lead time, days
   defaultSF: 1.5,     // safety factor
   defaultMOQ: 12,     // minimum order quantity (also the floor for the max level)
@@ -7030,12 +7012,11 @@ function renderCatalogSettings(wrap) {
     '</div>' +
     '<p class="drill-subtitle">Up to nine levels. Leave the rest as \u201cnone\u201d \u2014 the table opens in exactly this order.</p>' +
 
-    '<h3 class="snap-set-title">Available stock</h3>' +
-    '<div class="settings-row"><select id="cs-avail" class="select">' +
-      '<option value="computed"' + ((CatPrefs.availableFormula || 'computed') === 'computed' ? ' selected' : '') + '>CBS + Purchased \u2212 Sold</option>' +
-      '<option value="closing"' + (CatPrefs.availableFormula === 'closing' ? ' selected' : '') + '>Closing balance (CBS) as reported</option>' +
-    '</select></div>' +
-    '<p class="drill-subtitle">In your ERP export CBS already equals OBS + purchased \u2212 sold, so "Closing balance" avoids counting the same movements twice.</p>' +
+    '<h3 class="snap-set-title">Stock %</h3>' +
+    '<p class="drill-subtitle">Stock % is Closing stock \u00f7 Max Level. ' +
+      'The old \u201cAvailable\u201d column (CBS + purchased \u2212 sold) was removed in v38: ' +
+      'CBS from your ERP already equals OBS + purchased \u2212 sold, so that column counted ' +
+      'the same movements twice. Anything you type in the \u201cIn transit\u201d column is added on top.</p>' +
 
     '<h3 class="snap-set-title">Photos</h3>' +
     row('Show thumbnails',
@@ -7129,7 +7110,6 @@ function renderCatalogSettings(wrap) {
     if (!CatPrefs.levels.length) CatPrefs.levels = ['Article No'];
     saveCatPrefs(); Catalog.expanded = {}; renderCatalog();
   }));
-  bindC('cs-avail', e => { CatPrefs.availableFormula = e.target.value; saveCatPrefs(); renderCatalog(); renderPerformance(); });
   bindC('cs-thumbs', e => { CatPrefs.showThumbs = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bind('cs-thumbw', e => {
     CatPrefs.thumbW = parseInt(e.target.value, 10);
@@ -8516,7 +8496,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v37';
+const BUILD_VERSION = 'v38';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
