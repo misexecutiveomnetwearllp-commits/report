@@ -6412,6 +6412,7 @@ function renderCatalog() {
   }
   const rows = catalogFiltered(built.rows);
   Catalog.lastRows = rows;
+  Catalog.lastBuilt = built;      // kept so a live edit can find its row again
 
   document.getElementById('cat-count').textContent =
     rows.length.toLocaleString('en-IN') + ' / ' + built.rows.length.toLocaleString('en-IN') + ' designs' +
@@ -6493,18 +6494,91 @@ function wireReplenInputs(host) {
   host.querySelectorAll('.cat-inp').forEach(inp => {
     inp.addEventListener('click', e => e.stopPropagation());
     inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); });
+
+    // As you type: recalculate this row on the spot. Redrawing the whole table
+    // on every keystroke would throw away the box you are typing in, so the
+    // row's own cells are rewritten in place instead.
+    inp.addEventListener('input', e => {
+      e.stopPropagation();
+      applyReplenEdit(e.target);
+      refreshReplenRow(e.target.closest('tr'));
+    });
+
+    // On leaving the box: save and redraw properly, so sorting, the totals
+    // line and the colour bars all catch up.
     inp.addEventListener('change', e => {
       e.stopPropagation();
-      const key = e.target.dataset.rkey, field = e.target.dataset.rfield;
-      const raw = e.target.value;
-      const o = Replen.overrides[key] || (Replen.overrides[key] = {});
-      if (raw === '' || isNaN(parseFloat(raw))) delete o[field];
-      else o[field] = parseFloat(raw);
-      if (!Object.keys(o).length) delete Replen.overrides[key];
+      applyReplenEdit(e.target);
       saveReplen();
       renderCatalog();
     });
   });
+}
+
+/** Writes one edited box into the overrides. */
+function applyReplenEdit(el) {
+  const key = el.dataset.rkey, field = el.dataset.rfield, raw = el.value;
+  const o = Replen.overrides[key] || (Replen.overrides[key] = {});
+  if (raw === '' || isNaN(parseFloat(raw))) delete o[field];
+  else o[field] = parseFloat(raw);
+  if (!Object.keys(o).length) delete Replen.overrides[key];
+}
+
+/** Rewrites the calculated cells of one row from the numbers now in the boxes:
+ *  Max Level, Stock % and its colour, Reorder, Cover and Status. Everything
+ *  that hangs off ADC / LT / SF / MOQ / MIT moves together, without the table
+ *  being rebuilt under the cursor. */
+function refreshReplenRow(tr) {
+  if (!tr) return;
+  const node = catalogNodeByPath(tr.dataset.key);
+  if (!node) return;
+  const days = catalogDays();
+  const r = replenFor(node.path, node.sold, days, node.cbs, node);
+
+  const set = (sel, text, title) => {
+    const td = tr.querySelector(sel);
+    if (!td) return null;
+    td.textContent = text;
+    if (title !== undefined) td.title = title;
+    return td;
+  };
+
+  set('.cat-ml', fmtNum(r.ml, 0),
+      r.units > 1
+        ? fmtNum(r.units) + ' items under this row \u00d7 MOQ ' + r.moq + ' = ' + fmtNum(r.units * r.moq, 0) +
+          '; demand (ADC \u00d7 LT \u00d7 SF) would give ' + fmtNum(r.rawMl, 0) + ' \u2014 the larger wins'
+        : 'ADC ' + fmtNum(r.adc, 2) + ' \u00d7 LT ' + r.lt + ' \u00d7 SF ' + r.sf + ', at least MOQ ' + r.moq);
+
+  const pctTd = set('.stock-pct', r.pct > 999 ? '999%+' : fmtNum(r.pct, 0) + '%',
+      'Closing ' + fmtNum(r.onHand - r.mit) + (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
+      ' vs max level ' + fmtNum(r.ml, 0) +
+      (r.units > 1 ? ' (' + fmtNum(r.units) + ' items under this row)' : ''));
+  if (pctTd) pctTd.className = 'num stock-pct ' + stockPctClass(r.pct);
+
+  const reTd = set('.cat-reorder', r.reorder > 0 ? fmtNum(r.reorder) : '\u2014');
+  if (reTd) reTd.className = 'num cat-reorder' + (r.reorder > 0 ? ' has' : '');
+
+  // Status follows the same Stock %, so it has to move with it.
+  const stTd = tr.querySelector('.status-tag');
+  if (stTd) {
+    const m = catalogMetrics(node, days, dataAnchorDate());
+    stTd.textContent = m.status;
+    stTd.className = 'status-tag ' + catalogStatusClass(m.status);
+  }
+}
+
+/** Finds a built node again from the path stored on its row. */
+function catalogNodeByPath(path) {
+  if (!path || !Catalog.lastBuilt) return null;
+  let found = null;
+  (function walk(list) {
+    for (const n of list) {
+      if (found) return;
+      if (n.path === path) { found = n; return; }
+      if (n.childList && n.childList.length) walk(n.childList);
+    }
+  })(Catalog.lastBuilt.rows || []);
+  return found;
 }
 
 /** Little arrow on the header cell that is being sorted. */
@@ -6531,6 +6605,25 @@ function catSortValue(d, col) {
     return col === 'pct' ? (isFinite(r.pct) ? r.pct : 1e12) : r[col];
   }
   return d[col];
+}
+
+/** The columns in the order they are drawn, Design first. */
+function catalogVisibleCols() {
+  return ['design'].concat(
+    ['category','colours','sold','purchased','opening','closing',
+     'adc','lt','sf','moq','ml','mit','stockpct','reorder',
+     'cover','sellthru','lastsold','status'].filter(catColOn));
+}
+
+/** How many columns the colour bar under a row may cover. The setting names
+ *  the column to stop after; if that column is switched off, the bar falls
+ *  back to the whole width. */
+function stripSpanCols() {
+  const stop = CatPrefs.stripUntil || 'opening';
+  if (stop === 'all') return catalogColCount();
+  const cols = catalogVisibleCols();
+  const i = cols.indexOf(stop);
+  return i === -1 ? catalogColCount() : i + 1;
 }
 
 /** How many columns the table has right now, for full-width rows. */
@@ -6604,11 +6697,18 @@ function catalogStripRow(n, days) {
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
   }).join('');
   if (!blocks) return '';
+  // How far across the table the bar is allowed to run. It used to span every
+  // column, first to last; now it stops after the column chosen in
+  // Settings > 02 Catalog, and the rest of the row is left clear.
+  const total = catalogColCount();
+  const span = Math.max(1, Math.min(total, stripSpanCols()));
   // The bar carries its parent's level class, so it is tinted with the same
   // drill-list colour as the row it belongs to.
-  return '<tr class="cat-strip-row cat-lvl-' + Math.min(n.depth, 8) + '"><td colspan="' +
-    catalogColCount() + '" style="--indent:' +
-    (10 + (n.depth + 1) * 18) + 'px"><span class="cs-bar">' + blocks + '</span></td></tr>';
+  return '<tr class="cat-strip-row cat-lvl-' + Math.min(n.depth, 8) + '">' +
+    '<td colspan="' + span + '" style="--indent:' + (10 + (n.depth + 1) * 18) + 'px">' +
+      '<span class="cs-bar">' + blocks + '</span></td>' +
+    (span < total ? '<td colspan="' + (total - span) + '" class="cs-pad"></td>' : '') +
+    '</tr>';
 }
 
 function renderCatalogFilters(all) {
@@ -6961,6 +7061,7 @@ const CATPREFS_DEFAULT = {
   showStrip: true,      // colour-coded size bar under each colour row
   lowStockAt: 2,
   // thresholds
+  stripUntil: 'opening',  // colour bar under a row stops after this column
   lowCoverPct: 33,        // Stock % under this reads "Low cover"
   overstockPct: 100,      // Stock % over this reads "Overstock"
   // replenishment defaults
@@ -7191,6 +7292,22 @@ function renderCatalogSettings(wrap) {
       '<input type="number" id="cs-moq" class="text-input narrow" min="0" step="1" value="' + (CatPrefs.defaultMOQ || 12) + '">' +
     '</div>' +
 
+    '<h3 class="snap-set-title">Colour code bar</h3>' +
+    row('Bar width',
+      '<label class="toolbar-label">Stop after</label>' +
+      '<select id="cs-stripuntil" class="select">' +
+        [['design', 'Design'], ['category', 'Category'], ['colours', 'Colours'],
+         ['sold', 'Sold'], ['purchased', 'Purchased'], ['opening', 'Opening'],
+         ['closing', 'Closing'], ['ml', 'ML'], ['stockpct', 'Stock %'],
+         ['status', 'Status'], ['all', 'the whole row']].map(function (c) {
+          return '<option value="' + c[0] + '"' +
+            ((CatPrefs.stripUntil || 'opening') === c[0] ? ' selected' : '') + '>' + c[1] + '</option>';
+        }).join('') +
+      '</select>') +
+    '<p class="drill-subtitle">The coloured bar under an opened row used to run from the first ' +
+      'column to the last. Pick where it should stop instead. A column that is switched off ' +
+      'is skipped, and the bar falls back to the full width.</p>' +
+
     '<h3 class="snap-set-title">Status thresholds</h3>' +
     row('Cover days',
       '<label class="toolbar-label">Low cover under</label>' +
@@ -7267,6 +7384,7 @@ function renderCatalogSettings(wrap) {
   bindC('cs-maxsizes', e => { CatPrefs.maxSizeChips = Math.max(4, Math.min(60, parseInt(e.target.value, 10) || 24)); saveCatPrefs(); renderCatalog(); });
   bindC('cs-strip', e => { CatPrefs.showStrip = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-stripuntil', e => { CatPrefs.stripUntil = e.target.value; saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowcover', e => { CatPrefs.lowCoverPct = Math.max(1, parseInt(e.target.value, 10) || 33); saveCatPrefs(); renderCatalog(); });
   bindC('cs-overstock', e => { CatPrefs.overstockPct = Math.max(10, parseInt(e.target.value, 10) || 100); saveCatPrefs(); renderCatalog(); });
 
@@ -8627,7 +8745,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v41';
+const BUILD_VERSION = 'v42';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

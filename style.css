@@ -1774,3 +1774,9 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
 }
 .cat-bands .cat-band { margin-right: 0; flex: 0 0 auto; }
 .cat-bands .cat-more { margin-left: 0; white-space: nowrap; align-self: center; }
+
+/* the empty tail of a colour-code bar row keeps the row background, no border */
+.cat-table tbody tr.cat-strip-row > td.cs-pad {
+  padding: 0 !important;
+  border-right: none !important;
+}
