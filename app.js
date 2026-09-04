@@ -6052,7 +6052,8 @@ function buildCatalog() {
   if (!levels.length) levels.push('Article No');
 
   const root = { key: '__root__', path: '', depth: -1, children: new Map(),
-                 sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null, meta: {} };
+                 sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null,
+                 meta: {}, skus: null };
 
   function nodeFor(rec) {
     // walks down one branch, creating the nodes on the way
@@ -6065,7 +6066,9 @@ function buildCatalog() {
         child = { key, dim: levels[i], depth: i,
                   path: (node.path ? node.path + '|' : '') + levels[i] + '=' + key,
                   children: new Map(), sold: 0, purchased: 0, obs: 0, cbs: 0,
-                  hasOBS: false, lastSale: null, meta: {} };
+                  hasOBS: false, lastSale: null, meta: {},
+                  // only the deepest level keeps the set; parents just add up
+                  skus: (i === levels.length - 1) ? new Set() : null };
         node.children.set(key, child);
       }
       chain.push(child);
@@ -6074,27 +6077,45 @@ function buildCatalog() {
     return chain;
   }
 
+  /** The real stock-keeping unit behind a row: one article, in one colour, in
+   *  one size. That is the thing you actually reorder, and it is what the Max
+   *  Level has to be counted in - see replenFor.
+   *
+   *  Not Item Code. In this ERP export Item Code is a per-piece lot number:
+   *  71,966 different codes across 71,974 stock rows, averaging under one
+   *  garment each, with the same article/colour/size carrying dozens of them.
+   *  Counting those would inflate the unit count roughly tenfold. Item Code is
+   *  only used when the article/colour/size fields are all missing. */
+  function skuOf(r) {
+    const art = dimKey(r, 'Article No'), col = dimKey(r, 'Colour'), sz = dimKey(r, 'Size');
+    if (art !== '(blank)' || col !== '(blank)' || sz !== '(blank)') return art + '|' + col + '|' + sz;
+    const code = r['Item Code'];
+    return (code === null || code === undefined || code === '') ? '(blank)' : String(code);
+  }
+
   const META_KEEP = ['Section', 'Sub Section', 'Brand', 'Supplier', 'Style', 'Colour', 'Size'];
   function addMeta(n, r) {
     META_KEEP.forEach(f => { if (!n.meta[f] && r[f]) n.meta[f] = String(r[f]); });
   }
 
   sales.forEach(r => {
-    const q = recQty(r);
+    const q = recQty(r), sku = skuOf(r);
     nodeFor(r).forEach(n => {
       n.sold += q;
+      if (n.skus) n.skus.add(sku);
       if (r.Date && (!n.lastSale || r.Date > n.lastSale)) n.lastSale = r.Date;
       addMeta(n, r);
     });
   });
   purch.forEach(r => {
-    const q = recQty(r);
-    nodeFor(r).forEach(n => { n.purchased += q; addMeta(n, r); });
+    const q = recQty(r), sku = skuOf(r);
+    nodeFor(r).forEach(n => { n.purchased += q; if (n.skus) n.skus.add(sku); addMeta(n, r); });
   });
   stock.forEach(r => {
-    const cb = recQty(r), ob = recOpeningQty(r);
+    const cb = recQty(r), ob = recOpeningQty(r), sku = skuOf(r);
     nodeFor(r).forEach(n => {
       n.cbs += cb;
+      if (n.skus) n.skus.add(sku);
       if (ob !== null) { n.obs += ob; n.hasOBS = true; }
       addMeta(n, r);
     });
@@ -6105,6 +6126,12 @@ function buildCatalog() {
     node.childList = [...node.children.values()];
     node.childList.forEach(finish);
     node.childList.sort((a, b) => b.sold - a.sold || b.cbs - a.cbs);
+    // How many stock-keeping units sit under this row. The deepest level counts
+    // them directly; every level above just adds up its children.
+    node.skuCount = node.skus
+      ? Math.max(1, node.skus.size)
+      : Math.max(1, node.childList.reduce((a, c) => a + (c.skuCount || 1), 0));
+    node.skus = null;                        // the set has done its job, let it go
     if (node !== root) Object.assign(node, catalogMetrics(node, days, anchor));
   })(root);
 
@@ -6366,7 +6393,7 @@ function renderCatalog() {
     (catColOn('lt') ? '<th class="num" title="Lead Time in days" data-sc="lt">LT' + catSortArrow('lt') + '</th>' : '') +
     (catColOn('sf') ? '<th class="num" title="Safety Factor" data-sc="sf">SF' + catSortArrow('sf') + '</th>' : '') +
     (catColOn('moq') ? '<th class="num" title="Minimum Order Quantity" data-sc="moq">MOQ' + catSortArrow('moq') + '</th>' : '') +
-    (catColOn('ml') ? '<th class="num" title="Max Level = ADC x LT x SF" data-sc="ml">ML' + catSortArrow('ml') + '</th>' : '') +
+    (catColOn('ml') ? '<th class="num" title="Max Level = ADC x LT x SF, and never less than MOQ for each item under the row" data-sc="ml">ML' + catSortArrow('ml') + '</th>' : '') +
     (catColOn('mit') ? '<th class="num" title="Material In Transit" data-sc="mit">MIT' + catSortArrow('mit') + '</th>' : '') +
     (catColOn('stockpct') ? '<th class="num" title="(Closing + MIT) as a share of Max Level" data-sc="pct">Stock %' + catSortArrow('pct') + '</th>' : '') +
     (catColOn('reorder') ? '<th class="num" title="ML minus what you have, rounded up to the MOQ" data-sc="reorder">Reorder' + catSortArrow('reorder') + '</th>' : '') +
@@ -6384,7 +6411,7 @@ function renderCatalog() {
   const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
   const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
   // totals now use each row's own path, and add up the max level as well
-  const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs));
+  const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs, r.skuCount));
   const tReorder = reps.reduce((a, x) => a + x.reorder, 0);
   const totMl = reps.reduce((a, x) => a + x.ml, 0);
   const tOnHand = rows.reduce((a, r) => a + (r.cbs || 0), 0);
@@ -6461,7 +6488,10 @@ function catSortValue(d, col) {
   if (col === 'lastSale') return d.lastSale ? d.lastSale.getTime() : -Infinity;
   if (col === 'status') return String(d.status).toLowerCase();
   if (['adc', 'lt', 'sf', 'moq', 'ml', 'mit', 'pct', 'reorder'].indexOf(col) !== -1) {
-    const r = replenFor(d.key, d.sold, catalogDays(), d.cbs);
+    // path, not key: overrides are stored per path, and the max level needs the
+    // row's own unit count. Sorting used to read a different number from the
+    // one on screen.
+    const r = replenFor(d.path, d.sold, catalogDays(), d.cbs, d.skuCount);
     return col === 'pct' ? (isFinite(r.pct) ? r.pct : 1e12) : r[col];
   }
   return d[col];
@@ -6479,14 +6509,14 @@ function catalogNodeRow(n, days) {
   const open = !!Catalog.expanded[n.path];
   const img = Catalog.images[n.path];
   const kids = n.childList || [];
-  const r = replenFor(n.path, n.sold, days, n.cbs);
+  const r = replenFor(n.path, n.sold, days, n.cbs, n.skuCount);
   const band = stockPctClass(r.pct);
 
   // The colour column shows one block per child, tinted by that child's own
   // stock band - no colour swatches, the colour means stock health.
   const maxDots = CatPrefs.maxDots || 10;
   const dots = kids.slice(0, maxDots).map(k => {
-    const kr = replenFor(k.path, k.sold, days, k.cbs);
+    const kr = replenFor(k.path, k.sold, days, k.cbs, k.skuCount);
     return '<span class="cat-band ' + stockPctClass(kr.pct) + '" title="' +
       escapeHtml(k.key + ' \u2014 ' + fmtNum(k.cbs) + ' in stock, ' + fmtNum(k.sold) + ' sold, ' +
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
@@ -6532,7 +6562,7 @@ function catalogNodeRow(n, days) {
 function catalogStripRow(n, days) {
   const kids = n.childList || [];
   const blocks = kids.map(k => {
-    const kr = replenFor(k.path, k.sold, days, k.cbs);
+    const kr = replenFor(k.path, k.sold, days, k.cbs, k.skuCount);
     return '<span class="cs-block ' + stockPctClass(kr.pct) + '" style="flex:' + Math.max(1, k.cbs) + '" ' +
       'title="' + escapeHtml(k.key + ': ' + fmtNum(k.cbs) + ' in stock, ' +
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
@@ -6693,7 +6723,7 @@ function exportCatalogCSV() {
   const days = catalogDays();
   (function walk(nodes, trail) {
     nodes.forEach(n => {
-      const r = replenFor(n.path, n.sold, days, n.cbs);
+      const r = replenFor(n.path, n.sold, days, n.cbs, n.skuCount);
       const line = trail.concat([n.key]);
       out.push([
         line.join(' > '), n.dim || '', n.meta.Section || '', n.meta['Sub Section'] || '',
@@ -6751,7 +6781,7 @@ function loadReplen() {
 function saveReplen() { Store.set('sl_replen', JSON.stringify(Replen.overrides)); }
 function saveReplenBulk() { Store.set('sl_replen_bulk', JSON.stringify(Replen.bulk)); }
 
-function replenFor(key, sold, days, cbs) {
+function replenFor(key, sold, days, cbs, skuCount) {
   const o = Replen.overrides[key] || {};
   const autoAdc = days > 0 ? sold / days : 0;
   const adc = (o.adc !== undefined && o.adc !== null) ? o.adc
@@ -6764,8 +6794,17 @@ function replenFor(key, sold, days, cbs) {
   // A max level below the minimum order quantity makes no sense: you could never
   // order that little. Flooring at MOQ also stops slow sellers (ADC near zero)
   // producing percentages in the tens of thousands.
+  //
+  // The floor has to count the ROW, not one garment. A summary row like
+  // "T-SHIRT" is not a single item - it is thousands of item codes, and every
+  // one of them needs its own minimum on the shelf. Flooring such a row at a
+  // bare MOQ was the v38 bug: T-SHIRT came out with a max level of 151 against
+  // 4,582 in stock, so Stock % read 3,033% and every row on the page turned the
+  // same "Overstock" colour. The floor is now MOQ x however many stock-keeping
+  // units sit under the row, which is 1 for a real item and 7,842 for T-SHIRT.
+  const units = Math.max(1, skuCount || 1);
   const rawMl = adc * lt * sf;
-  const ml = Math.max(rawMl, moq > 0 ? moq : 1);
+  const ml = Math.max(rawMl, (moq > 0 ? moq : 1) * units);
   // Stock % = Closing stock / Max Level.
   // CBS from the ERP already equals OBS + purchased - sold, so it IS the stock
   // on hand. The old "CBS + purchased - sold" column counted the same movements
@@ -6783,7 +6822,7 @@ function replenFor(key, sold, days, cbs) {
     const gap = ml - onHand;
     reorder = moq > 0 ? Math.ceil(gap / moq) * moq : Math.ceil(gap);
   }
-  return { adc, lt, sf, moq, ml, rawMl, mit, onHand, pct, reorder,
+  return { adc, lt, sf, moq, ml, rawMl, mit, onHand, pct, reorder, units,
            isAuto: { adc: o.adc === undefined, lt: o.lt === undefined, sf: o.sf === undefined,
                      moq: o.moq === undefined, mit: o.mit === undefined } };
 }
@@ -6806,12 +6845,18 @@ function replenCells(key, r) {
          (catColOn('lt') ? '<td class="num cat-edit">' + inp('lt', r.lt, '1') + '</td>' : '') +
          (catColOn('sf') ? '<td class="num cat-edit">' + inp('sf', r.sf, '0.1') + '</td>' : '') +
          (catColOn('moq') ? '<td class="num cat-edit">' + inp('moq', r.moq, '1') + '</td>' : '') +
-         (catColOn('ml') ? '<td class="num cat-ml">' + fmtNum(r.ml, 0) + '</td>' : '') +
+         (catColOn('ml') ? '<td class="num cat-ml" title="' + escapeHtml(
+             r.units > 1
+               ? fmtNum(r.units) + ' items under this row \u00d7 MOQ ' + r.moq + ' = ' + fmtNum(r.units * r.moq, 0) +
+                 '; demand (ADC \u00d7 LT \u00d7 SF) would give ' + fmtNum(r.rawMl, 0) + ' \u2014 the larger wins'
+               : 'ADC ' + fmtNum(r.adc, 2) + ' \u00d7 LT ' + r.lt + ' \u00d7 SF ' + r.sf +
+                 ', at least MOQ ' + r.moq) + '">' + fmtNum(r.ml, 0) + '</td>' : '') +
          (catColOn('mit') ? '<td class="num cat-edit">' + inp('mit', r.mit, '1') + '</td>' : '') +
          (catColOn('stockpct') ? '<td class="num stock-pct ' + stockPctClass(r.pct) +
            '" title="' + escapeHtml('Closing ' + fmtNum(r.onHand - r.mit) +
              (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
-             ' vs max level ' + fmtNum(r.ml, 1)) + '">' +
+             ' vs max level ' + fmtNum(r.ml, 0) +
+             (r.units > 1 ? ' (' + fmtNum(r.units) + ' items under this row)' : '')) + '">' +
            (r.pct > 999 ? '999%+' : fmtNum(r.pct, 0) + '%') + '</td>' : '') +
          (catColOn('reorder') ? '<td class="num cat-reorder' + (r.reorder > 0 ? ' has' : '') + '">' +
             (r.reorder > 0 ? fmtNum(r.reorder) : '\u2014') + '</td>' : '');
@@ -7014,6 +7059,10 @@ function renderCatalogSettings(wrap) {
 
     '<h3 class="snap-set-title">Stock %</h3>' +
     '<p class="drill-subtitle">Stock % is Closing stock \u00f7 Max Level. ' +
+      'Max Level is ADC \u00d7 LT \u00d7 SF, but never less than MOQ for <em>every</em> item under the row \u2014 ' +
+      'a summary row like \u201cT-SHIRT\u201d covers hundreds of article/colour/size combinations, ' +
+      'and each one needs its own minimum on the shelf. Before v39 those rows were floored at a single MOQ, ' +
+      'which made every one of them read 999%+. ' +
       'The old \u201cAvailable\u201d column (CBS + purchased \u2212 sold) was removed in v38: ' +
       'CBS from your ERP already equals OBS + purchased \u2212 sold, so that column counted ' +
       'the same movements twice. Anything you type in the \u201cIn transit\u201d column is added on top.</p>' +
@@ -8496,7 +8545,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v38';
+const BUILD_VERSION = 'v39';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
