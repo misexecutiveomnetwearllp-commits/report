@@ -272,13 +272,179 @@ function uid() { return Math.random().toString(36).slice(2, 10); }
    isliye har call try-catch mein wrapped hai. Fail ho to app normal chalta rahe. */
 const Store = {
   get(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
-  set(k, v) { try { window.localStorage.setItem(k, v); return true; } catch (e) { return false; } },
-  remove(k) { try { window.localStorage.removeItem(k); } catch (e) {} }
+  set(k, v) {
+    let ok = false;
+    try { window.localStorage.setItem(k, v); ok = true; } catch (e) {}
+    // The sheet keeps the master copy so every browser agrees. Local first,
+    // so this never blocks anything; see the settings sync section below.
+    try {
+      if (typeof SYNC_KEYS !== 'undefined' && SYNC_KEYS.indexOf(k) !== -1 &&
+          !Sync.suspend && GS.url && GS.key) pushSettings();
+    } catch (e) {}
+    return ok;
+  },
+  remove(k) {
+    try { window.localStorage.removeItem(k); } catch (e) {}
+    try {
+      if (typeof SYNC_KEYS !== 'undefined' && SYNC_KEYS.indexOf(k) !== -1 &&
+          !Sync.suspend && GS.url && GS.key) pushSettings();
+    } catch (e) {}
+  }
 };
 
 function debounce(fn, ms) {
   let t;
   return function (...args) { clearTimeout(t); t = setTimeout(() => fn.apply(this, args), ms); };
+}
+
+
+/* ---------------------------------------------------------------
+   3b. SETTINGS SYNC — the same setup in every browser
+   ---------------------------------------------------------------
+   Settings used to live only in localStorage, which is per browser
+   and per device. Open the site on a laptop and a phone and you
+   got two different dashboards, two different column choices, two
+   of everything.
+
+   Now the Google Sheet holds the master copy. The flow is
+   local-first, so nothing gets slower and the site still works
+   with no connection:
+
+     1. Start from localStorage, exactly as before.
+     2. In the background, ask the sheet for its copy.
+     3. If the sheet is newer, apply it and redraw.
+     4. Whenever a setting changes, push the whole set back
+        (debounced, so a slider drag is one save, not fifty).
+
+   The sheet connection details themselves are never synced - they
+   are what makes the connection possible, and they are closer to a
+   password than a preference.
+   --------------------------------------------------------------- */
+
+const SYNC_KEYS = [
+  'sl_prefs', 'sl_theme', 'sl_behaviour', 'sl_catprefs', 'sl_colwidths',
+  'sl_dash_charts', 'sl_perf_charts', 'sl_board_theme', 'sl_boards_locked',
+  'sl_replen', 'sl_replen_bulk', 'sl_snapshot_config', 'sl_cat_height'
+];
+
+const Sync = {
+  on: false,          // sheet says settings sync is available
+  pulling: false,
+  lastPush: 0,
+  lastPulled: null,   // the stamp the sheet reported
+  suspend: false      // true while we are applying a pull, so it cannot echo back
+};
+
+/** A friendly name for this browser, so the sheet shows where a change
+ *  came from. Nothing identifying, just the browser and platform. */
+function deviceLabel() {
+  const ua = navigator.userAgent || '';
+  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera'
+    : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari'
+    : /Firefox\//.test(ua) ? 'Firefox' : 'Browser';
+  const plat = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS'
+    : /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'Mac'
+    : /Linux/.test(ua) ? 'Linux' : '';
+  return (browser + (plat ? ' on ' + plat : '')).trim();
+}
+
+/** Everything worth carrying between browsers, as one object. */
+function collectSettings() {
+  const out = {};
+  SYNC_KEYS.forEach(k => {
+    const v = Store.get(k);
+    if (v !== null && v !== undefined) out[k] = v;
+  });
+  return out;
+}
+
+/** Writes a pulled set into localStorage and reloads everything from it. */
+function applySettings(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  let changed = 0;
+  Sync.suspend = true;
+  SYNC_KEYS.forEach(k => {
+    if (!(k in obj)) return;
+    const next = obj[k];
+    if (typeof next !== 'string') return;
+    if (Store.get(k) === next) return;
+    Store.set(k, next);
+    changed++;
+  });
+  Sync.suspend = false;
+  if (!changed) return false;
+
+  // read it all back in and repaint
+  try {
+    loadPrefs(); loadTheme(); loadBehaviour(); loadCatPrefs(); loadColWidths();
+    loadReplen(); loadSnapshotConfig(); loadBoards(); loadBoardTheme();
+    applyPrefsToControls();
+    renderDashboard(); renderPerformance(); renderCatalog();
+  } catch (e) {
+    console.error('Could not apply the synced settings', e);
+  }
+  return true;
+}
+
+/** Asks the sheet for its copy. Quiet on failure - the site keeps working
+ *  from the local copy, which is the whole point of local-first. */
+function pullSettings(announce) {
+  if (!GS.url || !GS.key || Sync.pulling) return Promise.resolve(false);
+  Sync.pulling = true;
+  return gsGet({ action: 'settings' })
+    .then(res => {
+      Sync.on = true;
+      const blob = res.settings && res.settings.all;
+      Sync.lastPulled = res.updated || null;
+      if (!blob) { setSyncNote('Nothing saved in the sheet yet.'); return false; }
+      const applied = applySettings(blob);
+      setSyncNote(applied
+        ? 'Settings loaded from the sheet' + (res.updated ? ' \u00b7 saved ' + fmtWhen(res.updated) : '') + '.'
+        : 'Already up to date with the sheet.');
+      if (applied && announce) toast('Settings restored from your Google Sheet.');
+      return applied;
+    })
+    .catch(err => {
+      Sync.on = false;
+      setSyncNote('Could not read settings from the sheet: ' + err.message);
+      return false;
+    })
+    .then(v => { Sync.pulling = false; return v; });
+}
+
+/** Sends the whole set back. Debounced by the caller. */
+function pushSettingsNow() {
+  if (!GS.url || !GS.key || Sync.suspend) return Promise.resolve(false);
+  return gsPost({ action: 'saveSettings', name: 'all', value: collectSettings(), device: deviceLabel() })
+    .then(res => {
+      Sync.on = true; Sync.lastPush = Date.now();
+      setSyncNote('Settings saved to the sheet \u00b7 ' + fmtWhen(res.updated || new Date().toISOString()));
+      return true;
+    })
+    .catch(err => {
+      setSyncNote('Could not save settings to the sheet: ' + err.message);
+      return false;
+    });
+}
+
+const pushSettings = debounce(pushSettingsNow, 1500);
+
+function fmtWhen(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch (e) { return String(iso); }
+}
+
+function setSyncNote(msg) {
+  const el = document.getElementById('gs-sync-note');
+  if (el) el.textContent = msg;
+}
+
+/** Called once the sheet connection is known to work. */
+function startSettingsSync(announce) {
+  if (!GS.url || !GS.key) return;
+  pullSettings(announce);
 }
 
 function downloadBlob(content, filename, mime) {
@@ -852,14 +1018,47 @@ function initSheets() {
   if (savedUrl) urlEl.value = savedUrl;
   if (savedKey) keyEl.value = savedKey;
 
+  // Reconnect in the background so a browser that has never seen this
+  // dashboard still opens on the settings you last saved anywhere.
+  if (savedUrl && savedKey) {
+    GS.url = savedUrl; GS.key = savedKey;
+    setGsStatus('Reconnecting\u2026', 'busy');
+    gsGet({ action: 'meta' }).then(meta => {
+      GS.meta = meta;
+      setGsStatus('Connected: ' + meta.spreadsheetName + ' (' + meta.sheets.length + ' sheets)', 'ok');
+      renderSheetList(meta);
+      updateGsOnlyButtons();
+      startSettingsSync(false);
+    }).catch(err => {
+      GS.meta = null;
+      setGsStatus('Saved connection could not be reached: ' + err.message, 'err');
+      updateGsOnlyButtons();
+    });
+  }
+
   document.getElementById('gs-connect').addEventListener('click', connectSheet);
   document.getElementById('gs-forget').addEventListener('click', () => {
     Store.remove('sl_gs_url'); Store.remove('sl_gs_key');
     urlEl.value = ''; keyEl.value = '';
     GS.url = ''; GS.key = ''; GS.meta = null;
+    Sync.on = false;
+    setSyncNote('Not connected \u2014 settings are kept in this browser only.');
     document.getElementById('gs-sheet-list').style.display = 'none';
     setGsStatus('Saved details cleared.', '');
     updateGsOnlyButtons();
+  });
+
+  const pull = document.getElementById('gs-sync-pull');
+  if (pull) pull.addEventListener('click', () => {
+    if (!GS.url || !GS.key) { setSyncNote('Connect to the sheet first.'); return; }
+    setSyncNote('Reading\u2026');
+    pullSettings(true);
+  });
+  const push = document.getElementById('gs-sync-push');
+  if (push) push.addEventListener('click', () => {
+    if (!GS.url || !GS.key) { setSyncNote('Connect to the sheet first.'); return; }
+    setSyncNote('Saving\u2026');
+    pushSettingsNow().then(ok => { if (ok) toast('Settings saved to your Google Sheet.'); });
   });
 
   document.getElementById('pivot-to-sheet').addEventListener('click', pivotToSheet);
@@ -937,6 +1136,7 @@ function connectSheet() {
     renderSheetList(meta);
     updateGsOnlyButtons();
     pullSnapshotConfigFromSheet();
+    startSettingsSync(true);         // bring this browser in line with the sheet
   }).catch(err => {
     GS.meta = null;
     setGsStatus(err.message, 'err');
@@ -7845,15 +8045,51 @@ const Boards = {
   drag: null
 };
 
+/** Makes one saved chart safe to draw.
+ *
+ *  A half-written or hand-edited entry used to take the whole dashboard down
+ *  with it: boardCardHtml would throw on the bad one, the grid was never
+ *  written, and the board sat on the "load your reports" hint until you hit
+ *  Reset dashboard. Anything unusable is repaired here instead. */
+function sanitizeChart(c, i) {
+  if (!c || typeof c !== 'object') return null;
+  const known = CHART_TYPES.some(t => t[0] === c.type);
+  return {
+    id: c.id ? String(c.id) : 'c' + Date.now() + '-' + i,
+    title: c.title ? String(c.title) : (c.dim ? 'By ' + c.dim : 'Chart'),
+    type: known ? c.type : 'column',
+    source: CHART_SOURCES.some(t => t[0] === c.source) ? c.source : 'sales',
+    dim: CHART_DIMS.indexOf(c.dim) !== -1 ? c.dim : CHART_DIMS[0],
+    measure: CHART_MEASURES.some(m => m[0] === c.measure) ? c.measure : 'qty',
+    topN: Math.max(3, Math.min(50, parseInt(c.topN, 10) || 10)),
+    split: CHART_DIMS.indexOf(c.split) !== -1 ? c.split : undefined,
+    topSplit: Math.max(2, Math.min(12, parseInt(c.topSplit, 10) || 8)),
+    palette: c.palette, colors: Array.isArray(c.colors) ? c.colors : undefined,
+    multi: !!c.multi,
+    tcols: Array.isArray(c.tcols) && c.tcols.length ? c.tcols : undefined,
+    w: Math.max(160, parseInt(c.w, 10) || (c.type === 'kpi' ? 240 : 520)),
+    h: Math.max(110, parseInt(c.h, 10) || (c.type === 'kpi' ? 150 : 300))
+  };
+}
+
 function loadBoards() {
   try { Boards.locked = Store.get('sl_boards_locked') === '1'; } catch (e) {}
   ['dash', 'perf'].forEach(id => {
     const def = id === 'dash' ? DEFAULT_CHARTS : PERF_DEFAULT_CHARTS;
+    let list;
     try {
       const raw = Store.get(BOARD_DEFS[id].key);
-      Boards[id].charts = raw ? JSON.parse(raw) : def.slice();
-    } catch (e) { Boards[id].charts = def.slice(); }
-    if (!Boards[id].charts.length) Boards[id].charts = def.slice();
+      list = raw ? JSON.parse(raw) : null;
+    } catch (e) { list = null; }
+    if (!Array.isArray(list)) list = null;
+    if (list) {
+      const seen = {};
+      list = list.map(sanitizeChart).filter(Boolean).map(c => {
+        while (seen[c.id]) c.id = c.id + '_';     // duplicate ids collide in the instance map
+        seen[c.id] = 1; return c;
+      });
+    }
+    Boards[id].charts = (list && list.length) ? list : def.slice();
   });
 }
 function saveBoard(id) { Store.set(BOARD_DEFS[id].key, JSON.stringify(Boards[id].charts)); }
@@ -7970,9 +8206,17 @@ function renderBoard(boardId) {
 
   const locked = Boards.locked;
   grid.className = 'chart-board' + (locked ? ' locked' : '');
-  grid.innerHTML = B.charts.map((cfg, i) => boardCardHtml(boardId, cfg, i, locked)).join('');
+  // Built one card at a time on purpose: a single unusable chart shows a small
+  // notice in its own tile instead of taking the whole board down.
+  grid.innerHTML = B.charts.map((cfg, i) => {
+    try { return boardCardHtml(boardId, cfg, i, locked); }
+    catch (e) { return boardBrokenCardHtml(cfg, i); }
+  }).join('');
 
-  B.charts.forEach(cfg => drawBoardChart(boardId, cfg));
+  B.charts.forEach(cfg => {
+    try { drawBoardChart(boardId, cfg); }
+    catch (e) { /* the tile stays, just without its drawing */ }
+  });
   wireBoardCard(boardId, grid);
 }
 
@@ -7986,7 +8230,6 @@ function boardCardHtml(boardId, cfg, i, locked) {
         '<h3>' + escapeHtml(cfg.title) + '</h3>' +
         '<span class="board-meta">' + escapeHtml(cfg.source) + ' \u00b7 ' + escapeHtml(cfg.dim) + '</span>' +
         '<span class="spacer"></span>' +
-        '<button class="dash-ico" data-act="max" title="Enlarge to fill the browser tab">\u26F6</button>' +
         (locked
           ? '<span class="board-lockicon" title="The dashboard is locked in Settings">\uD83D\uDD12</span>'
           : '<button class="dash-ico" data-act="data" title="Change the data shown">\u25BE</button>' +
@@ -8004,6 +8247,14 @@ function boardCardHtml(boardId, cfg, i, locked) {
             : '<div class="board-body"><canvas id="bc-' + boardId + '-' + cfg.id + '"></canvas></div>') +
       (locked ? '' : '<span class="board-resize" title="Drag to resize"></span>') +
     '</div>';
+}
+
+/** Shown in place of a chart that cannot be read at all. */
+function boardBrokenCardHtml(cfg, i) {
+  return '<div class="board-card" data-cid="broken-' + i + '" style="width:320px;height:150px">' +
+    '<div class="board-head"><h3>Chart ' + (i + 1) + '</h3></div>' +
+    '<div class="board-body"><div class="sc-empty">This chart could not be read. ' +
+      'Edit or remove it, or use Reset dashboard.</div></div></div>';
 }
 
 /** The little strip under a card heading: swap the data without opening the
@@ -9669,7 +9920,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v44';
+const BUILD_VERSION = 'v45';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

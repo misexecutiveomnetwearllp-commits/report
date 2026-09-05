@@ -1855,3 +1855,7 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
   font-size: 11.5px; opacity: .6; text-align: center; padding: 10px;
   color: var(--board-fg, var(--text));
 }
+
+/* ---- settings sync row on the Google Sheet panel (v45) ---- */
+.connect-row.sync-row { flex-wrap: wrap; gap: 8px; }
+.sync-help { margin: 4px 0 0; font-size: 11.5px; line-height: 1.5; max-width: 70ch; }
