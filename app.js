@@ -6246,7 +6246,7 @@ const Catalog = {
   sub: 'all',
   search: '',
   flags: { stockout: false, nosale: false, overstock: false, lowstock: false, medium: false, healthy: false },
-  sort: 'worstcover',
+  sort: 'topseller',
   sortCol: null,        // clicked column key
   sortDir: -1,
   expanded: {},
@@ -6565,7 +6565,7 @@ function initCatalog() {
   // reordering the list would have made the box disagree with the table.
   if (sortSel) {
     sortSel.value = Catalog.sort;
-    if (!sortSel.value) { sortSel.value = 'worstcover'; Catalog.sort = 'worstcover'; }
+    if (!sortSel.value) { sortSel.value = 'topseller'; Catalog.sort = 'topseller'; }
     sortSel.addEventListener('change', e => {
       Catalog.sort = e.target.value; Catalog.sortCol = null; renderCatalog();
     });
@@ -8494,7 +8494,19 @@ function boardChartConfig(boardId, cfg) {
     data: data,
     options: {
       responsive: true, maintainAspectRatio: false,
-      animation: { duration: 220 },
+      // Bars, slices and lines slide to their new value rather than jumping.
+      // The board no longer rebuilds its canvases on a filter click, so a real
+      // animation can run: numbers ease into place and the fade on the bars
+      // you did not pick cross-fades instead of switching.
+      animation: { duration: 500, easing: 'easeOutQuart' },
+      animations: {
+        numbers: { type: 'number', duration: 500, easing: 'easeOutQuart' },
+        colors: { type: 'color', duration: 320, easing: 'easeOutQuad' }
+      },
+      transitions: {
+        active: { animation: { duration: 180 } },
+        resize: { animation: { duration: 0 } }
+      },
       indexAxis: indexAxis,
       onClick: (evt, els) => {
         if (!els || !els.length || !clickLabels.length) return;
@@ -8571,10 +8583,36 @@ function drawBoardKpi(boardId, cfg) {
     : 'no rows in this window';
   const unit = cfg.measure === 'rows' ? 'rows' : cfg.measure === 'items' ? 'items' : 'pcs';
 
+  const from = el._kpiValue === undefined ? value : el._kpiValue;
+  const animate = from !== value;
+  el._kpiValue = value;
+
+  // When the figure is going to be counted, start the markup at the OLD
+  // number. Writing the new one first and then counting back to the old one
+  // showed the answer for a frame and then appeared to run backwards.
   el.innerHTML =
-    '<div class="kpi-big" style="color:' + colours[0] + '">' + fmtNum(value) + '</div>' +
+    '<div class="kpi-big" style="color:' + colours[0] + '">' + fmtNum(animate ? from : value) + '</div>' +
     '<div class="kpi-unit">' + unit + '</div>' +
     '<div class="kpi-foot">Top ' + escapeHtml(cfg.dim) + ': <strong>' + escapeHtml(top) + '</strong></div>';
+
+  // Count from the old figure to the new one, so a filter click reads as a
+  // change rather than a different number appearing out of nowhere.
+  if (animate) countTo(el.querySelector('.kpi-big'), from, value);
+}
+
+/** Eases a number from one value to another, in the element's own text. */
+function countTo(el, from, to) {
+  if (!el) return;
+  const start = performance.now(), span = 460;
+  if (el._countStop) cancelAnimationFrame(el._countStop);
+  const step = now => {
+    const t = Math.min(1, (now - start) / span);
+    const e = 1 - Math.pow(1 - t, 4);                 // easeOutQuart, as the charts use
+    el.textContent = fmtNum(Math.round(from + (to - from) * e));
+    if (t < 1) el._countStop = requestAnimationFrame(step);
+    else { el.textContent = fmtNum(to); el._countStop = null; }
+  };
+  el._countStop = requestAnimationFrame(step);
 }
 
 /* ---- cross-highlighting -------------------------------------------------
@@ -8609,7 +8647,7 @@ function refreshBoardData(boardId) {
         inst.options.scales = next.options.scales;
         inst.options.plugins = next.options.plugins;
         inst.options.onClick = next.options.onClick;
-        try { inst.update('none'); return; } catch (e) { /* fall through to a redraw */ }
+        try { inst.update(); return; } catch (e) { /* fall through to a redraw */ }
       }
     }
     if (inst) { try { inst.destroy(); } catch (e) {} delete B.instances[cfg.id]; }
@@ -10027,7 +10065,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v48';
+const BUILD_VERSION = 'v49';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

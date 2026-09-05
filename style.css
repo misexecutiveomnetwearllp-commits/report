@@ -1881,3 +1881,29 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
 .save-all-note.ok   { color: var(--green, #1F6F5C); opacity: 1; }
 .save-all-note.warn { color: var(--rust, #A6402C); opacity: 1; }
 .save-all-note.busy { opacity: .7; }
+
+/* ---- smooth cross-filtering (v49) ----------------------------------------
+   The Chart.js cards animate their own bars. These are the pieces that are
+   redrawn as markup instead: they cross-fade so the board reads as one
+   movement rather than a set of separate flickers. */
+.svg-chart .sc-cell rect,
+.svg-chart .sc-cell path,
+.svg-chart .sc-cell line {
+  transition: fill .32s ease, stroke .32s ease, opacity .32s ease;
+}
+.board-body.svg-body { animation: sc-fade .28s ease; }
+@keyframes sc-fade { from { opacity: .55; } to { opacity: 1; } }
+
+/* table rows fade between highlighted and dimmed instead of switching */
+.dash-mini tr.dash-trow > td { transition: opacity .28s ease, box-shadow .28s ease; }
+
+/* the KPI figure keeps its size while it counts, so nothing reflows */
+.kpi-big { font-variant-numeric: tabular-nums; transition: color .32s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .svg-chart .sc-cell rect,
+  .svg-chart .sc-cell path,
+  .svg-chart .sc-cell line,
+  .dash-mini tr.dash-trow > td { transition: none; }
+  .board-body.svg-body { animation: none; }
+}
