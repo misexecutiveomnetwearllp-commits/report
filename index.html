@@ -25,6 +25,11 @@
       </div>
     </div>
 
+    <div class="save-bar">
+      <button id="save-all" class="ghost-btn small primary save-all-btn">💾 Save my setup</button>
+      <span id="save-all-note" class="save-all-note">Not connected to a sheet yet.</span>
+    </div>
+
     <nav class="tabs" id="tab-nav">
       <button class="tab-btn active" data-tab="performance">
         <span class="tab-no">01</span> Product Performance
@@ -166,8 +171,8 @@
         <input type="search" id="cat-search" class="text-input" placeholder="Search design, colour, brand&hellip;">
         <label class="toolbar-label">Sort:</label>
         <select id="cat-sort" class="select">
-          <option value="worstcover">Worst cover first</option>
           <option value="topseller">Best sellers first</option>
+          <option value="worstcover">Worst cover first</option>
           <option value="moststock">Most stock first</option>
           <option value="az">A to Z</option>
         </select>

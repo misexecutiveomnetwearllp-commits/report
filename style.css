@@ -1859,3 +1859,17 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
 /* ---- settings sync row on the Google Sheet panel (v45) ---- */
 .connect-row.sync-row { flex-wrap: wrap; gap: 8px; }
 .sync-help { margin: 4px 0 0; font-size: 11.5px; line-height: 1.5; max-width: 70ch; }
+
+/* ---- "Save my setup" in the sidebar (v47) ---- */
+.save-bar {
+  padding: 0 14px 12px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.save-all-btn { width: 100%; justify-content: center; }
+.save-all-note {
+  font-size: 10.5px; line-height: 1.4; opacity: .8;
+  font-family: var(--font-mono);
+}
+.save-all-note.ok   { color: var(--green, #1F6F5C); opacity: 1; }
+.save-all-note.warn { color: var(--rust, #A6402C); opacity: 1; }
+.save-all-note.busy { opacity: .7; }

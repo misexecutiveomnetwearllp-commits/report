@@ -439,12 +439,62 @@ function fmtWhen(iso) {
 function setSyncNote(msg) {
   const el = document.getElementById('gs-sync-note');
   if (el) el.textContent = msg;
+  if (typeof refreshSaveNote === 'function') refreshSaveNote();
 }
 
 /** Called once the sheet connection is known to work. */
 function startSettingsSync(announce) {
   if (!GS.url || !GS.key) return;
   pullSettings(announce);
+}
+
+/* ---- the Save button in the sidebar --------------------------------------
+   Settings already save themselves a moment after you change them, but that
+   is invisible, and after losing a set of typed-in values once you want to
+   see it happen. This is that button: it writes everything to the sheet now
+   and says so. ------------------------------------------------------------ */
+function initSaveButton() {
+  const btn = document.getElementById('save-all');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!GS.url || !GS.key) {
+      setSaveNote('Connect a Google Sheet first \u2014 see the Google Sheet tab.', 'warn');
+      toast('Connect your Google Sheet first, on the Google Sheet tab.');
+      return;
+    }
+    setSaveNote('Saving\u2026', 'busy');
+    btn.disabled = true;
+    pushSettingsNow().then(okDone => {
+      btn.disabled = false;
+      if (okDone) {
+        setSaveNote('Saved \u00b7 ' + fmtWhen(new Date().toISOString()), 'ok');
+        toast('Your setup is saved. Any browser that opens the site will now start from here.');
+      } else {
+        setSaveNote('Could not save \u2014 see the Google Sheet tab.', 'warn');
+      }
+    });
+  });
+  refreshSaveNote();
+}
+
+function setSaveNote(msg, cls) {
+  const el = document.getElementById('save-all-note');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'save-all-note' + (cls ? ' ' + cls : '');
+}
+
+/** Keeps the little line under the button honest about where things stand. */
+function refreshSaveNote() {
+  if (!GS.url || !GS.key) {
+    setSaveNote('Saved in this browser only \u2014 connect a sheet to share it.', 'warn');
+  } else if (Sync.lastPush) {
+    setSaveNote('Saved \u00b7 ' + fmtWhen(new Date(Sync.lastPush).toISOString()), 'ok');
+  } else if (Sync.lastPulled) {
+    setSaveNote('Loaded from your sheet \u00b7 ' + fmtWhen(Sync.lastPulled), 'ok');
+  } else {
+    setSaveNote('Connected \u2014 changes save on their own.', 'ok');
+  }
 }
 
 function downloadBlob(content, filename, mime) {
@@ -6360,8 +6410,20 @@ function buildCatalog() {
 function catalogMetrics(x, days, anchor) {
   const avgDaily = x.sold / days;
   const cover = avgDaily > 0 ? x.cbs / avgDaily : (x.cbs > 0 ? Infinity : 0);
-  const opening = x.sold + x.cbs;
-  const sellThrough = opening > 0 ? (x.sold / opening) * 100 : 0;
+  // Sell-through = how much of what you had actually sold.
+  //
+  // "What you had" is the opening stock plus everything bought in the window.
+  // The old version divided by sold + closing, which quietly reads 100% for
+  // ANY row whose closing is zero - including rows with no stock record at
+  // all. GARMENTS showed 307 sold, no opening, no purchases and no stock
+  // rows whatsoever, yet sat at the top of the column on a confident 100%.
+  // With nothing to divide by, the honest answer is that we do not know, so
+  // the cell shows a dash.
+  const available = (x.hasOBS ? x.obs : 0) + x.purchased;
+  let sellThrough;
+  if (available > 0) sellThrough = (x.sold / available) * 100;
+  else if (x.cbs > 0 || x.hasOBS) sellThrough = (x.sold / (x.sold + x.cbs)) * 100;
+  else sellThrough = null;                       // no stock and no purchases
   const daysSince = x.lastSale ? Math.round((anchor - x.lastSale) / 86400000) : null;
 
   // Status is read off the SAME Stock % that colours the row, so the word and
@@ -6442,8 +6504,19 @@ function initCatalogHeightGrip() {
   const box = document.getElementById('cat-scroll-box');
   if (!grip || !box) return;
 
+  // The stylesheet caps this box at 64vh. An inline height alone loses to
+  // that cap, so dragging could never make the table taller than about
+  // two-thirds of the window. Setting max-height alongside it lifts the cap.
+  let currentH = 0;
+  function applyHeight(h) {
+    currentH = Math.round(h);
+    box.style.flex = '0 0 auto';
+    box.style.height = currentH + 'px';
+    box.style.maxHeight = currentH + 'px';
+  }
+
   const saved = parseInt(Store.get('sl_cat_height') || '', 10);
-  if (saved > 120) { box.style.flex = '0 0 auto'; box.style.height = saved + 'px'; }
+  if (saved > 120) applyHeight(saved);
 
   grip.addEventListener('mousedown', e => {
     e.preventDefault();
@@ -6453,14 +6526,17 @@ function initCatalogHeightGrip() {
     document.body.classList.add('row-resizing');
 
     const move = ev => {
-      const h = Math.max(140, startH + (ev.clientY - startY));
-      box.style.height = h + 'px';
+      // no ceiling: drag it as tall as you like and the page scrolls
+      applyHeight(Math.max(140, startH + (ev.clientY - startY)));
     };
     const up = () => {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       document.body.classList.remove('row-resizing');
-      Store.set('sl_cat_height', String(Math.round(box.getBoundingClientRect().height)));
+      // Save the height we actually set, not a measured rectangle. Measuring
+      // gives 0 whenever the tab is not laid out at that instant, which then
+      // saved a zero and lost the setting.
+      if (currentH > 120) Store.set('sl_cat_height', String(currentH));
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
@@ -6468,7 +6544,7 @@ function initCatalogHeightGrip() {
 
   // double-click puts it back to filling the tab
   grip.addEventListener('dblclick', () => {
-    box.style.flex = ''; box.style.height = '';
+    box.style.flex = ''; box.style.height = ''; box.style.maxHeight = '';
     Store.remove('sl_cat_height');
     toast('Table height reset to fit the window.');
   });
@@ -6483,9 +6559,17 @@ function initCatalog() {
   document.getElementById('cat-search').addEventListener('input', debounce(e => {
     Catalog.search = e.target.value; renderCatalog();
   }, 200));
-  document.getElementById('cat-sort').addEventListener('change', e => {
-    Catalog.sort = e.target.value; Catalog.sortCol = null; renderCatalog();
-  });
+  const sortSel = document.getElementById('cat-sort');
+  // Point the box at the sort that is actually in use. Without this the
+  // browser just selects whichever option happens to be listed first, so
+  // reordering the list would have made the box disagree with the table.
+  if (sortSel) {
+    sortSel.value = Catalog.sort;
+    if (!sortSel.value) { sortSel.value = 'worstcover'; Catalog.sort = 'worstcover'; }
+    sortSel.addEventListener('change', e => {
+      Catalog.sort = e.target.value; Catalog.sortCol = null; renderCatalog();
+    });
+  }
   document.getElementById('cat-expand-all').addEventListener('click', () => {
     const rows = catalogFiltered(buildCatalog().rows).slice(0, 60);
     rows.forEach(r => { Catalog.expanded[r.key] = true; });
@@ -6541,47 +6625,21 @@ function replenBulkApply(field, value) {
   toast(field.toUpperCase() + ' set to ' + v + ' on ' + rows.length + ' designs.');
 }
 
+/** The row under the catalogue toolbar.
+ *
+ *  The "Set for all listed designs" boxes were removed in v46 at the user's
+ *  request - the same four values already live in Settings > 02 Catalog as
+ *  the defaults for every row, and each row can still be typed over
+ *  individually. Only the escape hatch stays: one button to drop every
+ *  manual value and go back to the calculated numbers. */
 function replenBulkBarHtml() {
   return '<div class="cat-bulk">' +
-    '<span class="toolbar-label">Set for all listed designs:</span>' +
-    '<label class="toolbar-label">ADC</label><input type="number" id="bulk-adc" class="text-input" min="0" step="0.01" value="' + (Replen.bulk.adc !== undefined ? Replen.bulk.adc : '') + '">' +
-    '<label class="toolbar-label">LT</label><input type="number" id="bulk-lt" class="text-input" min="0" step="1" value="' + (Replen.bulk.lt !== undefined ? Replen.bulk.lt : '') + '">' +
-    '<label class="toolbar-label">SF</label><input type="number" id="bulk-sf" class="text-input" min="0" step="0.1" value="' + (Replen.bulk.sf !== undefined ? Replen.bulk.sf : '') + '">' +
-    '<label class="toolbar-label">MOQ</label><input type="number" id="bulk-moq" class="text-input" min="0" step="1" value="' + (Replen.bulk.moq !== undefined ? Replen.bulk.moq : '') + '">' +
-    '<button class="ghost-btn small primary" id="bulk-apply">Apply</button>' +
     '<button class="ghost-btn small" id="bulk-clear">Clear all manual values</button>' +
+    '<span class="drill-count">puts every ADC, LT, SF and MOQ back to the calculated value</span>' +
     '</div>';
 }
 
 function wireReplenBulk() {
-  const ap = document.getElementById('bulk-apply');
-  if (ap) ap.addEventListener('click', () => {
-    // Read every box FIRST. Applying one at a time re-drew the bar and wiped
-    // the boxes that had not been read yet.
-    const picked = [];
-    [['adc', 'bulk-adc'], ['lt', 'bulk-lt'], ['sf', 'bulk-sf'], ['moq', 'bulk-moq']].forEach(([f, id]) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      if (el.value !== '' && !isNaN(parseFloat(el.value))) {
-        const v = parseFloat(el.value);
-        Replen.bulk[f] = v;
-        picked.push([f, v]);
-      } else delete Replen.bulk[f];
-    });
-
-    if (!picked.length) { saveReplenBulk(); toast('Fill ADC, LT, SF or MOQ first.'); return; }
-
-    const rows = Catalog.lastRows || [];
-    if (!rows.length) { toast('Nothing on screen to apply to.'); return; }
-    rows.forEach(d => {
-      const o = Replen.overrides[d.path] || (Replen.overrides[d.path] = {});
-      picked.forEach(([f, v]) => { o[f] = v; });
-    });
-    saveReplen();
-    saveReplenBulk();
-    renderCatalog();
-    toast(picked.map(p => p[0].toUpperCase() + ' ' + p[1]).join(', ') + ' set on ' + rows.length + ' designs.');
-  });
   const cl = document.getElementById('bulk-clear');
   if (cl) cl.addEventListener('click', () => {
     Replen.overrides = {}; Replen.bulk = {};
@@ -6606,7 +6664,13 @@ function renderCatalog() {
   const extra = document.getElementById('cat-extra');
   if (extra) {
     const planOn = ['adc','lt','sf','moq','ml','mit','stockpct','reorder'].some(catColOn);
-    extra.innerHTML = planOn ? (replenLegendHtml() + replenBulkBarHtml()) : '';
+    // The colour key sits above the table. It is off by default now - the
+    // colours are self-explanatory once you know them, and the strip was
+    // taking a line of screen for nothing. Turn it back on in
+    // Settings > 02 Catalog if you want the reminder.
+    extra.innerHTML = planOn
+      ? ((CatPrefs.showLegend ? replenLegendHtml() : '') + replenBulkBarHtml())
+      : '';
     if (planOn) wireReplenBulk();
   }
   const rows = catalogFiltered(built.rows);
@@ -6645,7 +6709,10 @@ function renderCatalog() {
   const tPurch = rows.reduce((a, r) => a + r.purchased, 0);
   const tObs = rows.reduce((a, r) => a + r.obs, 0);
   const tCbs = rows.reduce((a, r) => a + r.cbs, 0);
-  const tST = (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
+  // same basis as the rows: sold against what was available
+  const tAvail = rows.reduce((a, r) => a + (r.hasOBS ? r.obs : 0) + r.purchased, 0);
+  const tST = tAvail > 0 ? (tSold / tAvail) * 100
+            : (tSold + tCbs) > 0 ? (tSold / (tSold + tCbs)) * 100 : 0;
   // totals now use each row's own path, and add up the max level as well
   const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs, r));
   const tReorder = reps.reduce((a, x) => a + x.reorder, 0);
@@ -6794,6 +6861,7 @@ function catSortValue(d, col) {
   if (col === 'obs') return d.obs;
   if (col === 'cbs') return d.cbs;
   if (col === 'cover') return d.cover === Infinity ? 1e12 : d.cover;
+  if (col === 'sellThrough') return d.sellThrough === null ? -Infinity : d.sellThrough;
   if (col === 'lastSale') return d.lastSale ? d.lastSale.getTime() : -Infinity;
   if (col === 'status') return String(d.status).toLowerCase();
   if (['adc', 'lt', 'sf', 'moq', 'ml', 'mit', 'pct', 'reorder'].indexOf(col) !== -1) {
@@ -6874,7 +6942,9 @@ function catalogNodeRow(n, days) {
     (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(n.cbs) + '</td>' : '') +
     replenCells(n.path, r) +
     (catColOn('cover') ? '<td class="num">' + (n.cover === Infinity ? '\u221E' : fmtNum(n.cover, 0) + 'd') + '</td>' : '') +
-    (catColOn('sellthru') ? '<td class="num">' + fmtNum(n.sellThrough, 1) + '%</td>' : '') +
+    (catColOn('sellthru') ? '<td class="num"' +
+        (n.sellThrough === null ? ' title="No opening stock, no purchases and no stock rows \u2014 there is nothing to measure the sales against."' : '') +
+        '>' + (n.sellThrough === null ? '\u2014' : fmtNum(n.sellThrough, 1) + '%') + '</td>' : '') +
     (catColOn('lastsold') ? '<td>' + (n.lastSale ? fmtDate(n.lastSale) : '\u2014') + '</td>' : '') +
     (catColOn('status') ? '<td><span class="status-tag ' + catalogStatusClass(n.status) + '">' + n.status + '</span></td>' : '') +
   '</tr>';
@@ -7281,6 +7351,7 @@ const CATPREFS_DEFAULT = {
   showStrip: true,      // colour-coded size bar under each colour row
   lowStockAt: 2,
   // thresholds
+  showLegend: false,      // the Stock % colour key above the table
   stripUntil: 'opening',  // colour bar under a row stops after this column
   bandLow: 33,            // up to here: Low stock
   bandMid: 66,            // up to here: Medium stock
@@ -7530,6 +7601,10 @@ function renderCatalogSettings(wrap) {
       'is skipped, and the bar falls back to the full width.</p>' +
 
     '<h3 class="snap-set-title">Stock % bands</h3>' +
+    row('Colour key',
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-legend"' +
+        (CatPrefs.showLegend ? ' checked' : '') + '> Show the colour key above the table</label>' +
+      '<span class="drill-count">the strip listing what each Stock % colour means</span>') +
     (function () {
       const b = stockBands();
       return row('Bands',
@@ -7609,6 +7684,7 @@ function renderCatalogSettings(wrap) {
   bindC('cs-strip', e => { CatPrefs.showStrip = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
   bindC('cs-stripuntil', e => { CatPrefs.stripUntil = e.target.value; saveCatPrefs(); renderCatalog(); });
+  bindC('cs-legend', e => { CatPrefs.showLegend = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-band-low', e => { CatPrefs.bandLow = Math.max(1, parseInt(e.target.value, 10) || 33); saveCatPrefs(); renderCatalog(); });
   bindC('cs-band-mid', e => { CatPrefs.bandMid = Math.max(2, parseInt(e.target.value, 10) || 66); saveCatPrefs(); renderCatalog(); });
   bindC('cs-band-good', e => { CatPrefs.bandGood = Math.max(3, parseInt(e.target.value, 10) || 100); saveCatPrefs(); renderCatalog(); });
@@ -9920,7 +9996,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v45';
+const BUILD_VERSION = 'v47';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -9951,6 +10027,10 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('settings', initSettings);
   safeInit('col-resize', initColResize);
   safeInit('catalog-prefs', loadCatPrefs);
+  // Without this the manual ADC / LT / SF / MOQ / MIT values were written to
+  // storage on every edit and then never read again, so they vanished the
+  // moment the window was closed.
+  safeInit('replen', loadReplen);
   safeInit('catalog', initCatalog);
   safeInit('boards', initBoards);
   safeInit('board-theme', loadBoardTheme);
@@ -9959,6 +10039,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('session', initSession);
   safeInit('period-selects', wirePeriodSelects);
   safeInit('gs-buttons', updateGsOnlyButtons);
+  safeInit('save-button', initSaveButton);
   safeInit('dashboard-render', renderDashboard);
   safeInit('performance-render', renderPerformance);
   safeInit('relations-render', renderRelations);
