@@ -1318,8 +1318,16 @@ body.cat-light-head .cat-table thead th[data-sc]:hover { background: #E3DECF; }
 .cs-block.sp-over { background: #b4a7d6; }
 
 /* ============ DASHBOARD BUILDER ============ */
-.dash-filters { margin-bottom: 10px; }
-.dash-filters:empty { display: none; }
+/* The highlighting row keeps its space whether or not anything is in it.
+   It used to collapse to nothing and then spring back the moment you clicked
+   a bar, shoving the whole board down the page mid-click. */
+.dash-filters {
+  margin-bottom: 10px;
+  min-height: 30px;
+  align-items: center;
+  align-content: center;
+}
+.dash-filters:empty { display: flex; }
 .dash-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .dash-card {
   background: var(--paper-raised); border: 1px solid var(--line);

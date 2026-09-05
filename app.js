@@ -8307,7 +8307,7 @@ function boardCardHtml(boardId, cfg, i, locked) {
         '<span class="board-meta">' + escapeHtml(cfg.source) + ' \u00b7 ' + escapeHtml(cfg.dim) + '</span>' +
         '<span class="spacer"></span>' +
         (locked
-          ? '<span class="board-lockicon" title="The dashboard is locked in Settings">\uD83D\uDD12</span>'
+          ? ''
           : '<button class="dash-ico" data-act="data" title="Change the data shown">\u25BE</button>' +
             '<button class="dash-ico" data-act="edit" title="Edit">\u270E</button>' +
             '<button class="dash-ico" data-act="dup" title="Duplicate">\u29C9</button>' +
@@ -8380,6 +8380,23 @@ function drawBoardChart(boardId, cfg) {
 
   const canvas = document.getElementById('bc-' + boardId + '-' + cfg.id);
   if (!canvas || typeof Chart === 'undefined') return;
+  const conf = boardChartConfig(boardId, cfg);
+  if (conf) B.instances[cfg.id] = makeChart(canvas.getContext('2d'), conf);
+}
+
+/** Builds the whole Chart.js configuration for one card.
+ *
+ *  Kept separate from drawing so that a filter click can hand the same
+ *  freshly-computed data to a chart that already exists, rather than
+ *  destroying the canvas and starting again. */
+function boardChartConfig(boardId, cfg) {
+  if (cfg.type === 'kpi' || cfg.type === 'table' || isSvgType(cfg.type)) return null;
+
+  const series = boardSeries(boardId, cfg);
+  const labels = series.labels, values = series.values;
+  const pick = boardPick(boardId, cfg);
+  const colours = chartColours(boardId, cfg);
+
 
   const isPie = cfg.type === 'pie' || cfg.type === 'doughnut' || cfg.type === 'polar';
   const chartType = CHART_JS_TYPES[cfg.type] || 'bar';
@@ -8472,7 +8489,7 @@ function drawBoardChart(boardId, cfg) {
                y: Object.assign({ beginAtZero: true, stacked: stacked }, axis) };
   }
 
-  B.instances[cfg.id] = makeChart(canvas.getContext('2d'), {
+  return {
     type: chartType,
     data: data,
     options: {
@@ -8498,7 +8515,7 @@ function drawBoardChart(boardId, cfg) {
       },
       scales: scales
     }
-  });
+  };
 }
 
 function drawBoardTable(boardId, cfg, labels, values, pick) {
@@ -8581,6 +8598,20 @@ function refreshBoardData(boardId) {
   renderBoardFilters(boardId);
   B.charts.forEach(cfg => {
     const inst = B.instances[cfg.id];
+    // Feed the existing chart its new numbers instead of tearing it down and
+    // building a fresh one. Destroying every canvas on each click was what
+    // made the whole board blink.
+    if (inst && inst.data && typeof inst.update === 'function') {
+      const next = boardChartConfig(boardId, cfg);
+      if (next) {
+        inst.data.labels = next.data.labels;
+        inst.data.datasets = next.data.datasets;
+        inst.options.scales = next.options.scales;
+        inst.options.plugins = next.options.plugins;
+        inst.options.onClick = next.options.onClick;
+        try { inst.update('none'); return; } catch (e) { /* fall through to a redraw */ }
+      }
+    }
     if (inst) { try { inst.destroy(); } catch (e) {} delete B.instances[cfg.id]; }
     drawBoardChart(boardId, cfg);
   });
@@ -9996,7 +10027,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v47';
+const BUILD_VERSION = 'v48';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
