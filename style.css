@@ -1317,6 +1317,40 @@ body.cat-light-head .cat-table thead th[data-sc]:hover { background: #E3DECF; }
 .cs-block.sp-good { background: #b6d7a8; }
 .cs-block.sp-over { background: #b4a7d6; }
 
+/* ---- day chips (v51) ------------------------------------------------------
+   Every chip is the same square, and the strip is packed against the right so
+   the most recent day always sits at the same place on the line, whatever the
+   chip count is set to. Older days run back to the left. */
+.cs-bar.cs-days {
+  height: auto;
+  gap: 2px;
+  justify-content: flex-end;   /* newest day pinned to the right */
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.cs-day {
+  display: block;
+  /* Grows to the size set by the dot slider, but shrinks rather than being
+     clipped, so raising the chip count always shows every extra chip. All
+     chips in a strip stay the same size as each other either way. */
+  flex: 1 1 0;
+  min-width: 2px;
+  max-width: var(--cs-chip, 9px);
+  height: var(--cs-chip, 9px);
+  border-radius: 1.5px;
+  background: #ea9999;
+}
+.cs-day.sp-low  { background: #ea9999; }
+.cs-day.sp-mid  { background: #ffd966; }
+.cs-day.sp-good { background: #b6d7a8; }
+.cs-day.sp-over { background: #b4a7d6; }
+/* a day with no sale is left as an empty square, not a coloured one */
+.cs-day.cs-none {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line, #D8D2C4);
+}
+body.board-dark .cs-day.cs-none { box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
+
 /* ============ DASHBOARD BUILDER ============ */
 /* The highlighting row keeps its space whether or not anything is in it.
    It used to collapse to nothing and then spring back the moment you clicked

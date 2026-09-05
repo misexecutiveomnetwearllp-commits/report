@@ -6386,10 +6386,24 @@ function buildCatalog() {
     META_KEEP.forEach(f => { if (!n.meta[f] && r[f]) n.meta[f] = String(r[f]); });
   }
 
+  // Which day of the window a record falls on. 0 is the most recent day, 1 is
+  // the day before, and so on - the order the chip strip is drawn in.
+  function dayIndex(d) {
+    if (!d) return -1;
+    return Math.round((anchor - d) / 86400000);
+  }
+
   sales.forEach(r => {
     const q = recQty(r), sku = skuOf(r);
+    const di = dayIndex(r.Date);
     nodeFor(r).forEach(n => {
       n.sold += q;
+      // Only the days that actually sold are stored, so this costs about one
+      // entry per sales line rather than one per row per day.
+      if (di >= 0 && di < 400) {
+        if (!n.dayMap) n.dayMap = new Map();
+        n.dayMap.set(di, (n.dayMap.get(di) || 0) + q);
+      }
       if (n.skuMap) n.skuMap.set(sku, (n.skuMap.get(sku) || 0) + q);
       if (r.Date && (!n.lastSale || r.Date > n.lastSale)) n.lastSale = r.Date;
       addMeta(n, r);
@@ -6988,22 +7002,32 @@ function catalogNodeRow(n, days) {
   '</tr>';
 
   // colour-coded bar under the row, one block per child sized by stock
-  if (CatPrefs.showStrip && kids.length) html += catalogStripRow(n, days);
+  if (CatPrefs.showStrip && ((CatPrefs.stripMode || 'days') === 'days' || kids.length)) {
+    html += catalogStripRow(n, days);
+  }
 
   if (open) kids.forEach(k => { html += catalogNodeRow(k, days); });
   return html;
 }
 
-/** The bar under a row: one block per child, width by stock, colour by band. */
+/** The colour strip under a row.
+ *
+ *  Two shapes, chosen in Settings > 02 Catalog:
+ *
+ *  "days"  - one equal-sized chip per day, the most recent at the RIGHT and
+ *            older days running back to the left, so the strip reads like a
+ *            calendar ending today. Colour is that day's sales against the
+ *            row's own daily average: quiet days red, ordinary yellow, good
+ *            green, exceptional purple, and nothing sold left blank.
+ *
+ *  "parts" - the original: one block per child, width by stock. Kept because
+ *            it answers a different question - how the stock is split.
+ */
 function catalogStripRow(n, days) {
-  const kids = n.childList || [];
-  const blocks = kids.map(k => {
-    const kr = replenFor(k.path, k.sold, days, k.cbs, k);
-    return '<span class="cs-block ' + stockPctClass(kr.pct) + '" style="flex:' + Math.max(1, k.cbs) + '" ' +
-      'title="' + escapeHtml(k.key + ': ' + fmtNum(k.cbs) + ' in stock, ' +
-        (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
-  }).join('');
+  const mode = CatPrefs.stripMode || 'days';
+  const blocks = mode === 'parts' ? catalogStripParts(n, days) : catalogStripDays(n, days);
   if (!blocks) return '';
+
   // How far across the table the bar is allowed to run. It used to span every
   // column, first to last; now it stops after the column chosen in
   // Settings > 02 Catalog, and the rest of the row is left clear.
@@ -7013,9 +7037,48 @@ function catalogStripRow(n, days) {
   // drill-list colour as the row it belongs to.
   return '<tr class="cat-strip-row cat-lvl-' + Math.min(n.depth, 8) + '">' +
     '<td colspan="' + span + '" style="--indent:' + (10 + (n.depth + 1) * 18) + 'px">' +
-      '<span class="cs-bar">' + blocks + '</span></td>' +
+      '<span class="cs-bar cs-' + mode + '">' + blocks + '</span></td>' +
     (span < total ? '<td colspan="' + (total - span) + '" class="cs-pad"></td>' : '') +
     '</tr>';
+}
+
+/** One block per child, width by stock, colour by band. */
+function catalogStripParts(n, days) {
+  const kids = n.childList || [];
+  return kids.map(k => {
+    const kr = replenFor(k.path, k.sold, days, k.cbs, k);
+    return '<span class="cs-block ' + stockPctClass(kr.pct) + '" style="flex:' + Math.max(1, k.cbs) + '" ' +
+      'title="' + escapeHtml(k.key + ': ' + fmtNum(k.cbs) + ' in stock, ' +
+        (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
+  }).join('');
+}
+
+/** One equal chip per day, newest on the right. */
+function catalogStripDays(n, days) {
+  const count = Math.max(5, Math.min(120, CatPrefs.stripDays || 30));
+  const map = n.dayMap;
+  if (!map || !map.size) return '';
+
+  const anchor = dataAnchorDate();
+  const adc = days > 0 ? n.sold / days : 0;
+  const chips = [];
+
+  // Drawn oldest first so the last chip lands against the right-hand edge.
+  for (let i = count - 1; i >= 0; i--) {
+    const q = map.get(i) || 0;
+    let band;
+    if (q <= 0) band = 'cs-none';
+    else if (!(adc > 0)) band = 'sp-good';
+    else if (q < adc * 0.5) band = 'sp-low';
+    else if (q < adc) band = 'sp-mid';
+    else if (q < adc * 2) band = 'sp-good';
+    else band = 'sp-over';
+
+    const d = new Date(anchor.getTime() - i * 86400000);
+    chips.push('<span class="cs-day ' + band + '" title="' +
+      escapeHtml(fmtDate(d) + ' \u2014 ' + (q > 0 ? fmtNum(q) + ' sold' : 'nothing sold')) + '"></span>');
+  }
+  return chips.join('');
 }
 
 function renderCatalogFilters(all) {
@@ -7390,6 +7453,8 @@ const CATPREFS_DEFAULT = {
   lowStockAt: 2,
   // thresholds
   showLegend: false,      // the Stock % colour key above the table
+  stripMode: 'days',      // 'days' = one chip per day, 'parts' = one block per child
+  stripDays: 30,          // how many day chips to draw
   stripUntil: 'opening',  // colour bar under a row stops after this column
   bandLow: 33,            // up to here: Low stock
   bandMid: 66,            // up to here: Medium stock
@@ -7455,6 +7520,8 @@ function applyCatPrefs() {
   r.style.setProperty('--cat-thumb-w', CatPrefs.thumbW + 'px');
   r.style.setProperty('--cat-thumb-h', CatPrefs.thumbH + 'px');
   r.style.setProperty('--cat-dot', CatPrefs.dotSize + 'px');
+  // day chips follow the same size slider as the colour dots, a little smaller
+  r.style.setProperty('--cs-chip', Math.max(5, Math.round(CatPrefs.dotSize * 0.75)) + 'px');
   r.style.setProperty('--cat-dot-radius', CatPrefs.dotShape === 'circle' ? '50%' : '2px');
   document.body.classList.toggle('cat-light-head', CatPrefs.headerStyle === 'light');
   document.body.classList.toggle('cat-no-zebra', !CatPrefs.zebra);
@@ -7623,6 +7690,19 @@ function renderCatalogSettings(wrap) {
     '</div>' +
 
     '<h3 class="snap-set-title">Colour code bar</h3>' +
+    row('Shape',
+      '<select id="cs-stripmode" class="select">' +
+        '<option value="days"' + ((CatPrefs.stripMode || 'days') === 'days' ? ' selected' : '') + '>One chip per day, newest on the right</option>' +
+        '<option value="parts"' + (CatPrefs.stripMode === 'parts' ? ' selected' : '') + '>One block per child, width by stock</option>' +
+      '</select>' +
+      '<label class="toolbar-label">Chips</label>' +
+      '<input type="number" id="cs-stripdays" class="text-input narrow" min="5" max="120" value="' +
+        (CatPrefs.stripDays || 30) + '">' +
+      '<span class="drill-count">how many days the strip covers</span>') +
+    '<p class="drill-subtitle">Every chip is the same size and stands for one day. The right-hand ' +
+      'chip is the most recent day in your data and the strip runs backwards from there. ' +
+      'Colour compares that day against the row\u2019s own daily average: quiet days red, ' +
+      'ordinary yellow, good green, exceptional purple, and a day with no sale is left blank.</p>' +
     row('Bar width',
       '<label class="toolbar-label">Stop after</label>' +
       '<select id="cs-stripuntil" class="select">' +
@@ -7721,6 +7801,11 @@ function renderCatalogSettings(wrap) {
   bindC('cs-maxsizes', e => { CatPrefs.maxSizeChips = Math.max(4, Math.min(60, parseInt(e.target.value, 10) || 24)); saveCatPrefs(); renderCatalog(); });
   bindC('cs-strip', e => { CatPrefs.showStrip = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-stripmode', e => { CatPrefs.stripMode = e.target.value; saveCatPrefs(); renderCatalog(); });
+  bindC('cs-stripdays', e => {
+    CatPrefs.stripDays = Math.max(5, Math.min(120, parseInt(e.target.value, 10) || 30));
+    saveCatPrefs(); renderCatalog();
+  });
   bindC('cs-stripuntil', e => { CatPrefs.stripUntil = e.target.value; saveCatPrefs(); renderCatalog(); });
   bindC('cs-legend', e => { CatPrefs.showLegend = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-band-low', e => { CatPrefs.bandLow = Math.max(1, parseInt(e.target.value, 10) || 33); saveCatPrefs(); renderCatalog(); });
@@ -10103,7 +10188,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v50';
+const BUILD_VERSION = 'v51';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
