@@ -7063,33 +7063,50 @@ function catalogStripParts(n, days) {
   }).join('');
 }
 
-/** One equal chip per day, newest on the right. */
+/** One equal chip per selling day, newest on the right.
+ *
+ *  Only days that actually had a sale get a chip. Drawing every calendar day
+ *  meant a row that sells twice a week came out as a dotted line with holes
+ *  through it, and the holes carried no information - they just made the
+ *  colours hard to read. The strip is now the row's last N trading days, run
+ *  together with no gaps; each chip's tooltip still names its date, so a jump
+ *  in the dates is where the quiet spell was.
+ */
 function catalogStripDays(n, days) {
-  // as few as two chips is a legitimate choice - they simply come out wide
   const count = Math.max(2, Math.min(120, CatPrefs.stripDays || 30));
   const map = n.dayMap;
   if (!map || !map.size) return '';
 
-  const anchor = dataAnchorDate();
-  const adc = days > 0 ? n.sold / days : 0;
-  const chips = [];
+  // most recent selling day first, then trimmed to the count and flipped so
+  // the newest ends up hard against the right-hand edge
+  const idx = [...map.keys()].filter(i => (map.get(i) || 0) > 0)
+    .sort((a, b) => a - b).slice(0, count).reverse();
+  if (!idx.length) return '';
 
-  // Drawn oldest first so the last chip lands against the right-hand edge.
-  for (let i = count - 1; i >= 0; i--) {
+  const anchor = dataAnchorDate();
+
+  // Each day is judged against a TYPICAL selling day for this row, not against
+  // the average over the whole window. Dividing by every calendar day made a
+  // line that sells once a fortnight look extraordinary every time it sold -
+  // three chips in four came out purple and the colour said nothing. The
+  // middle value of the row's own selling days is the fair comparison.
+  const qty = idx.map(i => map.get(i) || 0).slice().sort((a, b) => a - b);
+  const typical = qty.length ? qty[Math.floor(qty.length / 2)] : 0;
+
+  return idx.map(i => {
     const q = map.get(i) || 0;
     let band;
-    if (q <= 0) band = 'cs-none';
-    else if (!(adc > 0)) band = 'sp-good';
-    else if (q < adc * 0.5) band = 'sp-low';
-    else if (q < adc) band = 'sp-mid';
-    else if (q < adc * 2) band = 'sp-good';
+    if (!(typical > 0)) band = 'sp-good';
+    else if (q < typical * 0.5) band = 'sp-low';
+    else if (q < typical) band = 'sp-mid';
+    else if (q < typical * 2) band = 'sp-good';
     else band = 'sp-over';
 
     const d = new Date(anchor.getTime() - i * 86400000);
-    chips.push('<span class="cs-day ' + band + '" title="' +
-      escapeHtml(fmtDate(d) + ' \u2014 ' + (q > 0 ? fmtNum(q) + ' sold' : 'nothing sold')) + '"></span>');
-  }
-  return chips.join('');
+    return '<span class="cs-day ' + band + '" title="' +
+      escapeHtml(fmtDate(d) + ' \u2014 ' + fmtNum(q) + ' sold' +
+        (typical > 0 ? ' (a usual day for this row is ' + fmtNum(typical) + ')' : '')) + '"></span>';
+  }).join('');
 }
 
 function renderCatalogFilters(all) {
@@ -10209,7 +10226,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v52';
+const BUILD_VERSION = 'v53';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

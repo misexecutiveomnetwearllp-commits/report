@@ -1323,9 +1323,11 @@ body.cat-light-head .cat-table thead th[data-sc]:hover { background: #E3DECF; }
    chip count is set to. Older days run back to the left. */
 .cs-bar.cs-days {
   height: auto;
-  gap: 2px;
+  gap: 0;                      /* chips butt right up against each other */
   flex-wrap: nowrap;
   width: 100%;
+  border-radius: 0;
+  overflow: hidden;
 }
 .cs-day {
   display: block;
@@ -1337,13 +1339,26 @@ body.cat-light-head .cat-table thead th[data-sc]:hover { background: #E3DECF; }
   flex: 1 1 0;
   min-width: 1px;
   height: var(--cs-chip-h, 9px);
-  border-radius: 1.5px;
-  background: #ea9999;
+  border-radius: 0;            /* square ends, not lozenges */
+  background: var(--chip-low);
 }
-.cs-day.sp-low  { background: #ea9999; }
-.cs-day.sp-mid  { background: #ffd966; }
-.cs-day.sp-good { background: #b6d7a8; }
-.cs-day.sp-over { background: #b4a7d6; }
+
+/* Stronger colours than the soft ones used elsewhere. At this size the pastel
+   shades all read as the same beige smear; these are meant to be picked out
+   at a glance across a long list. */
+:root {
+  --chip-low:  #E03B2F;
+  --chip-mid:  #F2A81D;
+  --chip-good: #2FA84F;
+  --chip-over: #7A4FD1;
+}
+.cs-day.sp-low  { background: var(--chip-low); }
+.cs-day.sp-mid  { background: var(--chip-mid); }
+.cs-day.sp-good { background: var(--chip-good); }
+.cs-day.sp-over { background: var(--chip-over); }
+/* a hairline between chips so runs of one colour still read as separate days */
+.cs-day + .cs-day { box-shadow: inset 1px 0 0 rgba(255, 255, 255, .35); }
+.cs-day:hover { filter: brightness(1.12); }
 /* a day with no sale is left as an empty square, not a coloured one */
 .cs-day.cs-amber, .cat-band.cs-amber, .cs-block.cs-amber { background: #F6A821; }
 .cs-day.cs-none {
