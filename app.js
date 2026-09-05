@@ -1332,6 +1332,44 @@ function initTabs() {
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      onTabShown(btn.dataset.tab);
+    });
+  });
+}
+
+/** A hidden tab has no width, so anything drawn into it is drawn into nothing.
+ *
+ *  The boards are built at startup and after every data change, whichever tab
+ *  happens to be open - and the Dashboard is not the one the app opens on. Its
+ *  canvases were therefore created at zero by zero and stayed empty when you
+ *  finally switched to them. "Reset dashboard" appeared to be the cure only
+ *  because it redraws while the tab is on screen. Now the board is measured
+ *  again the moment its tab is shown. */
+function onTabShown(tab) {
+  const boardId = tab === 'dashboard' ? 'dash' : tab === 'performance' ? 'perf' : null;
+  if (boardId) remeasureBoard(boardId);
+}
+
+function remeasureBoard(boardId) {
+  const B = Boards[boardId];
+  const def = BOARD_DEFS[boardId];
+  if (!B || !def) return;
+  const grid = document.getElementById(def.grid);
+  if (!grid) return;
+
+  // nothing drawn yet (or wiped by an earlier failure) - build it properly
+  if (!grid.querySelector('.board-card') && B.charts.length && App.datasets.length) {
+    renderBoard(boardId);
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    B.charts.forEach(cfg => {
+      const inst = B.instances[cfg.id];
+      if (inst && inst.resize) { try { inst.resize(); } catch (e) {} }
+      // the hand-drawn ones are sized in pixels we read off the page, so they
+      // have to be drawn again rather than just resized
+      if (isSvgType(cfg.type)) { try { drawBoardSvgChart(boardId, cfg); } catch (e) {} }
     });
   });
 }
@@ -10065,7 +10103,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v49';
+const BUILD_VERSION = 'v50';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -10109,6 +10147,11 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('period-selects', wirePeriodSelects);
   safeInit('gs-buttons', updateGsOnlyButtons);
   safeInit('save-button', initSaveButton);
+  safeInit('board-resize', function () {
+    window.addEventListener('resize', debounce(function () {
+      ['dash', 'perf'].forEach(remeasureBoard);
+    }, 200));
+  });
   safeInit('dashboard-render', renderDashboard);
   safeInit('performance-render', renderPerformance);
   safeInit('relations-render', renderRelations);
