@@ -6963,11 +6963,17 @@ function catalogNodeRow(n, days) {
   // The colour column shows one block per child, tinted by that child's own
   // stock band - no colour swatches, the colour means stock health.
   const maxDots = CatPrefs.maxDots || 10;
+  // "Amber when stock is at or below" overrides the band colour: a size with
+  // only a piece or two left is worth flagging even when its percentage looks
+  // healthy. Until v52 this setting was saved but never read by anything.
+  const amberAt = CatPrefs.lowStockAt === undefined ? 2 : CatPrefs.lowStockAt;
   const dots = kids.slice(0, maxDots).map(k => {
     const kr = replenFor(k.path, k.sold, days, k.cbs, k);
-    return '<span class="cat-band ' + stockPctClass(kr.pct) + '" title="' +
+    const low = amberAt > 0 && k.cbs > 0 && k.cbs <= amberAt;
+    return '<span class="cat-band ' + (low ? 'cs-amber' : stockPctClass(kr.pct)) + '" title="' +
       escapeHtml(k.key + ' \u2014 ' + fmtNum(k.cbs) + ' in stock, ' + fmtNum(k.sold) + ' sold, ' +
-        (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
+        (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level' +
+        (low ? ' \u2014 running low' : '')) + '"></span>';
   }).join('') + (kids.length > maxDots ? '<span class="cat-more">+' + (kids.length - maxDots) + '</span>' : '');
 
   let html = '<tr class="cat-row cat-lvl-' + Math.min(n.depth, 8) + (open ? ' is-open' : '') +
@@ -7035,8 +7041,12 @@ function catalogStripRow(n, days) {
   const span = Math.max(1, Math.min(total, stripSpanCols()));
   // The bar carries its parent's level class, so it is tinted with the same
   // drill-list colour as the row it belongs to.
+  // No indent on the day strip: it is a reading of the whole row, so it runs
+  // from the very left of the table across to the column you chose to stop
+  // after. Only the old parts bar is stepped in with its parent.
+  const indent = mode === 'parts' ? (10 + (n.depth + 1) * 18) : 0;
   return '<tr class="cat-strip-row cat-lvl-' + Math.min(n.depth, 8) + '">' +
-    '<td colspan="' + span + '" style="--indent:' + (10 + (n.depth + 1) * 18) + 'px">' +
+    '<td colspan="' + span + '" style="--indent:' + indent + 'px">' +
       '<span class="cs-bar cs-' + mode + '">' + blocks + '</span></td>' +
     (span < total ? '<td colspan="' + (total - span) + '" class="cs-pad"></td>' : '') +
     '</tr>';
@@ -7055,7 +7065,8 @@ function catalogStripParts(n, days) {
 
 /** One equal chip per day, newest on the right. */
 function catalogStripDays(n, days) {
-  const count = Math.max(5, Math.min(120, CatPrefs.stripDays || 30));
+  // as few as two chips is a legitimate choice - they simply come out wide
+  const count = Math.max(2, Math.min(120, CatPrefs.stripDays || 30));
   const map = n.dayMap;
   if (!map || !map.size) return '';
 
@@ -7448,7 +7459,7 @@ const CATPREFS_DEFAULT = {
   maxDots: 10,
   showDotCounts: false,
   // size strip
-  maxSizeChips: 24,
+  stripHeight: 9,         // height of the colour bar chips, px
   showStrip: true,      // colour-coded size bar under each colour row
   lowStockAt: 2,
   // thresholds
@@ -7521,7 +7532,7 @@ function applyCatPrefs() {
   r.style.setProperty('--cat-thumb-h', CatPrefs.thumbH + 'px');
   r.style.setProperty('--cat-dot', CatPrefs.dotSize + 'px');
   // day chips follow the same size slider as the colour dots, a little smaller
-  r.style.setProperty('--cs-chip', Math.max(5, Math.round(CatPrefs.dotSize * 0.75)) + 'px');
+  r.style.setProperty('--cs-chip-h', (CatPrefs.stripHeight || 9) + 'px');
   r.style.setProperty('--cat-dot-radius', CatPrefs.dotShape === 'circle' ? '50%' : '2px');
   document.body.classList.toggle('cat-light-head', CatPrefs.headerStyle === 'light');
   document.body.classList.toggle('cat-no-zebra', !CatPrefs.zebra);
@@ -7666,14 +7677,11 @@ function renderCatalogSettings(wrap) {
       '<input type="number" id="cs-maxdots" class="text-input narrow" min="3" max="40" value="' + CatPrefs.maxDots + '">' +
       '<label class="toolbar-checkbox"><input type="checkbox" id="cs-dotcounts"' + (CatPrefs.showDotCounts ? ' checked' : '') + '> Show stock number on each dot</label>') +
 
-    '<h3 class="snap-set-title">Size run</h3>' +
-    row('Chips',
-      '<label class="toolbar-label">Max shown</label>' +
-      '<input type="number" id="cs-maxsizes" class="text-input narrow" min="4" max="60" value="' + CatPrefs.maxSizeChips + '">' +
-      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-strip"' +
-        (CatPrefs.showStrip ? ' checked' : '') + '> Colour bar under each colour row</label>' +
+    row('Low stock',
       '<label class="toolbar-label">Amber when stock is at or below</label>' +
-      '<input type="number" id="cs-lowstock" class="text-input narrow" min="0" max="50" value="' + CatPrefs.lowStockAt + '">') +
+      '<input type="number" id="cs-lowstock" class="text-input narrow" min="0" max="200" value="' +
+        (CatPrefs.lowStockAt === undefined ? 2 : CatPrefs.lowStockAt) + '">' +
+      '<span class="drill-count">a colour dot with this little left turns amber, whatever its band says</span>') +
 
     '<h3 class="snap-set-title">Replenishment defaults</h3>' +
     '<p class="drill-subtitle">Starting values for every design. Any figure you type into a row overrides these.</p>' +
@@ -7696,9 +7704,15 @@ function renderCatalogSettings(wrap) {
         '<option value="parts"' + (CatPrefs.stripMode === 'parts' ? ' selected' : '') + '>One block per child, width by stock</option>' +
       '</select>' +
       '<label class="toolbar-label">Chips</label>' +
-      '<input type="number" id="cs-stripdays" class="text-input narrow" min="5" max="120" value="' +
+      '<input type="number" id="cs-stripdays" class="text-input narrow" min="2" max="120" value="' +
         (CatPrefs.stripDays || 30) + '">' +
       '<span class="drill-count">how many days the strip covers</span>') +
+    row('Bar',
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-strip"' +
+        (CatPrefs.showStrip ? ' checked' : '') + '> Show the bar under each row</label>' +
+      '<label class="toolbar-label">Height</label>' +
+      '<input type="range" id="cs-stripheight" min="3" max="28" value="' + (CatPrefs.stripHeight || 9) + '">' +
+      '<span class="drill-count" id="cs-stripheight-val">' + (CatPrefs.stripHeight || 9) + 'px</span>') +
     '<p class="drill-subtitle">Every chip is the same size and stands for one day. The right-hand ' +
       'chip is the most recent day in your data and the strip runs backwards from there. ' +
       'Colour compares that day against the row\u2019s own daily average: quiet days red, ' +
@@ -7798,12 +7812,19 @@ function renderCatalogSettings(wrap) {
   bindC('cs-maxdots', e => { CatPrefs.maxDots = Math.max(3, Math.min(40, parseInt(e.target.value, 10) || 10)); saveCatPrefs(); renderCatalog(); });
   bindC('cs-dotcounts', e => { CatPrefs.showDotCounts = e.target.checked; saveCatPrefs(); renderCatalog(); });
 
-  bindC('cs-maxsizes', e => { CatPrefs.maxSizeChips = Math.max(4, Math.min(60, parseInt(e.target.value, 10) || 24)); saveCatPrefs(); renderCatalog(); });
   bindC('cs-strip', e => { CatPrefs.showStrip = e.target.checked; saveCatPrefs(); renderCatalog(); });
-  bindC('cs-lowstock', e => { CatPrefs.lowStockAt = Math.max(0, parseInt(e.target.value, 10) || 0); saveCatPrefs(); renderCatalog(); });
+  bindC('cs-lowstock', e => {
+    CatPrefs.lowStockAt = Math.max(0, Math.min(200, parseInt(e.target.value, 10) || 0));
+    saveCatPrefs(); renderCatalog();
+  });
+  bindC('cs-stripheight', e => {
+    CatPrefs.stripHeight = Math.max(3, Math.min(28, parseInt(e.target.value, 10) || 9));
+    wrap.querySelector('#cs-stripheight-val').textContent = CatPrefs.stripHeight + 'px';
+    saveCatPrefs(); applyCatPrefs(); renderCatalog();
+  });
   bindC('cs-stripmode', e => { CatPrefs.stripMode = e.target.value; saveCatPrefs(); renderCatalog(); });
   bindC('cs-stripdays', e => {
-    CatPrefs.stripDays = Math.max(5, Math.min(120, parseInt(e.target.value, 10) || 30));
+    CatPrefs.stripDays = Math.max(2, Math.min(120, parseInt(e.target.value, 10) || 30));
     saveCatPrefs(); renderCatalog();
   });
   bindC('cs-stripuntil', e => { CatPrefs.stripUntil = e.target.value; saveCatPrefs(); renderCatalog(); });
@@ -10188,7 +10209,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v51';
+const BUILD_VERSION = 'v52';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par

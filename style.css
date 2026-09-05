@@ -1310,7 +1310,7 @@ body.cat-light-head .cat-table thead th[data-sc]:hover { background: #E3DECF; }
 
 /* size bar under each colour row (reference-style census strip) */
 .cat-strip-row > td { padding: 0 8px 3px 54px !important; background: #F4F8FC !important; border-right: none !important; }
-.cs-bar { display: flex; gap: 1px; height: 7px; width: 100%; }
+.cs-bar { display: flex; gap: 1px; height: var(--cs-chip-h, 9px); width: 100%; }
 .cs-block { display: block; border-radius: 1px; min-width: 3px; }
 .cs-block.sp-low  { background: #ea9999; }
 .cs-block.sp-mid  { background: #ffd966; }
@@ -1324,19 +1324,19 @@ body.cat-light-head .cat-table thead th[data-sc]:hover { background: #E3DECF; }
 .cs-bar.cs-days {
   height: auto;
   gap: 2px;
-  justify-content: flex-end;   /* newest day pinned to the right */
   flex-wrap: nowrap;
-  overflow: hidden;
+  width: 100%;
 }
 .cs-day {
   display: block;
-  /* Grows to the size set by the dot slider, but shrinks rather than being
-     clipped, so raising the chip count always shows every extra chip. All
-     chips in a strip stay the same size as each other either way. */
+  /* Every chip takes an equal share of the bar, so the strip always reaches
+     from the left edge of the table across to the column you chose to stop
+     after - whether that is 3 chips or 120. They are not forced square: with
+     few chips they are wide, with many they are narrow, and they are all the
+     same size as each other. */
   flex: 1 1 0;
-  min-width: 2px;
-  max-width: var(--cs-chip, 9px);
-  height: var(--cs-chip, 9px);
+  min-width: 1px;
+  height: var(--cs-chip-h, 9px);
   border-radius: 1.5px;
   background: #ea9999;
 }
@@ -1345,11 +1345,13 @@ body.cat-light-head .cat-table thead th[data-sc]:hover { background: #E3DECF; }
 .cs-day.sp-good { background: #b6d7a8; }
 .cs-day.sp-over { background: #b4a7d6; }
 /* a day with no sale is left as an empty square, not a coloured one */
+.cs-day.cs-amber, .cat-band.cs-amber, .cs-block.cs-amber { background: #F6A821; }
 .cs-day.cs-none {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line, #D8D2C4);
 }
-body.board-dark .cs-day.cs-none { box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
+body.board-dark .cs-day.cs-amber, .cat-band.cs-amber, .cs-block.cs-amber { background: #F6A821; }
+.cs-day.cs-none { box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
 
 /* ============ DASHBOARD BUILDER ============ */
 /* The highlighting row keeps its space whether or not anything is in it.
@@ -1941,3 +1943,13 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
   .dash-mini tr.dash-trow > td { transition: none; }
   .board-body.svg-body { animation: none; }
 }
+
+/* ---- the day strip runs the full width of the columns it covers (v52) ----
+   The strip cell carried a fixed 54px left pad from an older layout, which is
+   what pushed the chips into the middle of the table. The day bar starts hard
+   against the first column and finishes at the column chosen in Settings. */
+#tab-catalog .cat-table tbody tr.cat-strip-row > td {
+  padding-left: var(--indent, 0px) !important;
+  padding-right: 6px !important;
+}
+#tab-catalog .cat-table tbody tr.cat-strip-row > td > .cs-bar.cs-days { width: 100%; }
