@@ -6400,7 +6400,7 @@ function buildCatalog() {
       n.sold += q;
       // Only the days that actually sold are stored, so this costs about one
       // entry per sales line rather than one per row per day.
-      if (di >= 0 && di < 400) {
+      if (di >= 0 && di < 800) {
         if (!n.dayMap) n.dayMap = new Map();
         n.dayMap.set(di, (n.dayMap.get(di) || 0) + q);
       }
@@ -6743,8 +6743,9 @@ function renderCatalog() {
     (catColOn('purchased') ? '<th class="num" data-sc="purchased" title="Quantity received in this window">Purchased' + catSortArrow('purchased') + '</th>' : '') +
     (catColOn('opening') ? '<th class="num" data-sc="obs">Opening' + catSortArrow('obs') + '</th>' : '') +
     (catColOn('closing') ? '<th class="num" data-sc="cbs">Closing' + catSortArrow('cbs') + '</th>' : '') +
-    (catColOn('standard') ? '<th class="num" title="Units sold in the last ' +
-      (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + ' month(s)" data-sc="standard">Standard Stock' +
+    (catColOn('standard') ? '<th class="num" title="' +
+      escapeHtml('Units sold ' + standardRangeLabel() + ' \u2014 ' +
+        standardRange().months + ' whole month(s)') + '" data-sc="standard">Standard Stock' +
       catSortArrow('standard') + '</th>' : '') +
     (catColOn('adc') ? '<th class="num" title="Average Daily Consumption" data-sc="adc">ADC' + catSortArrow('adc') + '</th>' : '') +
     (catColOn('lt') ? '<th class="num" title="Lead Time in days" data-sc="lt">LT' + catSortArrow('lt') + '</th>' : '') +
@@ -7015,7 +7016,7 @@ function catalogNodeRow(n, days) {
     (catColOn('opening') ? '<td class="num obs-col">' + (n.hasOBS ? fmtNum(n.obs) : '\u2014') + '</td>' : '') +
     (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(n.cbs) + '</td>' : '') +
     (catColOn('standard') ? '<td class="num cat-standard" title="' +
-      escapeHtml('Sold in the last ' + standardDays() + ' days') + '">' +
+      escapeHtml('Sold ' + standardRangeLabel()) + '">' +
       fmtNum(standardStock(n)) + '</td>' : '') +
     replenCells(n, r) +
     (catColOn('cover') ? '<td class="num">' + (n.cover === Infinity ? '\u221E' : fmtNum(n.cover, 0) + 'd') + '</td>' : '') +
@@ -7102,19 +7103,49 @@ function catalogStripParts(n, days) {
    so the word on the row always matches the number next to it.
    --------------------------------------------------------------- */
 
-/** How many days "Standard Stock" covers. */
-function standardDays() {
-  const m = CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths;
-  return Math.max(1, Math.min(24, m)) * 30;
+/** The window "Standard Stock" covers: whole calendar months, ending with the
+ *  last month that has actually finished.
+ *
+ *  Not a rolling 30 days a month. Asked for "the last 2 months" on the 6th of
+ *  September you mean July and August entire - the 1st to the 31st - not the
+ *  6th of July to the 5th of September. A part-month at each end makes the
+ *  figure impossible to compare with the month-end reports it sits beside.
+ *
+ *  The most recent month counts only once it is over: with data up to
+ *  31-Aug it ends on August, and with data up to 6-Sep it still ends on
+ *  August, because September is not finished. */
+function standardRange() {
+  const anchor = dataAnchorDate();
+  const months = Math.max(1, Math.min(24, CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths));
+  const y = anchor.getUTCFullYear(), m = anchor.getUTCMonth();
+  const lastOfThisMonth = Date.UTC(y, m + 1, 0);
+  // has the anchor's own month run its course?
+  const endMonth = anchor.getTime() >= lastOfThisMonth ? m : m - 1;
+  return {
+    from: new Date(Date.UTC(y, endMonth - months + 1, 1)),
+    to: new Date(Date.UTC(y, endMonth + 1, 0, 23, 59, 59, 999)),
+    months: months
+  };
+}
+
+/** A readable "01-Jul-2026 to 31-Aug-2026" for tooltips and settings. */
+function standardRangeLabel() {
+  const r = standardRange();
+  return fmtDate(r.from) + ' to ' + fmtDate(r.to);
 }
 
 /** Units sold by this row inside that window. */
 function standardStock(n) {
   const map = n && n.dayMap;
   if (!map || !map.size) return 0;
-  const win = standardDays();
+  const r = standardRange();
+  const anchor = dataAnchorDate().getTime();
+  const from = r.from.getTime(), to = r.to.getTime();
   let total = 0;
-  map.forEach((q, i) => { if (i < win) total += q; });
+  map.forEach((q, i) => {
+    const day = anchor - i * 86400000;
+    if (day >= from && day <= to) total += q;
+  });
   return total;
 }
 
@@ -7525,7 +7556,7 @@ function replenCells(n, r) {
            const std = standardStock(n);
            const why = pctMode() === 'stock1'
              ? 'Max level ' + fmtNum(r.ml, 0) + ' against ' + fmtNum(std) +
-               ' sold in the last ' + standardDays() + ' days'
+               ' sold ' + standardRangeLabel()
              : 'Closing ' + fmtNum(r.onHand - r.mit) +
                (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
                ' vs max level ' + fmtNum(r.ml, 0) +
@@ -7839,7 +7870,8 @@ function renderCatalogSettings(wrap) {
       '<label class="toolbar-label">Months of sales</label>' +
       '<input type="number" id="cs-stdmonths" class="text-input narrow" min="1" max="24" value="' +
         (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + '">' +
-      '<span class="drill-count">units sold over the last ' + standardDays() + ' days</span>') +
+      '<span class="drill-count">whole months only \u2014 currently ' +
+        escapeHtml(standardRangeLabel()) + '</span>') +
 
     '<h3 class="snap-set-title">Which Stock % to show</h3>' +
     row('Reading',
@@ -10344,7 +10376,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v55';
+const BUILD_VERSION = 'v56';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
