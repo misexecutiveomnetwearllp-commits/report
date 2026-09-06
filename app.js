@@ -6744,7 +6744,7 @@ function renderCatalog() {
     (catColOn('opening') ? '<th class="num" data-sc="obs">Opening' + catSortArrow('obs') + '</th>' : '') +
     (catColOn('closing') ? '<th class="num" data-sc="cbs">Closing' + catSortArrow('cbs') + '</th>' : '') +
     (catColOn('standard') ? '<th class="num" title="Units sold in the last ' +
-      (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + ' month(s)" data-sc="standard">Standard' +
+      (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + ' month(s)" data-sc="standard">Standard Stock' +
       catSortArrow('standard') + '</th>' : '') +
     (catColOn('adc') ? '<th class="num" title="Average Daily Consumption" data-sc="adc">ADC' + catSortArrow('adc') + '</th>' : '') +
     (catColOn('lt') ? '<th class="num" title="Lead Time in days" data-sc="lt">LT' + catSortArrow('lt') + '</th>' : '') +
@@ -6789,11 +6789,10 @@ function renderCatalog() {
     (catColOn('purchased') ? '<td class="num">' + fmtNum(tPurch) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num">' + fmtNum(tObs) + '</td>' : '') +
     (catColOn('closing') ? '<td class="num">' + fmtNum(tCbs) + '</td>' : '') +
+    (catColOn('standard') ? '<td class="num">' + fmtNum(tStd) + '</td>' : '') +
     ['adc','lt','sf','moq'].filter(catColOn).map(function () { return '<td></td>'; }).join('') +
     (catColOn('ml') ? '<td class="num">' + fmtNum(totMl, 0) + '</td>' : '') +
     (catColOn('mit') ? '<td></td>' : '') +
-    (catColOn('standard') ? '<td class="num">' +
-      fmtNum(rows.reduce((a, r) => a + standardStock(r), 0)) + '</td>' : '') +
     (catColOn('stockpct') ? '<td class="num stock-pct ' + stockPctClass(totPct) + '">' +
       (totPct > 999 ? '999%+' : fmtNum(totPct, 0) + '%') + '</td>' : '') +
     (catColOn('reorder') ? '<td class="num">' + fmtNum(tReorder) + '</td>' : '') +
@@ -7015,6 +7014,9 @@ function catalogNodeRow(n, days) {
     (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(n.purchased) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num obs-col">' + (n.hasOBS ? fmtNum(n.obs) : '\u2014') + '</td>' : '') +
     (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(n.cbs) + '</td>' : '') +
+    (catColOn('standard') ? '<td class="num cat-standard" title="' +
+      escapeHtml('Sold in the last ' + standardDays() + ' days') + '">' +
+      fmtNum(standardStock(n)) + '</td>' : '') +
     replenCells(n, r) +
     (catColOn('cover') ? '<td class="num">' + (n.cover === Infinity ? '\u221E' : fmtNum(n.cover, 0) + 'd') + '</td>' : '') +
     (catColOn('sellthru') ? '<td class="num"' +
@@ -7321,7 +7323,7 @@ function onCatalogImagePicked(e) {
 function exportCatalogCSV() {
   if (!Catalog.lastRows || !Catalog.lastRows.length) { toast('Nothing to export yet.'); return; }
   const headers = ['Path', 'Level', 'Section', 'Sub Section', 'Brand', 'Supplier',
-                   'Sold', 'Purchased', 'Opening', 'Closing', 'Standard',
+                   'Sold', 'Purchased', 'Opening', 'Closing', 'Standard Stock',
                    'ADC', 'LT', 'SF', 'MOQ', 'ML', 'MIT', 'Stock %', 'Reorder', 'Status'];
   const out = [];
   const days = catalogDays();
@@ -7352,7 +7354,7 @@ const CATALOG_LEVEL_DIMS = ['Article No', 'Item Code', 'Brand', 'Colour', 'Size'
 
 const CAT_COLUMNS = [
   ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'], ['purchased', 'Purchased'],
-  ['opening', 'Opening'], ['closing', 'Closing'], ['standard', 'Standard'],
+  ['opening', 'Opening'], ['closing', 'Closing'], ['standard', 'Standard Stock'],
   ['adc', 'ADC'], ['lt', 'LT'], ['sf', 'SF'], ['moq', 'MOQ'],
   ['ml', 'ML'], ['mit', 'MIT'], ['stockpct', 'Stock %'], ['reorder', 'Reorder'],
   ['cover', 'Cover'], ['sellthru', 'Sell-thru'], ['lastsold', 'Last sold'],
@@ -7518,9 +7520,6 @@ function replenCells(n, r) {
                : 'ADC ' + fmtNum(r.adc, 2) + ' \u00d7 LT ' + r.lt + ' \u00d7 SF ' + r.sf +
                  ', at least MOQ ' + r.moq) + '">' + fmtNum(r.ml, 0) + '</td>' : '') +
          (catColOn('mit') ? '<td class="num cat-edit">' + inp('mit', r.mit, '1') + '</td>' : '') +
-         (catColOn('standard') ? '<td class="num cat-standard" title="' +
-             escapeHtml('Sold in the last ' + standardDays() + ' days') + '">' +
-             fmtNum(standardStock(n)) + '</td>' : '') +
          (catColOn('stockpct') ? (function () {
            const p = activePct(n, r);
            const std = standardStock(n);
@@ -7836,7 +7835,7 @@ function renderCatalogSettings(wrap) {
     '<h3 class="snap-set-title">Standard Stock</h3>' +
     row('Standard',
       '<label class="toolbar-checkbox"><input type="checkbox" id="cs-standard"' +
-        (catColOn('standard') ? ' checked' : '') + '> Show the Standard column</label>' +
+        (catColOn('standard') ? ' checked' : '') + '> Show the Standard Stock column</label>' +
       '<label class="toolbar-label">Months of sales</label>' +
       '<input type="number" id="cs-stdmonths" class="text-input narrow" min="1" max="24" value="' +
         (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + '">' +
@@ -10345,7 +10344,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v54';
+const BUILD_VERSION = 'v55';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
