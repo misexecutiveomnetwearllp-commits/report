@@ -6486,12 +6486,14 @@ function catalogMetrics(x, days, anchor) {
   // 116 article/colour/size combinations - about one piece each, and only 55%
   // of its max level - yet 202 days of cover labelled it "Overstock". Roughly
   // one row in four carried a word that contradicted its own colour.
-  const pct = replenFor(x.path, x.sold, days, x.cbs, x).pct;
+  const rep = replenFor(x.path, x.sold, days, x.cbs, x);
+  const pct = activePct(x, rep);
 
   let status;
   if (x.cbs === 0 && x.sold > 0) status = 'Stockout';        // sold out entirely
   else if (x.cbs === 0 && x.sold === 0) status = 'Idle';     // nothing either way
   else if (x.sold === 0) status = 'No sale';                 // stock sitting, nothing moved
+  else if (pct === null) status = 'No sale';                 // nothing to measure against
   else status = stockBandStatus(pct);                        // the band, word for word
   return { avgDaily, cover, sellThrough, daysSince, status, pct };
 }
@@ -6741,13 +6743,17 @@ function renderCatalog() {
     (catColOn('purchased') ? '<th class="num" data-sc="purchased" title="Quantity received in this window">Purchased' + catSortArrow('purchased') + '</th>' : '') +
     (catColOn('opening') ? '<th class="num" data-sc="obs">Opening' + catSortArrow('obs') + '</th>' : '') +
     (catColOn('closing') ? '<th class="num" data-sc="cbs">Closing' + catSortArrow('cbs') + '</th>' : '') +
+    (catColOn('standard') ? '<th class="num" title="Units sold in the last ' +
+      (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + ' month(s)" data-sc="standard">Standard' +
+      catSortArrow('standard') + '</th>' : '') +
     (catColOn('adc') ? '<th class="num" title="Average Daily Consumption" data-sc="adc">ADC' + catSortArrow('adc') + '</th>' : '') +
     (catColOn('lt') ? '<th class="num" title="Lead Time in days" data-sc="lt">LT' + catSortArrow('lt') + '</th>' : '') +
     (catColOn('sf') ? '<th class="num" title="Safety Factor" data-sc="sf">SF' + catSortArrow('sf') + '</th>' : '') +
     (catColOn('moq') ? '<th class="num" title="Minimum Order Quantity" data-sc="moq">MOQ' + catSortArrow('moq') + '</th>' : '') +
     (catColOn('ml') ? '<th class="num" title="Max Level = ADC x LT x SF, and never less than MOQ for each item under the row" data-sc="ml">ML' + catSortArrow('ml') + '</th>' : '') +
     (catColOn('mit') ? '<th class="num" title="Material In Transit" data-sc="mit">MIT' + catSortArrow('mit') + '</th>' : '') +
-    (catColOn('stockpct') ? '<th class="num" title="(Closing + MIT) as a share of Max Level" data-sc="pct">Stock %' + catSortArrow('pct') + '</th>' : '') +
+    (catColOn('stockpct') ? '<th class="num" title="' + escapeHtml(pctTitle()) + '" data-sc="pct">' +
+      pctLabel() + catSortArrow('pct') + '</th>' : '') +
     (catColOn('reorder') ? '<th class="num" title="ML minus what you have, rounded up to the MOQ" data-sc="reorder">Reorder' + catSortArrow('reorder') + '</th>' : '') +
     (catColOn('cover') ? '<th class="num" data-sc="cover">Cover' + catSortArrow('cover') + '</th>' : '') +
     (catColOn('sellthru') ? '<th class="num" data-sc="sellThrough">Sell-thru' + catSortArrow('sellThrough') + '</th>' : '') +
@@ -6770,7 +6776,11 @@ function renderCatalog() {
   const tReorder = reps.reduce((a, x) => a + x.reorder, 0);
   const totMl = reps.reduce((a, x) => a + x.ml, 0);
   const tOnHand = rows.reduce((a, r) => a + (r.cbs || 0), 0);
-  const totPct = totMl > 0 ? (tOnHand / totMl) * 100 : 0;
+  const tStd = rows.reduce((a, r) => a + standardStock(r), 0);
+  // the total follows whichever reading is on show
+  const totPct = pctMode() === 'stock1'
+    ? (tStd > 0 ? (totMl / tStd) * 100 : 0)
+    : (totMl > 0 ? (tOnHand / totMl) * 100 : 0);
   const fillerCols = (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0);
   const foot = '<tfoot><tr>' +
     '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td>' +
@@ -6782,6 +6792,8 @@ function renderCatalog() {
     ['adc','lt','sf','moq'].filter(catColOn).map(function () { return '<td></td>'; }).join('') +
     (catColOn('ml') ? '<td class="num">' + fmtNum(totMl, 0) + '</td>' : '') +
     (catColOn('mit') ? '<td></td>' : '') +
+    (catColOn('standard') ? '<td class="num">' +
+      fmtNum(rows.reduce((a, r) => a + standardStock(r), 0)) + '</td>' : '') +
     (catColOn('stockpct') ? '<td class="num stock-pct ' + stockPctClass(totPct) + '">' +
       (totPct > 999 ? '999%+' : fmtNum(totPct, 0) + '%') + '</td>' : '') +
     (catColOn('reorder') ? '<td class="num">' + fmtNum(tReorder) + '</td>' : '') +
@@ -6914,6 +6926,7 @@ function catSortValue(d, col) {
   if (col === 'cbs') return d.cbs;
   if (col === 'cover') return d.cover === Infinity ? 1e12 : d.cover;
   if (col === 'sellThrough') return d.sellThrough === null ? -Infinity : d.sellThrough;
+  if (col === 'standard') return standardStock(d);
   if (col === 'lastSale') return d.lastSale ? d.lastSale.getTime() : -Infinity;
   if (col === 'status') return String(d.status).toLowerCase();
   if (['adc', 'lt', 'sf', 'moq', 'ml', 'mit', 'pct', 'reorder'].indexOf(col) !== -1) {
@@ -6921,7 +6934,11 @@ function catSortValue(d, col) {
     // row's own unit count. Sorting used to read a different number from the
     // one on screen.
     const r = replenFor(d.path, d.sold, catalogDays(), d.cbs, d);
-    return col === 'pct' ? (isFinite(r.pct) ? r.pct : 1e12) : r[col];
+    if (col === 'pct') {
+      const p = activePct(d, r);
+      return p === null ? -Infinity : (isFinite(p) ? p : 1e12);
+    }
+    return r[col];
   }
   return d[col];
 }
@@ -6929,7 +6946,7 @@ function catSortValue(d, col) {
 /** The columns in the order they are drawn, Design first. */
 function catalogVisibleCols() {
   return ['design'].concat(
-    ['category','colours','sold','purchased','opening','closing',
+    ['category','colours','sold','purchased','opening','closing','standard',
      'adc','lt','sf','moq','ml','mit','stockpct','reorder',
      'cover','sellthru','lastsold','status'].filter(catColOn));
 }
@@ -6947,7 +6964,7 @@ function stripSpanCols() {
 
 /** How many columns the table has right now, for full-width rows. */
 function catalogColCount() {
-  return 1 + ['category','colours','sold','purchased','opening','closing',
+  return 1 + ['category','colours','sold','purchased','opening','closing','standard',
               'adc','lt','sf','moq','ml','mit','stockpct','reorder',
               'cover','sellthru','lastsold','status'].filter(catColOn).length;
 }
@@ -6998,7 +7015,7 @@ function catalogNodeRow(n, days) {
     (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(n.purchased) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num obs-col">' + (n.hasOBS ? fmtNum(n.obs) : '\u2014') + '</td>' : '') +
     (catColOn('closing') ? '<td class="num cbs-col">' + fmtNum(n.cbs) + '</td>' : '') +
-    replenCells(n.path, r) +
+    replenCells(n, r) +
     (catColOn('cover') ? '<td class="num">' + (n.cover === Infinity ? '\u221E' : fmtNum(n.cover, 0) + 'd') + '</td>' : '') +
     (catColOn('sellthru') ? '<td class="num"' +
         (n.sellThrough === null ? ' title="No opening stock, no purchases and no stock rows \u2014 there is nothing to measure the sales against."' : '') +
@@ -7061,6 +7078,59 @@ function catalogStripParts(n, days) {
       'title="' + escapeHtml(k.key + ': ' + fmtNum(k.cbs) + ' in stock, ' +
         (kr.pct > 999 ? '999%+' : Math.round(kr.pct) + '%') + ' of max level') + '"></span>';
   }).join('');
+}
+
+/* ---------------------------------------------------------------
+   Standard Stock, and the two readings of Stock %
+   ---------------------------------------------------------------
+   Standard Stock is what a row has sold over the last few months -
+   two by default. It is a plain "this is what normally goes out"
+   figure, taken from the same per-day sales the colour strip uses.
+
+   Stock % can then be read two ways, and only one is shown at a
+   time (Settings > 02 Catalog):
+
+     Stock %   (Closing + MIT) / Max Level
+               how full the shelf is against the target.
+
+     Stock1 %  Max Level / Standard Stock
+               how the target compares with what actually sells.
+
+   Whichever you pick drives the cell colour AND the Status column,
+   so the word on the row always matches the number next to it.
+   --------------------------------------------------------------- */
+
+/** How many days "Standard Stock" covers. */
+function standardDays() {
+  const m = CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths;
+  return Math.max(1, Math.min(24, m)) * 30;
+}
+
+/** Units sold by this row inside that window. */
+function standardStock(n) {
+  const map = n && n.dayMap;
+  if (!map || !map.size) return 0;
+  const win = standardDays();
+  let total = 0;
+  map.forEach((q, i) => { if (i < win) total += q; });
+  return total;
+}
+
+/** The percentage currently on show, and what it is called. */
+function pctMode() { return CatPrefs.pctMode === 'stock1' ? 'stock1' : 'stock'; }
+function pctLabel() { return pctMode() === 'stock1' ? 'Stock1 %' : 'Stock %'; }
+function pctTitle() {
+  return pctMode() === 'stock1'
+    ? 'Max Level as a share of Standard Stock \u2014 how the target compares with what normally sells'
+    : '(Closing + MIT) as a share of Max Level \u2014 how full the shelf is';
+}
+
+/** The number for one row, under the reading in force. Null means there is
+ *  nothing to divide by, which shows as a dash rather than a false zero. */
+function activePct(n, r) {
+  if (pctMode() !== 'stock1') return r.pct;
+  const std = standardStock(n);
+  return std > 0 ? (r.ml / std) * 100 : null;
 }
 
 /** One equal chip per selling day, newest on the right.
@@ -7251,7 +7321,7 @@ function onCatalogImagePicked(e) {
 function exportCatalogCSV() {
   if (!Catalog.lastRows || !Catalog.lastRows.length) { toast('Nothing to export yet.'); return; }
   const headers = ['Path', 'Level', 'Section', 'Sub Section', 'Brand', 'Supplier',
-                   'Sold', 'Purchased', 'Opening', 'Closing',
+                   'Sold', 'Purchased', 'Opening', 'Closing', 'Standard',
                    'ADC', 'LT', 'SF', 'MOQ', 'ML', 'MIT', 'Stock %', 'Reorder', 'Status'];
   const out = [];
   const days = catalogDays();
@@ -7262,7 +7332,7 @@ function exportCatalogCSV() {
       out.push([
         line.join(' > '), n.dim || '', n.meta.Section || '', n.meta['Sub Section'] || '',
         n.meta.Brand || '', n.meta.Supplier || '',
-        n.sold, n.purchased, n.hasOBS ? n.obs : '', n.cbs,
+        n.sold, n.purchased, n.hasOBS ? n.obs : '', n.cbs, standardStock(n),
         Number(r.adc.toFixed(3)), r.lt, r.sf, r.moq, Math.round(r.ml), r.mit,
         Math.round(r.pct), r.reorder, n.status
       ]);
@@ -7282,7 +7352,7 @@ const CATALOG_LEVEL_DIMS = ['Article No', 'Item Code', 'Brand', 'Colour', 'Size'
 
 const CAT_COLUMNS = [
   ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'], ['purchased', 'Purchased'],
-  ['opening', 'Opening'], ['closing', 'Closing'],
+  ['opening', 'Opening'], ['closing', 'Closing'], ['standard', 'Standard'],
   ['adc', 'ADC'], ['lt', 'LT'], ['sf', 'SF'], ['moq', 'MOQ'],
   ['ml', 'ML'], ['mit', 'MIT'], ['stockpct', 'Stock %'], ['reorder', 'Reorder'],
   ['cover', 'Cover'], ['sellthru', 'Sell-thru'], ['lastsold', 'Last sold'],
@@ -7430,7 +7500,8 @@ const STOCK_BAND_NAME = { 'sp-low': 'Low stock', 'sp-mid': 'Medium stock',
                           'sp-good': 'Healthy', 'sp-over': 'Overstock' };
 function stockBandStatus(pct) { return STOCK_BAND_NAME[stockPctClass(pct)]; }
 
-function replenCells(key, r) {
+function replenCells(n, r) {
+  const key = n.path;
   const inp = (field, val, step) =>
     '<input class="cat-inp' + (r.isAuto[field] ? ' is-auto' : ' is-set') + '" type="number" step="' + step + '" ' +
     'value="' + val + '" data-rkey="' + escapeHtml(key) + '" data-rfield="' + field + '" ' +
@@ -7447,12 +7518,23 @@ function replenCells(key, r) {
                : 'ADC ' + fmtNum(r.adc, 2) + ' \u00d7 LT ' + r.lt + ' \u00d7 SF ' + r.sf +
                  ', at least MOQ ' + r.moq) + '">' + fmtNum(r.ml, 0) + '</td>' : '') +
          (catColOn('mit') ? '<td class="num cat-edit">' + inp('mit', r.mit, '1') + '</td>' : '') +
-         (catColOn('stockpct') ? '<td class="num stock-pct ' + stockPctClass(r.pct) +
-           '" title="' + escapeHtml('Closing ' + fmtNum(r.onHand - r.mit) +
-             (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
-             ' vs max level ' + fmtNum(r.ml, 0) +
-             (r.units > 1 ? ' (' + fmtNum(r.units) + ' items under this row)' : '')) + '">' +
-           (r.pct > 999 ? '999%+' : fmtNum(r.pct, 0) + '%') + '</td>' : '') +
+         (catColOn('standard') ? '<td class="num cat-standard" title="' +
+             escapeHtml('Sold in the last ' + standardDays() + ' days') + '">' +
+             fmtNum(standardStock(n)) + '</td>' : '') +
+         (catColOn('stockpct') ? (function () {
+           const p = activePct(n, r);
+           const std = standardStock(n);
+           const why = pctMode() === 'stock1'
+             ? 'Max level ' + fmtNum(r.ml, 0) + ' against ' + fmtNum(std) +
+               ' sold in the last ' + standardDays() + ' days'
+             : 'Closing ' + fmtNum(r.onHand - r.mit) +
+               (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
+               ' vs max level ' + fmtNum(r.ml, 0) +
+               (r.units > 1 ? ' (' + fmtNum(r.units) + ' items under this row)' : '');
+           return '<td class="num stock-pct ' + (p === null ? '' : stockPctClass(p)) +
+             '" title="' + escapeHtml(why) + '">' +
+             (p === null ? '\u2014' : p > 999 ? '999%+' : fmtNum(p, 0) + '%') + '</td>';
+         })() : '') +
          (catColOn('reorder') ? '<td class="num cat-reorder' + (r.reorder > 0 ? ' has' : '') + '">' +
             (r.reorder > 0 ? fmtNum(r.reorder) : '\u2014') + '</td>' : '');
 }
@@ -7481,6 +7563,8 @@ const CATPREFS_DEFAULT = {
   lowStockAt: 2,
   // thresholds
   showLegend: false,      // the Stock % colour key above the table
+  stdMonths: 2,           // "Standard" column = sales over this many months
+  pctMode: 'stock',       // 'stock' = shelf vs max level, 'stock1' = max level vs standard
   stripMode: 'days',      // 'days' = one chip per day, 'parts' = one block per child
   stripDays: 30,          // how many day chips to draw
   stripUntil: 'opening',  // colour bar under a row stops after this column
@@ -7749,6 +7833,27 @@ function renderCatalogSettings(wrap) {
       'column to the last. Pick where it should stop instead. A column that is switched off ' +
       'is skipped, and the bar falls back to the full width.</p>' +
 
+    '<h3 class="snap-set-title">Standard Stock</h3>' +
+    row('Standard',
+      '<label class="toolbar-checkbox"><input type="checkbox" id="cs-standard"' +
+        (catColOn('standard') ? ' checked' : '') + '> Show the Standard column</label>' +
+      '<label class="toolbar-label">Months of sales</label>' +
+      '<input type="number" id="cs-stdmonths" class="text-input narrow" min="1" max="24" value="' +
+        (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + '">' +
+      '<span class="drill-count">units sold over the last ' + standardDays() + ' days</span>') +
+
+    '<h3 class="snap-set-title">Which Stock % to show</h3>' +
+    row('Reading',
+      '<select id="cs-pctmode" class="select">' +
+        '<option value="stock"' + (pctMode() === 'stock' ? ' selected' : '') + '>Stock % \u2014 (Closing + MIT) \u00f7 Max Level</option>' +
+        '<option value="stock1"' + (pctMode() === 'stock1' ? ' selected' : '') + '>Stock1 % \u2014 Max Level \u00f7 Standard Stock</option>' +
+      '</select>') +
+    '<p class="drill-subtitle">One column, two ways of reading it. <strong>Stock %</strong> asks how ' +
+      'full the shelf is against the target. <strong>Stock1 %</strong> asks whether the target itself ' +
+      'is sensible, by comparing it with what the row normally sells. Whichever you pick drives the ' +
+      'cell colour and the Status column, so the word always matches the number. A row with no sales ' +
+      'in the Standard window has nothing to divide by, so Stock1 % shows a dash.</p>' +
+
     '<h3 class="snap-set-title">Stock % bands</h3>' +
     row('Colour key',
       '<label class="toolbar-checkbox"><input type="checkbox" id="cs-legend"' +
@@ -7845,6 +7950,20 @@ function renderCatalogSettings(wrap) {
     saveCatPrefs(); renderCatalog();
   });
   bindC('cs-stripuntil', e => { CatPrefs.stripUntil = e.target.value; saveCatPrefs(); renderCatalog(); });
+  bindC('cs-standard', e => {
+    const cols = (CatPrefs.columns || []).filter(c => c !== 'standard');
+    if (e.target.checked) {
+      // drop it in next to Closing, where the other sales figures sit
+      const at = cols.indexOf('closing');
+      cols.splice(at >= 0 ? at + 1 : cols.length, 0, 'standard');
+    }
+    CatPrefs.columns = cols; saveCatPrefs(); renderCatalog(); renderSettingsBody();
+  });
+  bindC('cs-stdmonths', e => {
+    CatPrefs.stdMonths = Math.max(1, Math.min(24, parseInt(e.target.value, 10) || 2));
+    saveCatPrefs(); renderCatalog();
+  });
+  bindC('cs-pctmode', e => { CatPrefs.pctMode = e.target.value; saveCatPrefs(); renderCatalog(); });
   bindC('cs-legend', e => { CatPrefs.showLegend = e.target.checked; saveCatPrefs(); renderCatalog(); });
   bindC('cs-band-low', e => { CatPrefs.bandLow = Math.max(1, parseInt(e.target.value, 10) || 33); saveCatPrefs(); renderCatalog(); });
   bindC('cs-band-mid', e => { CatPrefs.bandMid = Math.max(2, parseInt(e.target.value, 10) || 66); saveCatPrefs(); renderCatalog(); });
@@ -10226,7 +10345,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v53';
+const BUILD_VERSION = 'v54';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
