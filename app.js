@@ -6745,7 +6745,7 @@ function renderCatalog() {
     (catColOn('closing') ? '<th class="num" data-sc="cbs">Closing' + catSortArrow('cbs') + '</th>' : '') +
     (catColOn('standard') ? '<th class="num" title="' +
       escapeHtml('Units sold ' + standardRangeLabel() + ' \u2014 ' +
-        standardRange().months + ' whole month(s)') + '" data-sc="standard">Standard Stock' +
+        standardRange().months + ' whole month(s)') + '" data-sc="standard">Standing Stock Ideal' +
       catSortArrow('standard') + '</th>' : '') +
     (catColOn('adc') ? '<th class="num" title="Average Daily Consumption" data-sc="adc">ADC' + catSortArrow('adc') + '</th>' : '') +
     (catColOn('lt') ? '<th class="num" title="Lead Time in days" data-sc="lt">LT' + catSortArrow('lt') + '</th>' : '') +
@@ -7084,9 +7084,9 @@ function catalogStripParts(n, days) {
 }
 
 /* ---------------------------------------------------------------
-   Standard Stock, and the two readings of Stock %
+   Standing Stock Ideal, and the two readings of Stock %
    ---------------------------------------------------------------
-   Standard Stock is what a row has sold over the last few months -
+   Standing Stock Ideal is what a row has sold over the last few months -
    two by default. It is a plain "this is what normally goes out"
    figure, taken from the same per-day sales the colour strip uses.
 
@@ -7096,14 +7096,14 @@ function catalogStripParts(n, days) {
      Stock %   (Closing + MIT) / Max Level
                how full the shelf is against the target.
 
-     Stock1 %  Max Level / Standard Stock
-               how the target compares with what actually sells.
+     Stock1 %  (Closing + MIT) / Standing Stock Ideal
+               how full the shelf is against what normally sells.
 
    Whichever you pick drives the cell colour AND the Status column,
    so the word on the row always matches the number next to it.
    --------------------------------------------------------------- */
 
-/** The window "Standard Stock" covers: whole calendar months, ending with the
+/** The window "Standing Stock Ideal" covers: whole calendar months, ending with the
  *  last month that has actually finished.
  *
  *  Not a rolling 30 days a month. Asked for "the last 2 months" on the 6th of
@@ -7154,8 +7154,8 @@ function pctMode() { return CatPrefs.pctMode === 'stock1' ? 'stock1' : 'stock'; 
 function pctLabel() { return pctMode() === 'stock1' ? 'Stock1 %' : 'Stock %'; }
 function pctTitle() {
   return pctMode() === 'stock1'
-    ? 'Max Level as a share of Standard Stock \u2014 how the target compares with what normally sells'
-    : '(Closing + MIT) as a share of Max Level \u2014 how full the shelf is';
+    ? '(Closing + MIT) as a share of Standing Stock Ideal \u2014 how full the shelf is against what normally sells'
+    : '(Closing + MIT) as a share of Max Level \u2014 how full the shelf is against the target';
 }
 
 /** The number for one row, under the reading in force. Null means there is
@@ -7163,7 +7163,7 @@ function pctTitle() {
 function activePct(n, r) {
   if (pctMode() !== 'stock1') return r.pct;
   const std = standardStock(n);
-  return std > 0 ? (r.ml / std) * 100 : null;
+  return std > 0 ? ((r.onHand) / std) * 100 : null;
 }
 
 /** One equal chip per selling day, newest on the right.
@@ -7354,7 +7354,7 @@ function onCatalogImagePicked(e) {
 function exportCatalogCSV() {
   if (!Catalog.lastRows || !Catalog.lastRows.length) { toast('Nothing to export yet.'); return; }
   const headers = ['Path', 'Level', 'Section', 'Sub Section', 'Brand', 'Supplier',
-                   'Sold', 'Purchased', 'Opening', 'Closing', 'Standard Stock',
+                   'Sold', 'Purchased', 'Opening', 'Closing', 'Standing Stock Ideal',
                    'ADC', 'LT', 'SF', 'MOQ', 'ML', 'MIT', 'Stock %', 'Reorder', 'Status'];
   const out = [];
   const days = catalogDays();
@@ -7385,7 +7385,7 @@ const CATALOG_LEVEL_DIMS = ['Article No', 'Item Code', 'Brand', 'Colour', 'Size'
 
 const CAT_COLUMNS = [
   ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'], ['purchased', 'Purchased'],
-  ['opening', 'Opening'], ['closing', 'Closing'], ['standard', 'Standard Stock'],
+  ['opening', 'Opening'], ['closing', 'Closing'], ['standard', 'Standing Stock Ideal'],
   ['adc', 'ADC'], ['lt', 'LT'], ['sf', 'SF'], ['moq', 'MOQ'],
   ['ml', 'ML'], ['mit', 'MIT'], ['stockpct', 'Stock %'], ['reorder', 'Reorder'],
   ['cover', 'Cover'], ['sellthru', 'Sell-thru'], ['lastsold', 'Last sold'],
@@ -7555,8 +7555,9 @@ function replenCells(n, r) {
            const p = activePct(n, r);
            const std = standardStock(n);
            const why = pctMode() === 'stock1'
-             ? 'Max level ' + fmtNum(r.ml, 0) + ' against ' + fmtNum(std) +
-               ' sold ' + standardRangeLabel()
+             ? 'Closing ' + fmtNum(r.onHand - r.mit) +
+               (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
+               ' against ' + fmtNum(std) + ' sold ' + standardRangeLabel()
              : 'Closing ' + fmtNum(r.onHand - r.mit) +
                (r.mit ? ' + in transit ' + fmtNum(r.mit) : '') +
                ' vs max level ' + fmtNum(r.ml, 0) +
@@ -7863,10 +7864,10 @@ function renderCatalogSettings(wrap) {
       'column to the last. Pick where it should stop instead. A column that is switched off ' +
       'is skipped, and the bar falls back to the full width.</p>' +
 
-    '<h3 class="snap-set-title">Standard Stock</h3>' +
+    '<h3 class="snap-set-title">Standing Stock Ideal</h3>' +
     row('Standard',
       '<label class="toolbar-checkbox"><input type="checkbox" id="cs-standard"' +
-        (catColOn('standard') ? ' checked' : '') + '> Show the Standard Stock column</label>' +
+        (catColOn('standard') ? ' checked' : '') + '> Show the Standing Stock Ideal column</label>' +
       '<label class="toolbar-label">Months of sales</label>' +
       '<input type="number" id="cs-stdmonths" class="text-input narrow" min="1" max="24" value="' +
         (CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths) + '">' +
@@ -7877,7 +7878,7 @@ function renderCatalogSettings(wrap) {
     row('Reading',
       '<select id="cs-pctmode" class="select">' +
         '<option value="stock"' + (pctMode() === 'stock' ? ' selected' : '') + '>Stock % \u2014 (Closing + MIT) \u00f7 Max Level</option>' +
-        '<option value="stock1"' + (pctMode() === 'stock1' ? ' selected' : '') + '>Stock1 % \u2014 Max Level \u00f7 Standard Stock</option>' +
+        '<option value="stock1"' + (pctMode() === 'stock1' ? ' selected' : '') + '>Stock1 % \u2014 (Closing + MIT) \u00f7 Standing Stock Ideal</option>' +
       '</select>') +
     '<p class="drill-subtitle">One column, two ways of reading it. <strong>Stock %</strong> asks how ' +
       'full the shelf is against the target. <strong>Stock1 %</strong> asks whether the target itself ' +
@@ -10376,7 +10377,7 @@ function renderBoardBackgroundSettings(wrap) {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v56';
+const BUILD_VERSION = 'v57';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
