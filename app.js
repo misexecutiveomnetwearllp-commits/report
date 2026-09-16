@@ -2077,7 +2077,13 @@ function periodRange() {
     const label = (from && to) ? (fmtDate(from) + ' → ' + fmtDate(to)) : 'Custom range';
     return { from, to, label };
   }
+  if (p.mode === 'thisweek') {
+    // Mon se anchor date tak (data ki last sale wala hafta)
+    const mon = mondayOfWeekUTC(endOfAnchor);
+    return { from: mon, to: endOfAnchor, label: 'This week' };
+  }
   if (p.mode === 'lastweek') {
+    // Pichhla poora hafta: Mon - Sun
     const cur = mondayOfWeekUTC(endOfAnchor);
     const mon = new Date(cur.getTime() - 7 * 86400000), sun = new Date(cur.getTime() - 86400000);
     return { from: mon, to: sun, label: 'Last week' };
@@ -2086,6 +2092,7 @@ function periodRange() {
     return { from: new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1)), to: endOfAnchor, label: 'This month' };
   }
   if (p.mode === 'lastmonth') {
+    // Pichhla poora mahina: 1 tareekh se aakhri tareekh tak
     const from = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 1, 1));
     const to = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 0));
     return { from, to, label: 'Last month' };
@@ -2363,9 +2370,10 @@ function captureMeta(slotObj, rec) {
 
 function periodSelectHtml(id) {
   const p = App.period.mode;
-  const opts = [['all', 'All data'], ['lastweek', 'Last week'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
+  const opts = [['all', 'All data'], ['thisweek', 'This week'], ['lastweek', 'Last week'],
+                ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
                 ['180', 'Last 180 days'], ['365', 'Last 365 days'],
-                ['lastmonth', 'Last month'], ['thismonth', 'Latest month'], ['thisyear', 'Latest year'],
+                ['thismonth', 'Latest month'], ['lastmonth', 'Last month'], ['thisyear', 'Latest year'],
                 ['custom', 'Custom range…']];
   const isCustom = p === 'custom';
   return '<select id="' + id + '" class="select period-select">' +
@@ -2381,6 +2389,17 @@ function periodSelectHtml(id) {
  *  khud jod dete hain, taaki sirf app.js update karne se bhi feature mile. */
 function ensurePeriodCustomInputs() {
   document.querySelectorAll('.period-select').forEach(sel => {
+    // Naye options (This week / Last week / Last 7 days / Last month) purane
+    // index.html mein na hon to yahan sahi jagah jod dete hain.
+    [['thisweek', 'This week', 'all'], ['lastweek', 'Last week', 'thisweek'],
+     ['7', 'Last 7 days', 'lastweek'], ['lastmonth', 'Last month', 'thismonth']].forEach(([v, l, after]) => {
+      if ([...sel.options].some(o => o.value === v)) return;
+      const opt = document.createElement('option');
+      opt.value = v; opt.textContent = l;
+      const ref = [...sel.options].find(o => o.value === after);
+      if (ref) sel.insertBefore(opt, ref.nextSibling); else sel.appendChild(opt);
+    });
+    if (sel.value !== App.period.mode && [...sel.options].some(o => o.value === App.period.mode)) sel.value = App.period.mode;
     if (![...sel.options].some(o => o.value === 'custom')) {
       const opt = document.createElement('option');
       opt.value = 'custom';
@@ -6121,9 +6140,10 @@ function renderSettingsBody() {
 
 /* ---- Per-tab preferences (Settings panel, sections 01-06) ---- */
 const PERIOD_CHOICES = [
-  ['all', 'All data'], ['lastweek', 'Last week'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
+  ['all', 'All data'], ['thisweek', 'This week'], ['lastweek', 'Last week'],
+  ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
   ['180', 'Last 180 days'], ['365', 'Last 365 days'],
-  ['lastmonth', 'Last month'], ['thismonth', 'Latest month'], ['thisyear', 'Latest year']
+  ['thismonth', 'Latest month'], ['lastmonth', 'Last month'], ['thisyear', 'Latest year']
 ];
 
 const PREFS_DEFAULT = {
