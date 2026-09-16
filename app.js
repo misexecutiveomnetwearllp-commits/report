@@ -2077,8 +2077,18 @@ function periodRange() {
     const label = (from && to) ? (fmtDate(from) + ' → ' + fmtDate(to)) : 'Custom range';
     return { from, to, label };
   }
+  if (p.mode === 'lastweek') {
+    const cur = mondayOfWeekUTC(endOfAnchor);
+    const mon = new Date(cur.getTime() - 7 * 86400000), sun = new Date(cur.getTime() - 86400000);
+    return { from: mon, to: sun, label: 'Last week' };
+  }
   if (p.mode === 'thismonth') {
     return { from: new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1)), to: endOfAnchor, label: 'This month' };
+  }
+  if (p.mode === 'lastmonth') {
+    const from = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - 1, 1));
+    const to = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 0));
+    return { from, to, label: 'Last month' };
   }
   if (p.mode === 'thisyear') {
     return { from: new Date(Date.UTC(anchor.getUTCFullYear(), 0, 1)), to: endOfAnchor, label: 'This year' };
@@ -2353,9 +2363,9 @@ function captureMeta(slotObj, rec) {
 
 function periodSelectHtml(id) {
   const p = App.period.mode;
-  const opts = [['all', 'All data'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
+  const opts = [['all', 'All data'], ['lastweek', 'Last week'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
                 ['180', 'Last 180 days'], ['365', 'Last 365 days'],
-                ['thismonth', 'Latest month'], ['thisyear', 'Latest year'],
+                ['lastmonth', 'Last month'], ['thismonth', 'Latest month'], ['thisyear', 'Latest year'],
                 ['custom', 'Custom range…']];
   const isCustom = p === 'custom';
   return '<select id="' + id + '" class="select period-select">' +
@@ -6111,9 +6121,9 @@ function renderSettingsBody() {
 
 /* ---- Per-tab preferences (Settings panel, sections 01-06) ---- */
 const PERIOD_CHOICES = [
-  ['all', 'All data'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
+  ['all', 'All data'], ['lastweek', 'Last week'], ['30', 'Last 30 days'], ['90', 'Last 90 days'],
   ['180', 'Last 180 days'], ['365', 'Last 365 days'],
-  ['thismonth', 'Latest month'], ['thisyear', 'Latest year']
+  ['lastmonth', 'Last month'], ['thismonth', 'Latest month'], ['thisyear', 'Latest year']
 ];
 
 const PREFS_DEFAULT = {
