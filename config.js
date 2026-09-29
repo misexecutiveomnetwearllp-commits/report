@@ -14,6 +14,6 @@
    mein, bina login) chalegi.
    ===================================================================== */
 window.NIMS_CONFIG = {
-  webAppUrl: 'PASTE-YOUR-APPS-SCRIPT-EXEC-URL-HERE',
+  webAppUrl: 'https://script.google.com/macros/s/AKfycbxKcH7rql9b6H_q8Y6_XlGMKR7WppEn1a-NLAM4g62HbGdI3nJKYTlcyt9xKPAyvH-W/exec',
   googleClientId: 'PASTE-YOUR-CLIENT-ID.apps.googleusercontent.com'
 };
