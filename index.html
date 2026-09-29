@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>StockLedger — ERP Sales, Purchase &amp; Stock Analyzer</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2218%22 fill=%22%23A63D2F%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22%23F5EFE0%22 font-family=%22Georgia%22>S</text></svg>">
+<title>Nettwear IMS Work — Sales, Purchase, Stock &amp; Cancel Analyzer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2218%22 fill=%22%23A63D2F%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22%23F5EFE0%22 font-family=%22Georgia%22>N</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -12,18 +12,46 @@
 </head>
 <body>
 
+<!-- ============ SIGN-IN SCREEN (only shown when config.js is filled in) ============ -->
+<div id="auth-gate" class="auth-gate" data-mode="checking">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="brand-mark">N</span>
+      <div><strong>Nettwear IMS Work</strong><small>Sales · Purchase · Stock · Cancel</small></div>
+    </div>
+    <h2 id="auth-title">Opening Nettwear IMS Work…</h2>
+    <p id="auth-msg" class="auth-msg">Checking your Google sign-in and access…</p>
+    <div id="auth-btn" class="auth-btn"></div>
+    <div class="auth-actions">
+      <button id="auth-retry" class="ghost-btn small" style="display:none">Try again</button>
+      <button id="auth-switch" class="ghost-btn small" style="display:none">Use another Gmail</button>
+    </div>
+    <p class="auth-foot">🔒 Data aapki Google Sheet mein hai. Sirf wahi Gmail sign in kar sakte hain jinke saath Sheet share ki gayi hai.</p>
+  </div>
+</div>
+
 <div class="app-shell">
 
   <!-- ============ SIDEBAR ============ -->
   <aside class="sidebar">
     <div class="brand">
-      <span class="brand-mark">S</span>
+      <span class="brand-mark">N</span>
       <div class="brand-text">
-        <strong>StockLedger</strong>
+        <strong>Nettwear IMS Work</strong>
         <small>Sales · Purchase · Stock</small>
         <small id="build-badge" class="build-badge">build —</small>
       </div>
     </div>
+
+    <div id="auth-chip" class="auth-chip" style="display:none;">
+      <span class="auth-pic"></span>
+      <div class="auth-who">
+        <span class="auth-email"></span>
+        <span class="auth-role"></span>
+      </div>
+      <button id="auth-signout" class="auth-signout" title="Sign out (removes the cached copy from this device)">Sign out</button>
+    </div>
+    <div id="cloud-line" class="cloud-line"></div>
 
     <div class="save-bar">
       <button id="save-all" class="ghost-btn small primary save-all-btn">💾 Save my setup</button>
@@ -59,12 +87,12 @@
     </div>
 
     <div class="sidebar-footer">
+      <button id="btn-calc-guide" class="ghost-btn" title="Har number kaise calculate hota hai">🧮 Calculation guide</button>
       <button id="btn-open-snapshot" class="ghost-btn" title="Top items ka snapshot dobara kholo">📌 Top Items Snapshot</button>
       <button id="btn-save-session" class="ghost-btn" title="Download everything you've loaded &amp; mapped as one JSON file">⬇ Save session</button>
       <label class="ghost-btn" for="session-load-input" title="Reload a session JSON you saved earlier">⬆ Load session
         <input type="file" id="session-load-input" accept=".json" hidden>
       </label>
-      <div id="build-badge" class="build-badge"></div>
     </div>
   </aside>
 
@@ -72,6 +100,10 @@
   <main class="main">
 
     <div id="lib-error" class="lib-error" style="display:none;"></div>
+    <div id="cloud-progress" class="cloud-progress" style="display:none;">
+      <span class="cp-label">Loading…</span>
+      <div class="progress-track"><div class="progress-fill cp-fill"></div></div>
+    </div>
 
     <!-- ---------- TAB: IMPORT ---------- -->
     <section class="tab-panel" id="tab-import">
@@ -87,60 +119,57 @@
           <div class="dropzone-inner">
             <div class="dropzone-icon">⤒</div>
             <p><strong>Drag files here</strong> or <button type="button" id="browse-btn" class="link-btn">browse</button></p>
-            <small>.xls · .xlsx · .csv — any number of files, any report type</small>
+            <small>.xls · .xlsx · .csv — Sales, Purchase, Stock, Cancel / Return — any number of files</small>
           </div>
         </div>
       </div>
 
-      <!-- source: google sheet via apps script -->
+      <!-- source: google sheet = the database -->
       <div id="source-sheet" style="display:none;">
         <div class="connect-card">
-          <div class="connect-row">
-            <label class="toolbar-label" for="gs-url">Web app URL</label>
-            <input type="url" id="gs-url" class="text-input grow" placeholder="https://script.google.com/macros/s/AKfyc.../exec">
+          <div class="local-only-note" style="display:none;">
+            <p><strong>Google Sheet database abhi set nahi hai.</strong> Files sirf is browser mein rehti hain aur
+              koi login nahi maanga jata. Har device par data aur Gmail security ke liye <code>config.js</code> mein
+              Apps Script URL aur Google Client ID daaliye (SETUP_GUIDE dekhiye).</p>
           </div>
-          <div class="connect-row">
-            <label class="toolbar-label" for="gs-key">API key</label>
-            <input type="password" id="gs-key" class="text-input grow" placeholder="Code.gs mein jo API_KEY set ki hai">
-            <label class="toolbar-checkbox"><input type="checkbox" id="gs-remember" checked> Remember on this device</label>
+          <div class="cloud-only">
+            <div class="connect-row">
+              <span class="toolbar-label">☁ Database</span>
+              <span id="cloud-who" class="cloud-who"></span>
+            </div>
+            <div class="connect-row">
+              <button id="cloud-sync-now" class="ghost-btn small primary">↻ Sync now</button>
+              <button id="gs-list-sheets" class="ghost-btn small">Show other sheet tabs</button>
+              <a id="gs-open-sheet" class="ghost-btn small" target="_blank" rel="noopener" style="display:none;">Open Google Sheet ↗</a>
+              <span id="gs-status" class="connect-status"></span>
+            </div>
+            <div class="connect-row sync-row">
+              <button id="gs-sync-pull" class="ghost-btn small">Load settings from the sheet</button>
+              <button id="gs-sync-push" class="ghost-btn small">Save settings to the sheet</button>
+              <span id="gs-sync-note" class="connect-status">Settings sync starts after sign-in.</span>
+            </div>
+            <p class="muted sync-help">Jo bhi file aap "Add to workspace" karte ho, wo apne aap is Google Sheet mein save
+              ho jati hai. Mobile, tablet, laptop ya desktop — kisi par bhi sign in karo, wahi data aur wahi dashboard milega.
+              Editors upload / remove kar sakte hain; Viewers sirf dekh aur analyse kar sakte hain.</p>
           </div>
-          <div class="connect-row">
-            <button id="gs-connect" class="ghost-btn primary">Connect</button>
-            <button id="gs-forget" class="ghost-btn small">Forget saved details</button>
-            <span id="gs-status" class="connect-status"></span>
-          </div>
-          <div class="connect-row sync-row">
-            <button id="gs-sync-pull" class="ghost-btn small">Load settings from the sheet</button>
-            <button id="gs-sync-push" class="ghost-btn small">Save settings to the sheet</button>
-            <span id="gs-sync-note" class="connect-status">Not connected &mdash; settings are kept in this browser only.</span>
-          </div>
-          <p class="muted sync-help">Once connected, your dashboard, columns, colours and every other
-            setting live in the sheet rather than in this browser, so the site opens the same way on
-            any computer or phone. Saving happens on its own a moment after you change something.</p>
-          <details class="connect-help">
-            <summary>First-time setup</summary>
-            <ol>
-              <li>Open your Google Sheet, then <strong>Extensions -> Apps Script</strong>.</li>
-              <li>Replace the contents of <code>Code.gs</code> with the supplied <code>Code.gs</code> file into it.</li>
-              <li><code>CONFIG.API_KEY</code> to a long random string of your own.</li>
-              <li><strong>Deploy → New deployment → Web app</strong>; “Execute as: Me”, “Who has access: <strong>Anyone</strong>” → Deploy.</li>
-              <li>Jo <code>/exec</code> URL you receive, paste it above with your API key, and click Connect.</li>
-            </ol>
-            <p class="muted">"Anyone" is required so the browser can request data without a Google login. Without the correct API key the script returns nothing.</p>
-          </details>
         </div>
 
         <div id="gs-sheet-list" class="sheet-list" style="display:none;"></div>
       </div>
 
+      <div id="cloud-pending" class="cloud-pending" style="display:none;"></div>
+      <div id="cloud-missing" class="note-banner" style="display:none;"></div>
+
       <div id="import-queue" class="import-queue"></div>
 
       <div id="loaded-datasets-panel" class="loaded-panel" style="display:none;">
         <h2>Loaded datasets</h2>
+        <div class="table-scroll">
         <table class="simple-table" id="loaded-datasets-table">
           <thead><tr><th>File</th><th>Detected as</th><th>Rows</th><th>Date range</th><th>Mapped fields</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
+        </div>
       </div>
     </section>
 
@@ -498,7 +527,7 @@
         var b = document.getElementById('lib-error');
         if (!b) return;
         b.style.display = '';
-        b.textContent = failed.join(' aur ') + ' could not be loaded. Please check your internet connection, ' +
+        b.textContent = failed.join(' and ') + ' could not be loaded. Please check your internet connection, ' +
           'ad-blocker or office firewall - file reading will not work without it.';
       };
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', show);
@@ -518,6 +547,19 @@
   ], finish);
 })();
 </script>
-<script src="app.js?v=6" defer></script>
+<script>
+/* If app.js never arrives (bad network), say so instead of spinning for ever. */
+setTimeout(function () {
+  if (window.__nimsStarted) return;
+  var m = document.getElementById('auth-msg'), t = document.getElementById('auth-title');
+  if (t) t.textContent = 'Could not load';
+  if (m) m.textContent = 'Website poori load nahi ho payi. Internet check karke page refresh karein.';
+}, 25000);
+</script>
+<!-- connection settings (Apps Script URL + Google Client ID) -->
+<script src="config.js?v=7"></script>
+<!-- Google Sign-In -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="app.js?v=7" defer></script>
 </body>
 </html>

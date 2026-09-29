@@ -1968,3 +1968,131 @@ body.row-resizing { cursor: ns-resize !important; user-select: none; }
   padding-right: 6px !important;
 }
 #tab-catalog .cat-table tbody tr.cat-strip-row > td > .cs-bar.cs-days { width: 100%; }
+
+/* =====================================================================
+   Nettwear IMS Work — sign-in screen, cloud database, cancel, guide
+   ===================================================================== */
+.auth-gate {
+  position: fixed; inset: 0; z-index: 5000;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: radial-gradient(circle at 20% 10%, #22313F 0, var(--ink) 60%);
+}
+body.gate-open { overflow: hidden; }
+.auth-card {
+  width: 100%; max-width: 420px; background: var(--paper-raised); color: var(--text);
+  border-radius: 14px; padding: 28px 26px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  border-top: 4px solid var(--rust); text-align: center;
+}
+.auth-brand { display: flex; align-items: center; gap: 12px; justify-content: center; margin-bottom: 18px; text-align: left; }
+.auth-brand strong { display: block; font-family: var(--font-display); font-size: 20px; color: var(--ink); }
+.auth-brand small { color: var(--text-soft); font-size: 11px; letter-spacing: .5px; text-transform: uppercase; }
+.auth-card h2 { font-size: 19px; margin-bottom: 8px; }
+.auth-msg { color: var(--text-soft); font-size: 13.5px; line-height: 1.55; margin: 0 0 18px; }
+.auth-gate[data-mode="denied"] .auth-msg { color: var(--rust-dark); background: #FBE9E4; border-radius: 8px; padding: 10px 12px; }
+.auth-gate[data-mode="error"] .auth-msg { color: var(--rust-dark); }
+.auth-gate[data-mode="checking"] h2::after {
+  content: ''; display: inline-block; width: 14px; height: 14px; margin-left: 10px; vertical-align: -2px;
+  border: 2px solid var(--line-strong); border-top-color: var(--rust); border-radius: 50%;
+  animation: nims-spin .8s linear infinite;
+}
+@keyframes nims-spin { to { transform: rotate(360deg); } }
+.auth-btn { display: flex; justify-content: center; min-height: 44px; margin-bottom: 10px; }
+.auth-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 6px; }
+.auth-foot { font-size: 11.5px; color: var(--text-soft); margin: 14px 0 0; line-height: 1.5; border-top: 1px dashed var(--line); padding-top: 12px; }
+
+.auth-chip {
+  display: flex; align-items: center; gap: 9px; margin: -8px 0 8px; padding: 8px 9px;
+  background: rgba(255,255,255,0.06); border-radius: 8px;
+}
+.auth-pic {
+  width: 28px; height: 28px; border-radius: 50%; flex: 0 0 auto; background: var(--teal) center / cover no-repeat;
+  color: #fff; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center;
+}
+.auth-who { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.auth-email { font-size: 11.5px; color: var(--text-on-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-role { font-size: 9.5px; text-transform: uppercase; letter-spacing: .5px; font-family: var(--font-mono); color: #8FE0C8; }
+.auth-role.role-viewer { color: #F0CE8C; }
+.auth-signout {
+  all: unset; cursor: pointer; font-size: 10.5px; color: var(--text-on-ink-soft);
+  border: 1px solid rgba(237,230,214,0.25); border-radius: 5px; padding: 3px 7px;
+}
+.auth-signout:hover { color: #fff; border-color: var(--rust); }
+.cloud-line { font-size: 10.5px; font-family: var(--font-mono); color: var(--text-on-ink-soft); padding: 0 6px 8px; line-height: 1.4; }
+.cloud-line:empty { display: none; }
+.cloud-line.ok { color: #8FE0C8; }
+.cloud-line.err { color: #F2B29F; }
+
+.cloud-progress {
+  position: sticky; top: 0; z-index: 50; margin-bottom: 14px; padding: 10px 14px;
+  background: var(--paper-raised); border: 1px solid var(--line); border-left: 3px solid var(--teal);
+  border-radius: var(--radius); box-shadow: var(--shadow-sm); font-size: 12.5px;
+}
+.cloud-progress .cp-label { display: block; margin-bottom: 6px; color: var(--text-soft); font-family: var(--font-mono); font-size: 11.5px; }
+.cloud-progress .progress-track { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.cloud-progress .progress-fill { height: 100%; background: var(--teal); width: 0; transition: width .25s; }
+
+.cloud-who { font-size: 12.5px; color: var(--text-soft); }
+.cloud-pending {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: space-between;
+  margin: 14px 0; padding: 10px 14px; border-radius: var(--radius);
+  background: #FFF3E4; border: 1px solid #F0D9B5; border-left: 3px solid var(--gold); font-size: 13px;
+}
+.cloud-badge {
+  display: inline-block; font-size: 9.5px; font-family: var(--font-mono); padding: 1px 6px; border-radius: 3px;
+  letter-spacing: .3px; vertical-align: middle; white-space: nowrap;
+}
+.cloud-badge.ok { background: rgba(31,111,92,0.14); color: var(--teal); }
+.cloud-badge.busy { background: rgba(74,111,165,0.15); color: #4A6FA5; }
+.cloud-badge.err { background: rgba(166,64,44,0.15); color: var(--rust); }
+.cloud-badge.local { background: rgba(185,134,47,0.18); color: #8a6420; }
+.sidebar .cloud-badge.ok { color: #8FE0C8; background: rgba(31,111,92,0.3); }
+.sidebar .cloud-badge.local { color: #F0CE8C; background: rgba(185,134,47,0.3); }
+.sidebar .cloud-badge.err { color: #F2B29F; background: rgba(166,64,44,0.35); }
+.sidebar .cloud-badge.busy { color: #B9CCEB; background: rgba(74,111,165,0.35); }
+.cloud-cell { margin-top: 4px; }
+.tag-cancel { background: rgba(122,76,160,0.4); color: #D9C2F0; }
+.loaded-panel .sd-type-tag.tag-cancel { background: #EDE3F6; color: #5D3782; }
+
+/* cancel / return numbers stand out a little */
+.data-table td.cancel-col { color: #7A4CA0; }
+
+/* ---- calculation guide ---- */
+.cg-panel { max-width: 1040px; }
+.cg-body { overflow: auto; padding-right: 4px; }
+.cg-body h3 { font-size: 15.5px; margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px dashed var(--line-strong); }
+.cg-lead { font-size: 13.5px; line-height: 1.6; color: var(--text-soft); margin: 4px 0 6px; }
+.cg-table { width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.5; }
+.cg-table th { text-align: left; background: var(--xl-head-bg); padding: 7px 10px; font-weight: 600; border: 1px solid var(--xl-border); }
+.cg-table td { padding: 7px 10px; border: 1px solid var(--xl-border); vertical-align: top; }
+.cg-table td.cg-n { font-weight: 600; white-space: nowrap; color: var(--ink); width: 170px; }
+.cg-table td.cg-note { color: var(--text-soft); width: 32%; }
+.cg-f { font-family: var(--font-mono); font-size: 11.5px; background: #F3EEE2; border-radius: 4px; padding: 1px 5px; white-space: normal; }
+.cg-example { background: #F2F7F1; border: 1px solid #CFE3CB; border-radius: var(--radius); padding: 12px 16px; font-size: 13px; }
+.cg-example ul { margin: 6px 0 0; padding-left: 20px; line-height: 1.8; }
+
+/* ---- phones: keep everything usable at 360px wide ---- */
+@media (max-width: 600px) {
+  .main { padding: 16px 12px 40px; }
+  .sidebar { padding: 14px 12px; }
+  .tabs { flex-direction: row; flex-wrap: wrap; }
+  .tab-btn { padding: 8px 10px; font-size: 12.5px; }
+  .sidebar-datasets { max-height: 180px; }
+  .toolbar { padding: 10px; gap: 8px; }
+  .cg-table td.cg-n { white-space: normal; width: auto; }
+  .cg-table, .cg-table tbody, .cg-table tr, .cg-table td { display: block; width: 100% !important; }
+  .cg-table thead { display: none; }
+  .cg-table tr { border: 1px solid var(--xl-border); margin-bottom: 8px; border-radius: 6px; }
+  .cg-table td { border: 0; border-bottom: 1px dashed var(--line); }
+  .auth-card { padding: 22px 16px 18px; }
+  .table-scroll { -webkit-overflow-scrolling: touch; }
+}
+.muted { color: var(--text-soft); }
+
+/* A wide table must scroll inside its own box, never push the whole page
+   sideways. Grid items default to min-width:auto, which let a 1,300px table
+   stretch the page on phones and tablets. */
+.main { min-width: 0; }
+@media (max-width: 980px) {
+  .app-shell { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { min-width: 0; }
+}

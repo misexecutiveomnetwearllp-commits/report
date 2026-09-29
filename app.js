@@ -1,6 +1,7 @@
 /* ============================================================
-   StockLedger — ERP Sales / Purchase / Stock Analyzer
-   Pure client-side. No data ever leaves the browser.
+   Nettwear IMS Work — ERP Sales / Purchase / Stock / Cancel Analyzer
+   Data lives in the owner's Google Sheet (the database) and is only
+   served to Gmail accounts that the sheet is shared with.
    ============================================================ */
 (function () {
 "use strict";
@@ -11,17 +12,25 @@
 const CANONICAL_FIELDS = [
   'Date', 'Transaction Type', 'Item Code', 'Article No', 'Brand', 'Colour',
   'Style', 'Section', 'Sub Section', 'Supplier', 'Size', 'Item Type',
-  'Quantity', 'Opening Qty', 'Closing Qty', 'Price', 'Amount', 'HSN Code',
+  'Quantity', 'Cancel Qty', 'Opening Qty', 'Closing Qty', 'Price', 'Amount', 'HSN Code',
   'City', 'Discount', 'Purchase Bill Date'
 ];
 
 const FIELD_KIND = {
   'Date': 'date', 'Purchase Bill Date': 'date',
-  'Quantity': 'number', 'Opening Qty': 'number', 'Closing Qty': 'number',
+  'Quantity': 'number', 'Cancel Qty': 'number', 'Opening Qty': 'number', 'Closing Qty': 'number',
   'Price': 'number', 'Amount': 'number'
 };
 
 const SYNONYMS = {
+  // Cancel / customer return columns come FIRST: suggestField also matches on
+  // part of a header, and "Sales Return Qty" must not be caught by "qty".
+  'cancelqty': 'Cancel Qty', 'cancelledqty': 'Cancel Qty', 'canceledqty': 'Cancel Qty',
+  'cancel': 'Cancel Qty', 'cancelled': 'Cancel Qty', 'canceled': 'Cancel Qty', 'cancle': 'Cancel Qty',
+  'cancleqty': 'Cancel Qty', 'returnqty': 'Cancel Qty', 'salesreturnqty': 'Cancel Qty',
+  'salesreturn': 'Cancel Qty', 'returnquantity': 'Cancel Qty', 'returnedqty': 'Cancel Qty',
+  'customerreturn': 'Cancel Qty', 'srqty': 'Cancel Qty', 'returnpcs': 'Cancel Qty',
+  'returns': 'Cancel Qty', 'return': 'Cancel Qty',
   'transactiontype': 'Transaction Type', 'type': 'Transaction Type', 'txntype': 'Transaction Type',
   'transactiondate': 'Date', 'date': 'Date', 'invoicedate': 'Date', 'billdate': 'Date', 'txndate': 'Date',
   'articleno': 'Article No', 'article': 'Article No', 'articlenumber': 'Article No', 'articlecode': 'Article No',
@@ -137,7 +146,17 @@ function suggestField(header) {
   const key = normKey(header);
   if (!key) return null;
   if (SYNONYMS[key]) return SYNONYMS[key];
-  for (const k in SYNONYMS) { if (key.includes(k) || k.includes(key)) return SYNONYMS[k]; }
+  // Anything about cancel / return is a Cancel Qty only when it is a
+  // quantity: "Return Amount", "Cancel Date" or "Return Bill No" must not be
+  // subtracted from the pieces sold.
+  if (/cancel|cancle|return|refund/.test(key)) {
+    if (/amount|amt|value|val|date|dt$|reason|remark|bill|invoice|inv|no$|num|number|rate|price|mrp|disc|type|code|id$|by$|user|time/.test(key)) return null;
+    return 'Cancel Qty';
+  }
+  for (const k in SYNONYMS) {
+    if (SYNONYMS[k] === 'Cancel Qty') continue;
+    if (key.includes(k) || k.includes(key)) return SYNONYMS[k];
+  }
   return null;
 }
 
@@ -149,31 +168,85 @@ function cleanValue(v) {
   return s;
 }
 
+/** Turns whatever the ERP / Excel / Google Sheet gave us into a date at
+ *  00:00 UTC of that day. Everything in the app works per day, so the time of
+ *  day is dropped: a sale stamped "25-08-2026 15:40" must still fall inside a
+ *  window that ends on 25-08-2026. Returns null for anything that is not a
+ *  real calendar date (so a bad cell never becomes 1970 or "Invalid Date"). */
 function parseDateLoose(v) {
   if (v === null || v === undefined || v === '') return null;
-  if (v instanceof Date) return v;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  const mk = (y, mo, d) => {
+    if (y < 100) y += 2000;
+    if (!(mo >= 0 && mo <= 11 && d >= 1 && d <= 31 && y >= 1900 && y <= 2200)) return null;
+    const out = new Date(Date.UTC(y, mo, d));
+    return out.getUTCMonth() === mo ? out : null;        // 31-Feb etc. -> null
+  };
   if (typeof v === 'number') {
+    if (!isFinite(v)) return null;
+    // 20260825 written as a plain number
+    if (v >= 19000101 && v <= 22001231 && Number.isInteger(v)) {
+      return mk(Math.floor(v / 10000), Math.floor(v / 100) % 100 - 1, v % 100);
+    }
+    if (v < 1 || v > 120000) return null;               // not an Excel serial date
     const epoch = Date.UTC(1899, 11, 30);
-    return new Date(epoch + v * 86400000);
+    return new Date(epoch + Math.floor(v) * 86400000);
   }
   const s = String(v).trim();
-  let m = s.match(/^(\d{1,2})-([A-Za-z]{3,})-(\d{2,4})$/);
+  if (!s) return null;
+  // 25-Aug-2026, 25 Aug 2026, 25-August-26 (optionally followed by a time)
+  let m = s.match(/^(\d{1,2})[\s\-\/.]([A-Za-z]{3,})[\s\-\/.,]+(\d{2,4})(?:[\sT].*)?$/);
   if (m) {
     const mon = MONTHS[m[2].toLowerCase().slice(0, 3)];
-    if (mon !== undefined) {
-      let yr = parseInt(m[3], 10); if (yr < 100) yr += 2000;
-      return new Date(Date.UTC(yr, mon, parseInt(m[1], 10)));
-    }
+    if (mon !== undefined) return mk(parseInt(m[3], 10), mon, parseInt(m[1], 10));
   }
-  m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  // Aug 25, 2026
+  m = s.match(/^([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s+(\d{2,4})(?:[\sT].*)?$/);
   if (m) {
-    let yr = parseInt(m[3], 10); if (yr < 100) yr += 2000;
-    return new Date(Date.UTC(yr, parseInt(m[2], 10) - 1, parseInt(m[1], 10)));
+    const mon = MONTHS[m[1].toLowerCase().slice(0, 3)];
+    if (mon !== undefined) return mk(parseInt(m[3], 10), mon, parseInt(m[2], 10));
   }
-  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
+  // 2026-08-25, 2026/08/25, 2026.08.25 (optionally with a time)
+  m = s.match(/^(\d{4})[\-\/.](\d{1,2})[\-\/.](\d{1,2})(?:[\sT].*)?$/);
+  if (m) return mk(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  // 25-08-2026, 25/08/26, 25.08.2026 (Indian day-first). If the middle number
+  // cannot be a month (08/25/2026) it is read month-first instead.
+  m = s.match(/^(\d{1,2})[\-\/.](\d{1,2})[\-\/.](\d{2,4})(?:[\sT].*)?$/);
+  if (m) {
+    const a = parseInt(m[1], 10), b = parseInt(m[2], 10), y = parseInt(m[3], 10);
+    if (b > 12 && a <= 12) return mk(y, a - 1, b);
+    return mk(y, b - 1, a);
+  }
+  // 20260825
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return mk(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+  // a plain Excel serial that arrived as text
+  if (/^\d{5}(\.\d+)?$/.test(s)) return parseDateLoose(parseFloat(s));
   const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+  if (isNaN(d.getTime())) return null;
+  return mk(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** Reads a quantity or amount the way an Indian ERP writes it:
+ *  "1,23,456.00", "₹ 1,200", "12 PCS", "(15)" or "15-" for minus. Anything that
+ *  is not a number after that clean-up is null - never NaN, which would
+ *  silently poison every total it touched. */
+function parseNumberLoose(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (v instanceof Date) return null;
+  let s = String(v).trim();
+  if (!s) return null;
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1).trim(); }
+  s = s.replace(/^(rs\.?|inr|₹)\s*/i, '').replace(/\s*(pcs|pc|nos|no\.?|units?|qty)$/i, '');
+  if (/^[\d.,\s]+-$/.test(s)) { neg = true; s = s.slice(0, -1); }
+  s = s.replace(/[₹$€£,\s ]/g, '');
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) return null;
+  const n = parseFloat(s);
+  if (!isFinite(n)) return null;
+  return neg ? -Math.abs(n) : n;
 }
 
 function fmtDate(d) {
@@ -201,6 +274,8 @@ function isJunkRow(row) {
     if (typeof c === 'number') { numCount++; continue; }
     const s = String(c).trim();
     if (!s) continue;
+    // CSV / HTML exports give numbers as text ("16,144")
+    if (/^[-(]?[\d,]+(\.\d+)?\)?$/.test(s)) { numCount++; continue; }
     textCount++;
     if (/^printed\s+on/i.test(s)) hasPrinted = true;
     // "Total", "Grand Total", and ERP subtotal labels like "Retail Sales Total"
@@ -251,6 +326,8 @@ function detectHeaderRow(rows, maxScan) {
 
 function guessDatasetType(filename, columns, sampleRows) {
   const fn = (filename || '').toLowerCase();
+  // "Sales Return.xlsx" is a return file, not a sales file - check it first
+  if (/return|cancel|cancle|refund|credit\s*note/.test(fn)) return 'cancel';
   if (/stock/.test(fn)) return 'stock';
   if (/purchase/.test(fn)) return 'purchase';
   if (/sale/.test(fn)) return 'sales';
@@ -259,7 +336,10 @@ function guessDatasetType(filename, columns, sampleRows) {
                        h.includes('closingbalance') || h.includes('balanceqty'))) return 'stock';
   const typeCol = columns.find(c => c.suggested === 'Transaction Type');
   if (typeCol && sampleRows.length) {
-    const vals = sampleRows.map(r => String(r[typeCol.colIdx] || '').toLowerCase()).join(' ');
+    const list = sampleRows.map(r => String(r[typeCol.colIdx] || '').toLowerCase());
+    // every row a return / cancel bill -> a return file
+    if (list.length && list.every(v => RETURN_TXN.test(v))) return 'cancel';
+    const vals = list.join(' ');
     if (vals.includes('purchase')) return 'purchase';
     if (vals.includes('sale')) return 'sales';
   }
@@ -274,12 +354,15 @@ const Store = {
   get(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
   set(k, v) {
     let ok = false;
+    let same = false;
+    try { same = window.localStorage.getItem(k) === v; } catch (e) {}
     try { window.localStorage.setItem(k, v); ok = true; } catch (e) {}
+    if (same) return ok;          // nothing changed - nothing to send to the sheet
     // The sheet keeps the master copy so every browser agrees. Local first,
     // so this never blocks anything; see the settings sync section below.
     try {
       if (typeof SYNC_KEYS !== 'undefined' && SYNC_KEYS.indexOf(k) !== -1 &&
-          !Sync.suspend && GS.url && GS.key) pushSettings();
+          !Sync.suspend && gsReady() && Cloud.canWrite) pushSettings();
     } catch (e) {}
     return ok;
   },
@@ -287,7 +370,7 @@ const Store = {
     try { window.localStorage.removeItem(k); } catch (e) {}
     try {
       if (typeof SYNC_KEYS !== 'undefined' && SYNC_KEYS.indexOf(k) !== -1 &&
-          !Sync.suspend && GS.url && GS.key) pushSettings();
+          !Sync.suspend && gsReady() && Cloud.canWrite) pushSettings();
     } catch (e) {}
   }
 };
@@ -324,7 +407,8 @@ function debounce(fn, ms) {
 const SYNC_KEYS = [
   'sl_prefs', 'sl_theme', 'sl_behaviour', 'sl_catprefs', 'sl_colwidths',
   'sl_dash_charts', 'sl_perf_charts', 'sl_board_theme', 'sl_boards_locked',
-  'sl_replen', 'sl_replen_bulk', 'sl_snapshot_config', 'sl_cat_height'
+  'sl_replen', 'sl_replen_bulk', 'sl_snapshot_config', 'sl_cat_height',
+  'sl_catalog_images'      // product photos, so they show on every device too
 ];
 
 const Sync = {
@@ -389,7 +473,7 @@ function applySettings(obj) {
 /** Asks the sheet for its copy. Quiet on failure - the site keeps working
  *  from the local copy, which is the whole point of local-first. */
 function pullSettings(announce) {
-  if (!GS.url || !GS.key || Sync.pulling) return Promise.resolve(false);
+  if (!gsReady() || Sync.pulling) return Promise.resolve(false);
   Sync.pulling = true;
   return gsGet({ action: 'settings' })
     .then(res => {
@@ -414,7 +498,7 @@ function pullSettings(announce) {
 
 /** Sends the whole set back. Debounced by the caller. */
 function pushSettingsNow() {
-  if (!GS.url || !GS.key || Sync.suspend) return Promise.resolve(false);
+  if (!gsReady() || !Cloud.canWrite || Sync.suspend) return Promise.resolve(false);
   return gsPost({ action: 'saveSettings', name: 'all', value: collectSettings(), device: deviceLabel() })
     .then(res => {
       Sync.on = true; Sync.lastPush = Date.now();
@@ -444,7 +528,7 @@ function setSyncNote(msg) {
 
 /** Called once the sheet connection is known to work. */
 function startSettingsSync(announce) {
-  if (!GS.url || !GS.key) return;
+  if (!gsReady()) return;
   pullSettings(announce);
 }
 
@@ -457,9 +541,14 @@ function initSaveButton() {
   const btn = document.getElementById('save-all');
   if (!btn) return;
   btn.addEventListener('click', () => {
-    if (!GS.url || !GS.key) {
-      setSaveNote('Connect a Google Sheet first \u2014 see the Google Sheet tab.', 'warn');
-      toast('Connect your Google Sheet first, on the Google Sheet tab.');
+    if (!gsReady()) {
+      setSaveNote('Not connected to the Google Sheet \u2014 saved in this browser only.', 'warn');
+      toast(cloudConfigured() ? 'Sign in first.' : 'The Google Sheet database is not set up yet (config.js).');
+      return;
+    }
+    if (!Cloud.canWrite) {
+      setSaveNote('View-only access \u2014 your changes stay in this browser.', 'warn');
+      toast('View-only access: only editors can save the shared setup.');
       return;
     }
     setSaveNote('Saving\u2026', 'busy');
@@ -486,14 +575,16 @@ function setSaveNote(msg, cls) {
 
 /** Keeps the little line under the button honest about where things stand. */
 function refreshSaveNote() {
-  if (!GS.url || !GS.key) {
-    setSaveNote('Saved in this browser only \u2014 connect a sheet to share it.', 'warn');
+  if (!gsReady()) {
+    setSaveNote('Saved in this browser only.', 'warn');
+  } else if (!Cloud.canWrite) {
+    setSaveNote('View only \u2014 setup comes from the Google Sheet.', 'ok');
   } else if (Sync.lastPush) {
     setSaveNote('Saved \u00b7 ' + fmtWhen(new Date(Sync.lastPush).toISOString()), 'ok');
   } else if (Sync.lastPulled) {
     setSaveNote('Loaded from your sheet \u00b7 ' + fmtWhen(Sync.lastPulled), 'ok');
   } else {
-    setSaveNote('Connected \u2014 changes save on their own.', 'ok');
+    setSaveNote('Connected \u2014 changes save to the Google Sheet on their own.', 'ok');
   }
 }
 
@@ -518,12 +609,13 @@ function toCSV(headers, rows) {
 }
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, ms) {
   const el = document.getElementById('toast');
+  if (!el) { console.log(msg); return; }
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ms || Math.max(2600, Math.min(8000, String(msg).length * 55)));
 }
 
 /* ---------------------------------------------------------------
@@ -623,6 +715,7 @@ function datasetsOfType(type) { return App.datasets.filter(d => d.type === type)
    3b. AUTO-PERSISTENCE (IndexedDB) — data survives closing the tab.
    Removed only when the user clicks Remove on a dataset.
    --------------------------------------------------------------- */
+// The name stays as it was so files already cached in a browser are not lost.
 const IDB_NAME = 'StockLedgerDB', IDB_VERSION = 1, IDB_STORE = 'datasets';
 let _idbDb = null;
 
@@ -647,6 +740,7 @@ function serializeDatasetForIdb(ds) {
     id: ds.id, name: ds.name, type: ds.type, fields: ds.fields,
     origin: ds.origin || null, mapping: ds.mapping || null, headerIdx: ds.headerIdx || 0,
     reportPeriod: ds.reportPeriod ? { from: serializeDate(ds.reportPeriod.from), to: serializeDate(ds.reportPeriod.to), raw: ds.reportPeriod.raw } : null,
+    numeric: ds.numeric || null, cloud: !!ds.cloud, cloudStamp: ds.cloudStamp || null, updatedBy: ds.updatedBy || '',
     records: ds.records.map(r => {
       const o = {};
       ds.fields.forEach(f => { o[f] = serializeDate(r[f]); });
@@ -665,7 +759,9 @@ function hydrateDatasetFromIdb(raw) {
     id: raw.id, name: raw.name, type: raw.type, fields: raw.fields, records,
     rowCount: records.length, colorIdx: App.nextDsColor++,
     origin: raw.origin || null, mapping: raw.mapping || null, headerIdx: raw.headerIdx || 0,
-    reportPeriod: raw.reportPeriod ? { from: deserializeDate(raw.reportPeriod.from), to: deserializeDate(raw.reportPeriod.to), raw: raw.reportPeriod.raw } : null
+    reportPeriod: raw.reportPeriod ? { from: deserializeDate(raw.reportPeriod.from), to: deserializeDate(raw.reportPeriod.to), raw: raw.reportPeriod.raw } : null,
+    numeric: raw.numeric || null, cloud: !!raw.cloud, cloudStamp: raw.cloudStamp || null,
+    cloudState: raw.cloud ? 'saved' : 'local', updatedBy: raw.updatedBy || ''
   };
 }
 
@@ -676,8 +772,20 @@ function idbSaveDataset(ds) {
   if (!idbAvailable()) return;
   idbOpen().then(db => {
     const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.onerror = () => console.warn('Nettwear IMS: browser storage is full - "' + ds.name + '" will not be cached on this device', tx.error);
     tx.objectStore(IDB_STORE).put(serializeDatasetForIdb(ds));
-  }).catch(err => console.error('StockLedger: could not auto-save dataset', err));
+  }).catch(err => console.error('Nettwear IMS: could not auto-save dataset', err));
+}
+
+/** Empties this browser's copy (sign out, or someone without access). */
+function idbClearAll() {
+  if (!idbAvailable()) return Promise.resolve();
+  return idbOpen().then(db => new Promise(resolve => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  })).catch(() => {});
 }
 
 function idbDeleteDataset(id) {
@@ -685,7 +793,7 @@ function idbDeleteDataset(id) {
   idbOpen().then(db => {
     const tx = db.transaction(IDB_STORE, 'readwrite');
     tx.objectStore(IDB_STORE).delete(id);
-  }).catch(err => console.error('StockLedger: could not remove auto-saved dataset', err));
+  }).catch(err => console.error('Nettwear IMS: could not remove auto-saved dataset', err));
 }
 
 function idbLoadAllDatasets() {
@@ -695,17 +803,21 @@ function idbLoadAllDatasets() {
     const req = tx.objectStore(IDB_STORE).getAll();
     req.onsuccess = () => resolve((req.result || []).map(hydrateDatasetFromIdb));
     req.onerror = () => reject(req.error);
-  })).catch(err => { console.error('StockLedger: could not restore auto-saved data', err); return []; });
+  })).catch(err => { console.error('Nettwear IMS: could not restore auto-saved data', err); return []; });
 }
 
 /** App start hote hi pehle se load ki hui files wapas la deta hai. */
 function restorePersistedDatasets() {
-  idbLoadAllDatasets().then(saved => {
+  return idbLoadAllDatasets().then(saved => {
+    saved = saved.filter(s => !App.datasets.some(d => d.id === s.id));
+    // Files that came from the Google Sheet are only ever shown after a
+    // verified sign-in - never in local mode (e.g. if config.js failed to load).
+    if (!cloudActive()) saved = saved.filter(s => !s.cloud);
     if (!saved.length) return;
     App.datasets = App.datasets.concat(saved);
     refreshAfterDataChange();
-    toast(saved.length + ' previously loaded file(s) restored.');
-  });
+    if (!cloudActive()) toast(saved.length + ' previously loaded file(s) restored.');
+  }).catch(err => console.error(err));
 }
 
 /* ---------------------------------------------------------------
@@ -715,7 +827,12 @@ function initImport() {
   const dz = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   document.getElementById('browse-btn').addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', e => handleFiles(e.target.files));
+  fileInput.addEventListener('change', e => {
+    handleFiles(e.target.files);
+    // Without this, picking the SAME file again (after fixing it in Excel, or
+    // after removing it) fires no change event and nothing happens at all.
+    e.target.value = '';
+  });
 
   ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('dragover'); }));
   ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('dragover'); }));
@@ -724,11 +841,27 @@ function initImport() {
 }
 
 function handleFiles(fileList) {
-  Array.from(fileList).forEach(file => readWorkbook(file));
+  const files = Array.from(fileList || []);
+  const ok = /\.(xlsx|xlsm|xlsb|xls|csv|txt|tsv|ods|htm|html)$/i;
+  files.forEach(file => {
+    if (!ok.test(file.name)) {
+      notifyError(file.name + ': ye Excel / CSV file nahi lagti. .xlsx, .xls ya .csv file chuniye.');
+      return;
+    }
+    try { readWorkbook(file); }
+    catch (err) { notifyError(file.name + ': could not be read — ' + (err && err.message ? err.message : err)); }
+  });
+}
+
+/** A toast that stays long enough to be read, and is also logged. Upload
+ *  problems used to flash for 2.6 seconds and vanish. */
+function notifyError(msg) {
+  console.warn('Nettwear IMS:', msg);
+  toast(msg, 7000);
 }
 
 function readWorkbook(file) {
-  if (file.size === 0) { toast(file.name + ': file is empty (0 bytes) — please download it again.'); return; }
+  if (file.size === 0) { notifyError(file.name + ': file is empty (0 bytes) — please download it again.'); return; }
   if (file.size > 80 * 1024 * 1024) { toast(file.name + ': this file is very large (' + (file.size / 1024 / 1024).toFixed(0) + ' MB) — this may be slow to load in the browser.'); }
 
   const reader = new FileReader();
@@ -744,7 +877,7 @@ function readWorkbook(file) {
       parseWorkbookBuffer(data, file);
     });
   };
-  reader.onerror = () => toast(file.name + ': the browser could not read this file (' + (reader.error ? reader.error.name : 'unknown') + ').');
+  reader.onerror = () => notifyError(file.name + ': the browser could not read this file (' + (reader.error ? reader.error.name : 'unknown') + '). Close it in Excel and try again.');
   reader.readAsArrayBuffer(file);
 }
 
@@ -760,16 +893,22 @@ function parseWorkbookBuffer(data, file) {
     return;
   }
 
+  // raw: true matters for CSV files and for ".xls" files that are really HTML
+  // tables (many Indian ERPs export those). Without it the reader guesses at
+  // every value US-style: "05-08-2026" (5 Aug) became 8 May, "11-06-2026"
+  // became 6 Nov, and a whole report landed in the wrong months. With raw the
+  // text arrives as written and parseDateLoose reads it day-first. Real
+  // .xlsx / .xls files are not affected by this option.
   const attempts = [
+    () => XLSX.read(data, { type: 'array', raw: true }),
+    () => XLSX.read(data, { type: 'array', raw: true, codepage: 65001 }),
     () => XLSX.read(data, { type: 'array' }),
-    () => XLSX.read(data, { type: 'array', codepage: 65001 }),
-    () => XLSX.read(data, { type: 'array', raw: true, cellText: false }),
     () => {
       // kuch exports asal mein HTML table hote hain jinka naam .xls hota hai
       let str;
       try { str = new TextDecoder('utf-8').decode(data); }
       catch (e) { str = new TextDecoder('windows-1252').decode(data); }
-      return XLSX.read(str, { type: 'string' });
+      return XLSX.read(str, { type: 'string', raw: true });
     }
   ];
 
@@ -788,8 +927,10 @@ function parseWorkbookBuffer(data, file) {
     }
   }
 
-  console.error('StockLedger: could not parse', file.name, lastErr);
-  toast(file.name + ': could not be read — ' + (lastErr ? lastErr.message : 'unknown error') +
+  console.error('Nettwear IMS: could not parse', file.name, lastErr);
+  const why = lastErr ? String(lastErr.message || lastErr) : 'unknown error';
+  notifyError(file.name + ': could not be read — ' +
+    (/password|encrypt/i.test(why) ? 'the file is password-protected. Remove the password in Excel first.' : why) +
     '. Try opening it in Excel and using "Save As -> .xlsx".');
 }
 
@@ -811,9 +952,37 @@ function renderMultiSheetChoice(file, wb) {
 }
 
 function loadSheet(file, wb, sheetName) {
-  const ws = wb.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
-  ingestRows(rows, file.name, sheetName, null);
+  try {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) { notifyError(file.name + ': sheet "' + sheetName + '" is empty.'); return; }
+    fixSheetRange(ws);
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
+    ingestRows(rows, file.name, sheetName, null);
+  } catch (err) {
+    console.error(err);
+    notifyError(file.name + ': could not read sheet "' + sheetName + '" — ' + (err && err.message ? err.message : err));
+  }
+}
+
+/** Some ERP exports write a wrong size into the file ("A1:K20" when there are
+ *  60,000 rows), and the Excel reader then stops after row 20 without a word.
+ *  The real extent is worked out from the cells themselves. */
+function fixSheetRange(ws) {
+  try {
+    let maxR = -1, maxC = -1;
+    for (const k in ws) {
+      if (k.charCodeAt(0) === 33) continue;             // '!ref', '!merges' ...
+      const a = XLSX.utils.decode_cell(k);
+      if (a.r > maxR) maxR = a.r;
+      if (a.c > maxC) maxC = a.c;
+    }
+    if (maxR < 0) return;
+    const cur = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+    if (maxR > cur.e.r || maxC > cur.e.c) {
+      ws['!ref'] = XLSX.utils.encode_range({ s: { r: Math.min(cur.s.r, 0), c: Math.min(cur.s.c, 0) },
+        e: { r: Math.max(maxR, cur.e.r), c: Math.max(maxC, cur.e.c) } });
+    }
+  } catch (e) { /* leave the sheet as the reader saw it */ }
 }
 
 /**
@@ -822,19 +991,25 @@ function loadSheet(file, wb, sheetName) {
  * `origin` is null for files, or {url, key, sheet} for Google Sheets.
  */
 function ingestRows(rows, sourceName, sheetName, origin) {
+  if (!Array.isArray(rows) || !rows.length) { notifyError(sourceName + ': no rows found.'); return; }
   const headerIdx = detectHeaderRow(rows);
   const headerRow = rows[headerIdx] || [];
   const columns = [];
+  const seenHeaders = {};
   headerRow.forEach((h, colIdx) => {
     if (h === null || h === undefined || String(h).trim() === '') return;
-    columns.push({ colIdx, header: String(h).trim(), suggested: suggestField(h) });
+    let header = String(h).replace(/\s+/g, ' ').trim();
+    // Two columns with the same heading would overwrite each other - number them.
+    if (seenHeaders[header.toLowerCase()]) header = header + ' (' + (++seenHeaders[header.toLowerCase()]) + ')';
+    else seenHeaders[header.toLowerCase()] = 1;
+    columns.push({ colIdx, header, suggested: suggestField(header) });
   });
   const allDataRows = rows.slice(headerIdx + 1).filter(r => r && r.some(c => c !== null && c !== undefined && c !== ''));
   const dataRows = allDataRows.filter(r => !isJunkRow(r));
   const droppedCount = allDataRows.length - dataRows.length;
 
   if (!columns.length || !dataRows.length) {
-    toast(sourceName + ': could not find a header row with data — check the source.');
+    notifyError(sourceName + ': could not find a header row with data under it — check that the file is the report itself, not an empty template.');
     return;
   }
 
@@ -850,8 +1025,7 @@ function renderImportCard(filename, sheetName, columns, dataRows, guessedType, o
   card.className = 'import-card';
   card.dataset.cardId = cardId;
 
-  const typeOptions = ['sales', 'purchase', 'stock', 'other']
-    .map(t => '<option value="' + t + '"' + (t === guessedType ? ' selected' : '') + '>' + t[0].toUpperCase() + t.slice(1) + '</option>').join('');
+  const typeOptions = typeOptionsHtml(guessedType);
 
   const rowsHtml = columns.map((c, i) => {
     const sample = dataRows.slice(0, 3).map(r => r[c.colIdx]).filter(v => v !== null && v !== undefined && v !== '').slice(0, 1)[0];
@@ -895,6 +1069,16 @@ function renderImportCard(filename, sheetName, columns, dataRows, guessedType, o
   });
 }
 
+/** The kinds of report a file can be. "cancel" = customer returns / cancelled
+ *  bills: its quantities are taken OFF the sales everywhere. */
+const DATASET_TYPES = [['sales', 'Sales'], ['purchase', 'Purchase'], ['stock', 'Stock'],
+                       ['cancel', 'Cancel / Return'], ['other', 'Other']];
+function typeLabel(t) { const x = DATASET_TYPES.find(d => d[0] === t); return x ? x[1] : t; }
+function typeOptionsHtml(selected) {
+  return DATASET_TYPES.map(([v, l]) =>
+    '<option value="' + v + '"' + (v === selected ? ' selected' : '') + '>' + l + '</option>').join('');
+}
+
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -903,12 +1087,30 @@ function escapeHtml(s) {
 function buildRecords(dataRows, mapping, dsId) {
   const dateFields = new Set(mapping.filter(m => FIELD_KIND[m.field] === 'date').map(m => m.field));
   const numberFields = new Set(mapping.filter(m => FIELD_KIND[m.field] === 'number').map(m => m.field));
+  // A kept-as-is column (e.g. "MRP", "Disc %") that is numbers all the way
+  // down is stored as numbers, even when a CSV delivered it as text. Leading
+  // zeros ("00123") mean a code, so such a column stays text.
+  mapping.forEach(m => {
+    // only "Keep as ..." columns; Item Code, Article No, HSN, Size... stay text
+    if (CANONICAL_FIELDS.indexOf(m.field) !== -1 || numberFields.has(m.field)) return;
+    let seen = 0;
+    for (let i = 0; i < dataRows.length; i++) {
+      const v = dataRows[i][m.colIdx];
+      if (v === null || v === undefined || v === '') continue;
+      if (typeof v === 'number') { seen++; continue; }
+      const s = String(v).trim();
+      if (!s || BLANK_TOKENS.has(s.toLowerCase())) continue;
+      if (!/^-?(0|[1-9][\d,]*)(\.\d+)?$/.test(s)) return;
+      seen++;
+    }
+    if (seen) numberFields.add(m.field);
+  });
   return dataRows.map(r => {
     const rec = { __ds: dsId };
     mapping.forEach(m => {
       let v = cleanValue(r[m.colIdx]);
       if (v !== null && dateFields.has(m.field)) v = parseDateLoose(v);
-      else if (v !== null && numberFields.has(m.field)) { const n = Number(v); v = isNaN(n) ? null : n; }
+      else if (v !== null && numberFields.has(m.field)) v = parseNumberLoose(v);
       // if same canonical field appears twice, keep first non-null
       if (rec[m.field] === undefined || rec[m.field] === null) rec[m.field] = v;
     });
@@ -917,7 +1119,7 @@ function buildRecords(dataRows, mapping, dsId) {
 }
 
 function confirmImport(card, filename, columns, dataRows, origin, headerIdx, reportPeriod) {
-  const name = card.querySelector('.ds-name').value.trim() || filename;
+  const name = (card.querySelector('.ds-name').value.trim() || filename).slice(0, 150);
   const type = card.querySelector('.ds-type').value;
   const mapRows = card.querySelectorAll('.map-table tbody tr');
   const mapping = []; // { colIdx, field }
@@ -927,31 +1129,86 @@ function confirmImport(card, filename, columns, dataRows, origin, headerIdx, rep
     const sel = tr.querySelector('.map-select').value;
     let field = sel;
     if (sel.startsWith('__custom__')) field = header;
-    if (field) mapping.push({ colIdx, field });
+    if (field && field.charAt(0) !== '_') mapping.push({ colIdx, field });
   });
-  if (!mapping.length) { toast('Map at least one column before adding.'); return; }
+  if (!mapping.length) { notifyError('Map at least one column before adding.'); return; }
+  if (type === 'sales' && !mapping.some(m => m.field === 'Quantity' || m.field === 'Cancel Qty')) {
+    if (!confirm('Is Sales file mein koi column "Quantity" par map nahi hua — Sold hamesha 0 dikhega.\n\n' +
+                 'OK = phir bhi add karo,  Cancel = wapas jaakar "Review column mapping" check karo.')) return;
+  }
 
-  const dsId = uid();
-  const records = buildRecords(dataRows, mapping, dsId);
-  const fields = [...new Set(mapping.map(m => m.field))];
-  const ds = {
-    id: dsId, name, type, fields, records, rowCount: records.length,
-    colorIdx: App.nextDsColor++,
-    origin: origin || null,     // {url, key, sheet} when pulled from Google Sheets
-    mapping: mapping,           // remembered so Refresh needs no re-mapping
-    headerIdx: headerIdx || 0,
-    reportPeriod: reportPeriod || null   // ERP header ki "Reporting Period" line
-  };
-  App.datasets.push(ds);
+  // Same file added twice is the most common cause of every figure doubling.
+  const twin = App.datasets.find(d => d.name.trim().toLowerCase() === name.toLowerCase() && d.type === type);
+  let replace = null;
+  if (twin) {
+    const ok = confirm('"' + name + '" (' + typeLabel(type) + ') pehle se loaded hai.\n\n' +
+      'OK = purani file ko is nayi file se REPLACE karo (recommended — figures double nahi honge)\n' +
+      'Cancel = dono files rakho');
+    if (ok) {
+      if (twin.cloud && cloudActive() && !Cloud.canWrite) {
+        notifyError('Aapke paas view-only access hai — cloud wali file replace nahi ho sakti.');
+        return;
+      }
+      replace = twin;
+    }
+  }
+
+  const btn = card.querySelector('.confirm-import');
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding\u2026'; }
+
+  let ds;
+  try {
+    const dsId = replace ? replace.id : uid();
+    const records = buildRecords(dataRows, mapping, dsId);
+    const fields = [...new Set(mapping.map(m => m.field))];
+    ds = {
+      id: dsId, name, type, fields, records, rowCount: records.length,
+      colorIdx: replace ? replace.colorIdx : App.nextDsColor++,
+      origin: origin ? { sheet: origin.sheet } : null,   // {sheet} when pulled from a Google Sheet tab
+      mapping: mapping,           // remembered so Refresh needs no re-mapping
+      headerIdx: headerIdx || 0,
+      reportPeriod: reportPeriod || null,  // ERP header ki "Reporting Period" line
+      numeric: numericFieldsOf(fields, records),
+      cloud: false, cloudStamp: null, cloudState: 'local'
+    };
+  } catch (err) {
+    console.error(err);
+    if (btn) { btn.disabled = false; btn.textContent = 'Add to workspace'; }
+    notifyError('"' + name + '" could not be added — ' + (err && err.message ? err.message : err));
+    return;
+  }
+
+  if (replace) App.datasets = App.datasets.map(d => d === replace ? ds : d);
+  else App.datasets.push(ds);
   idbSaveDataset(ds);
   card.remove();
-  toast('Added "' + name + '" — ' + records.length.toLocaleString('en-IN') + ' rows.');
+  toast((replace ? 'Replaced "' : 'Added "') + name + '" — ' + ds.records.length.toLocaleString('en-IN') + ' rows.' +
+        (cloudActive() && Cloud.canWrite ? ' Saving to the Google Sheet\u2026' : ''));
   refreshAfterDataChange();
+  if (cloudActive()) cloudQueueUpload(ds);
+}
+
+/** Custom columns ("Keep as ...") whose every value is a number, so they come
+ *  back as numbers after a round trip through the Google Sheet. */
+function numericFieldsOf(fields, records) {
+  const out = [];
+  fields.forEach(f => {
+    if (FIELD_KIND[f]) return;
+    let seen = 0, ok = true;
+    for (let i = 0; i < records.length && ok; i++) {
+      const v = records[i][f];
+      if (v === null || v === undefined || v === '') continue;
+      if (typeof v !== 'number') ok = false; else seen++;
+    }
+    if (ok && seen) out.push(f);
+  });
+  return out;
 }
 
 function refreshAfterDataChange() {
   clearLookups();
   clearAnchorCache();
+  rebuildQtyIndex();
   // dusri file aate hi connections khud detect kar lete hain
   if (Prefs.autoDetectLinks !== false && App.datasets.length > 1 && !App.relationships.length) autoDetectRelationships(true);
   rescoreRelationships();
@@ -975,21 +1232,36 @@ function refreshAfterDataChange() {
 }
 
 function removeDataset(id) {
+  const ds = App.datasets.find(d => d.id === id);
+  if (!ds) return;
+  if (ds.cloud && cloudActive()) {
+    if (!Cloud.canWrite) { notifyError('View-only access \u2014 sirf editors Google Sheet se file hata sakte hain.'); return; }
+    if (!confirm('"' + ds.name + '" ko Google Sheet (database) se bhi hata dein?\n\nYe SABHI devices aur users ke liye hat jayegi.')) return;
+    toast('Removing "' + ds.name + '"\u2026');
+    gsCall({ action: 'dbDelete', id }).then(() => {
+      App.datasets = App.datasets.filter(d => d.id !== id);
+      idbDeleteDataset(id);
+      refreshAfterDataChange();
+      toast('"' + ds.name + '" removed from the Google Sheet.');
+    }).catch(err => notifyError('Could not remove "' + ds.name + '": ' + err.message));
+    return;
+  }
   App.datasets = App.datasets.filter(d => d.id !== id);
   idbDeleteDataset(id);
   refreshAfterDataChange();
 }
 
-function typeTagClass(t) { return { sales: 'tag-sales', purchase: 'tag-purchase', stock: 'tag-stock' }[t] || 'tag-other'; }
+function typeTagClass(t) { return { sales: 'tag-sales', purchase: 'tag-purchase', stock: 'tag-stock', cancel: 'tag-cancel' }[t] || 'tag-other'; }
 
 function renderSidebarDatasets() {
   const wrap = document.getElementById('sidebar-dataset-list');
   if (!App.datasets.length) { wrap.innerHTML = '<div class="empty-hint">No files yet — start on Import Data.</div>'; return; }
   wrap.innerHTML = App.datasets.map(ds =>
     '<div class="sd-item">' +
-      '<span class="sd-name">' + escapeHtml(ds.name) + '</span>' +
+      '<span class="sd-name" title="' + escapeHtml(ds.name) + '">' + escapeHtml(ds.name) + '</span>' +
       '<span class="sd-meta">' + ds.rowCount.toLocaleString('en-IN') + ' rows</span>' +
-      '<span class="sd-type-tag ' + typeTagClass(ds.type) + '">' + ds.type + '</span>' +
+      '<span class="sd-type-tag ' + typeTagClass(ds.type) + '">' + escapeHtml(typeLabel(ds.type)) + '</span> ' +
+      cloudBadgeHtml(ds, false) +
     '</div>'
   ).join('');
 }
@@ -1018,26 +1290,33 @@ function renderLoadedTable() {
   const tbody = document.querySelector('#loaded-datasets-table tbody');
   if (!App.datasets.length) { panel.style.display = 'none'; return; }
   panel.style.display = '';
+  const viewOnly = cloudActive() && !Cloud.canWrite;
   tbody.innerHTML = App.datasets.map(ds =>
     '<tr>' +
-      '<td>' + escapeHtml(ds.name) + (ds.origin ? ' <span class="src-badge">Sheet</span>' : '') + '</td>' +
-      '<td><span class="sd-type-tag ' + typeTagClass(ds.type) + '">' + ds.type + '</span></td>' +
+      '<td>' + escapeHtml(ds.name) + (ds.origin ? ' <span class="src-badge">Sheet tab</span>' : '') +
+        (cloudConfigured() ? '<div class="cloud-cell">' + cloudBadgeHtml(ds, true) + '</div>' : '') + '</td>' +
+      '<td><span class="sd-type-tag ' + typeTagClass(ds.type) + '">' + escapeHtml(typeLabel(ds.type)) + '</span></td>' +
       '<td>' + ds.rowCount.toLocaleString('en-IN') + '</td>' +
       '<td>' + dateRangeOf(ds) + '</td>' +
-      '<td>' + ds.fields.join(', ') + '</td>' +
-      '<td>' + (ds.origin ? '<button class="ghost-btn small refresh-ds" data-id="' + ds.id + '">↻ Refresh</button> ' : '') +
-        '<button class="ghost-btn small remove-ds" data-id="' + ds.id + '">Remove</button></td>' +
+      '<td>' + escapeHtml(ds.fields.join(', ')) + '</td>' +
+      '<td>' + (ds.origin && ds.origin.sheet && cloudActive() ? '<button class="ghost-btn small refresh-ds" data-id="' + escapeHtml(ds.id) + '">\u21bb Refresh</button> ' : '') +
+        (viewOnly && ds.cloud ? '<span class="muted" title="Only editors can remove files">view only</span>'
+                              : '<button class="ghost-btn small remove-ds" data-id="' + escapeHtml(ds.id) + '">Remove</button>') + '</td>' +
     '</tr>'
   ).join('');
   tbody.querySelectorAll('.remove-ds').forEach(btn => btn.addEventListener('click', () => removeDataset(btn.dataset.id)));
   tbody.querySelectorAll('.refresh-ds').forEach(btn => btn.addEventListener('click', () => refreshDataset(btn.dataset.id)));
+  tbody.querySelectorAll('.cloud-retry').forEach(btn => btn.addEventListener('click', () => {
+    const d = App.datasets.find(x => x.id === btn.dataset.id);
+    if (d) cloudQueueUpload(d);
+  }));
 }
 
 function populateDatasetSelects() {
   const opts = ['<option value="__all__">All files combined</option>']
-    .concat(['sales', 'purchase', 'stock'].filter(t => datasetsOfType(t).length).map(t =>
-      '<option value="__type:' + t + '__">All ' + t + ' files</option>'))
-    .concat(App.datasets.map(ds => '<option value="' + ds.id + '">' + escapeHtml(ds.name) + '</option>'));
+    .concat(['sales', 'purchase', 'stock', 'cancel'].filter(t => datasetsOfType(t).length).map(t =>
+      '<option value="__type:' + t + '__">All ' + escapeHtml(typeLabel(t)) + ' files</option>'))
+    .concat(App.datasets.map(ds => '<option value="' + escapeHtml(ds.id) + '">' + escapeHtml(ds.name) + '</option>'));
   ['explore-dataset-select', 'pivot-dataset-select', 'quick-dataset-select'].forEach(id => {
     const el = document.getElementById(id);
     const prev = el.value;
@@ -1047,12 +1326,702 @@ function populateDatasetSelects() {
 }
 
 /* ---------------------------------------------------------------
-   4b. GOOGLE SHEETS CONNECTOR (Apps Script web app)
-   --------------------------------------------------------------- */
-const GS = { url: '', key: '', meta: null };
+   4b. CLOUD DATABASE — Google Sheet via Apps Script, Google sign-in
+   ---------------------------------------------------------------
+   config.js holds two things: the Apps Script /exec URL and the Google
+   OAuth Client ID. With both filled in:
 
+     1. The whole site sits behind a "Sign in with Google" screen.
+     2. The Google ID token goes with every request; the script checks
+        it with Google and only answers Gmail accounts the spreadsheet
+        is shared with (Editor = can upload, Viewer = can only look).
+     3. Every file added on any device is written into the sheet, and
+        every device loads what is in the sheet - no re-uploading.
+
+   With config.js empty the site behaves as before: one browser, no
+   login, data kept only on this device.
+   --------------------------------------------------------------- */
+const NIMS_CFG = (typeof window !== 'undefined' && window.NIMS_CONFIG) || {};
+const CLOUD_URL = String(NIMS_CFG.webAppUrl || '').trim();
+const CLIENT_ID = String(NIMS_CFG.googleClientId || '').trim();
+
+function cloudConfigured() {
+  return /^https:\/\/script\.google(usercontent)?\.com\/.+\/exec/.test(CLOUD_URL) &&
+         /^[\w-]+\.apps\.googleusercontent\.com$/.test(CLIENT_ID);
+}
+
+const GS = { url: '', meta: null };    // url is set only after access is verified
+const Cloud = {
+  role: '', canWrite: false, email: '', name: '', spreadsheetName: '', spreadsheetUrl: '',
+  maxRows: 8000, queue: Promise.resolve(), syncing: null, lastSync: 0, uploading: {}, missing: []
+};
+const Auth = { token: '', exp: 0, email: '', name: '', picture: '', verified: false, waiters: [], gisInit: false };
+
+function cloudActive() { return !!GS.url; }
+function gsReady() { return cloudActive(); }
+
+function codeErr(code, msg) { const e = new Error(msg); e.code = code; return e; }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/* ---- sign-in token ---- */
+function decodeJwt(t) {
+  const part = String(t).split('.')[1] || '';
+  const b64 = part.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((part.length + 3) % 4);
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return JSON.parse(new TextDecoder('utf-8').decode(bytes));
+}
+
+/* The sign-in token lives in sessionStorage: it survives a page reload but
+   is gone once the tab / browser is closed, so the next person at a shared
+   computer has to sign in with their own Gmail. */
+function authLoadSaved() {
+  try {
+    const o = JSON.parse(window.sessionStorage.getItem('nims_auth') || 'null');
+    if (o && o.token && o.exp) Object.assign(Auth, { token: o.token, exp: o.exp, email: o.email || '', name: o.name || '', picture: o.picture || '' });
+  } catch (e) {}
+  try { window.localStorage.removeItem('nims_auth'); } catch (e) {}
+}
+function authSave() {
+  try {
+    window.sessionStorage.setItem('nims_auth', JSON.stringify({ token: Auth.token, exp: Auth.exp, email: Auth.email, name: Auth.name, picture: Auth.picture }));
+  } catch (e) {}
+}
+function authClearToken() {
+  Auth.token = ''; Auth.exp = 0;
+  try { window.sessionStorage.removeItem('nims_auth'); } catch (e) {}
+}
+function authTokenValid(marginSec) {
+  return !!Auth.token && Auth.exp * 1000 > Date.now() + (marginSec === undefined ? 60 : marginSec) * 1000;
+}
+
+function waitForGis(ms) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    (function poll() {
+      if (window.google && google.accounts && google.accounts.id) { resolve(); return; }
+      if (Date.now() - t0 > ms) { reject(new Error('Google Sign-In could not load')); return; }
+      setTimeout(poll, 150);
+    })();
+  });
+}
+
+function initGis() {
+  if (Auth.gisInit) return;
+  google.accounts.id.initialize({
+    client_id: CLIENT_ID,
+    callback: onGoogleCredential,
+    auto_select: true,
+    cancel_on_tap_outside: false,
+    itp_support: true,
+    use_fedcm_for_prompt: true
+  });
+  Auth.gisInit = true;
+}
+
+function promptGoogle() {
+  try { if (Auth.gisInit) google.accounts.id.prompt(); } catch (e) {}
+}
+
+function renderGoogleButton() {
+  const el = document.getElementById('auth-btn');
+  if (!el || !Auth.gisInit) return;
+  el.innerHTML = '';
+  try {
+    google.accounts.id.renderButton(el, { theme: 'filled_blue', size: 'large', text: 'signin_with',
+                                          shape: 'pill', logo_alignment: 'left', width: 260 });
+  } catch (e) { el.textContent = 'Google Sign-In could not start: ' + e.message; }
+}
+
+function onGoogleCredential(resp) {
+  if (!resp || !resp.credential) return;
+  let p;
+  try { p = decodeJwt(resp.credential); } catch (e) { gateShow('error', 'Sign-in response could not be read. Try again.'); return; }
+  const previous = Cloud.email;
+  Object.assign(Auth, { token: resp.credential, exp: p.exp || 0, email: String(p.email || '').toLowerCase(),
+                        name: p.name || '', picture: p.picture || '' });
+  authSave();
+  scheduleTokenRefresh();
+  if (!Auth.verified) { verifyAccess(); return; }
+  if (previous && Auth.email !== previous) { location.reload(); return; }   // a different person signed in
+  gateHide();
+  const w = Auth.waiters.splice(0);
+  w.forEach(fn => fn(Auth.token));
+}
+
+let _refreshTimer = null;
+function scheduleTokenRefresh() {
+  clearTimeout(_refreshTimer);
+  const ms = Auth.exp * 1000 - Date.now() - 5 * 60 * 1000;   // 5 minutes before it runs out
+  if (ms > 0) _refreshTimer = setTimeout(() => { if (!authTokenValid(360)) promptGoogle(); }, ms);
+}
+
+/** A fresh token, asking the person to sign in again if the old one ran out. */
+function authGetToken(opts) {
+  if (authTokenValid(60)) return Promise.resolve(Auth.token);
+  if (opts && opts.noReauth) return Promise.reject(codeErr('AUTH_EXPIRED', 'Sign-in expired.'));
+  return new Promise(resolve => {
+    Auth.waiters.push(resolve);
+    if (Auth.waiters.length === 1) { gateShow('expired'); promptGoogle(); }
+  });
+}
+
+/* ---- the sign-in screen ---- */
+function gateShow(mode, msg) {
+  const g = document.getElementById('auth-gate');
+  if (!g) return;
+  g.style.display = 'flex';
+  g.dataset.mode = mode;
+  const title = document.getElementById('auth-title');
+  const text = document.getElementById('auth-msg');
+  const retry = document.getElementById('auth-retry');
+  const sw = document.getElementById('auth-switch');
+  const btn = document.getElementById('auth-btn');
+  const titles = {
+    checking: 'Opening Nettwear IMS Work…',
+    signin: 'Sign in to continue',
+    expired: 'Session expired — sign in again',
+    denied: 'Access denied',
+    error: 'Could not connect'
+  };
+  const texts = {
+    checking: 'Checking your Google sign-in and access…',
+    signin: 'Sirf un Gmail accounts ko access hai jinke saath Google Sheet share ki gayi hai.',
+    expired: 'Security ke liye sign-in har kuch der mein renew hota hai. Wahi Gmail chuniye — aapka kaam jaha tha wahin se chalega.',
+    denied: '',
+    error: ''
+  };
+  if (title) title.textContent = titles[mode] || '';
+  if (text) text.textContent = msg || texts[mode] || '';
+  if (btn) btn.style.display = (mode === 'signin' || mode === 'expired' || mode === 'denied') ? '' : 'none';
+  if (retry) retry.style.display = mode === 'error' ? '' : 'none';
+  if (sw) sw.style.display = (mode === 'denied' || mode === 'expired') ? '' : 'none';
+  if (mode === 'signin' || mode === 'expired' || mode === 'denied') renderGoogleButton();
+  document.body.classList.add('gate-open');
+}
+
+function gateHide() {
+  const g = document.getElementById('auth-gate');
+  if (g) g.style.display = 'none';
+  document.body.classList.remove('gate-open');
+}
+
+function initAuthGateButtons() {
+  const retry = document.getElementById('auth-retry');
+  if (retry) retry.addEventListener('click', () => {
+    if (authTokenValid(60)) verifyAccess();
+    else location.reload();
+  });
+  const sw = document.getElementById('auth-switch');
+  if (sw) sw.addEventListener('click', () => {
+    try { google.accounts.id.disableAutoSelect(); } catch (e) {}
+    authClearToken();
+    gateShow('signin', 'Doosra Gmail account chuniye.');
+    promptGoogle();
+  });
+  const so = document.getElementById('auth-signout');
+  if (so) so.addEventListener('click', signOut);
+}
+
+/** Entry point, called once on page load. */
+function startCloud() {
+  window.__nimsStarted = true;
+  initAuthGateButtons();
+  if (!cloudConfigured()) {
+    gateHide();
+    document.body.classList.add('local-mode');
+    renderCloudPanel();
+    return restorePersistedDatasets();
+  }
+  document.body.classList.add('cloud-mode');
+  gateShow('checking');
+  authLoadSaved();
+  return waitForGis(15000).then(() => {
+    initGis();
+    if (authTokenValid(120)) { scheduleTokenRefresh(); return verifyAccess(); }
+    gateShow('signin');
+    promptGoogle();
+  }).catch(() => {
+    if (authTokenValid(120)) return verifyAccess();
+    gateShow('error', 'Google Sign-In load nahi ho paya. Internet connection / ad-blocker check karke "Try again" dabaiye.');
+  });
+}
+
+function verifyAccess() {
+  gateShow('checking', 'Checking access for ' + (Auth.email || 'your account') + '…');
+  return gsCall({ action: 'whoami' }, { retries: 2, noReauth: true }).then(me => {
+    Object.assign(Cloud, {
+      role: me.role, canWrite: !!me.canWrite, email: me.email, name: me.name || Auth.name,
+      spreadsheetName: me.spreadsheetName || '', spreadsheetUrl: me.spreadsheetUrl || '',
+      maxRows: me.maxRowsPerRequest || 8000
+    });
+    GS.url = CLOUD_URL;
+    Auth.verified = true;
+    // someone else's cache on this device is not this person's business
+    const cachedFor = Store.get('nims_cache_owner');
+    const wipe = cachedFor && cachedFor !== me.email ? idbClearAll() : Promise.resolve();
+    Store.set('nims_cache_owner', me.email);
+    gateHide();
+    return wipe.then(onCloudReady);
+  }).catch(err => {
+    if (err.code === 'FORBIDDEN') {
+      authClearToken();
+      idbClearAll();
+      App.datasets = [];
+      gateShow('denied', err.message);
+    } else if (err.code === 'AUTH_EXPIRED' || err.code === 'AUTH_REQUIRED') {
+      authClearToken();
+      gateShow('signin', 'Please sign in again.');
+      promptGoogle();
+    } else if (err.code === 'SETUP') {
+      gateShow('error', err.message + ' (Owner ko batayein.)');
+    } else if (/api key|Unknown action/i.test(err.message)) {
+      // the sheet is still running the old (v5, API-key) script
+      gateShow('error', 'Google Sheet mein abhi purana Apps Script chal raha hai. Owner: naya Code.gs paste karke ' +
+        'Deploy \u2192 Manage deployments \u2192 Edit \u2192 New version \u2192 Deploy karein.');
+    } else {
+      gateShow('error', 'Database (Google Sheet) se connect nahi ho paya: ' + err.message);
+    }
+  });
+}
+
+function onCloudReady() {
+  renderAuthChip();
+  updateGsOnlyButtons();
+  renderCloudPanel();
+  startSettingsSync(false);
+  return restorePersistedDatasets().then(() => cloudSync({ first: true })).then(() => {
+    // pick up files added on other devices when the person comes back to the tab
+    const maybe = () => {
+      if (document.visibilityState === 'visible' && cloudActive() && Date.now() - Cloud.lastSync > 3 * 60 * 1000) cloudSync();
+    };
+    window.addEventListener('focus', maybe);
+    document.addEventListener('visibilitychange', maybe);
+    setInterval(maybe, 10 * 60 * 1000);
+  });
+}
+
+function signOut() {
+  if (!confirm('Sign out?\n\nIs device se cached data hata diya jayega. Google Sheet (database) mein sab safe rahega.')) return;
+  try { google.accounts.id.disableAutoSelect(); } catch (e) {}
+  authClearToken();
+  Store.remove('nims_cache_owner');
+  idbClearAll().then(() => location.reload(), () => location.reload());
+}
+
+function renderAuthChip() {
+  const el = document.getElementById('auth-chip');
+  if (!el) return;
+  if (!cloudActive()) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const roleWord = Cloud.role === 'admin' ? 'Owner' : Cloud.role === 'editor' ? 'Editor' : 'View only';
+  const nameEl = el.querySelector('.auth-email');
+  const roleEl = el.querySelector('.auth-role');
+  const pic = el.querySelector('.auth-pic');
+  if (nameEl) { nameEl.textContent = Cloud.email; nameEl.title = Cloud.name || Cloud.email; }
+  if (roleEl) { roleEl.textContent = roleWord; roleEl.className = 'auth-role role-' + Cloud.role; }
+  if (pic) {
+    if (Auth.picture) { pic.style.backgroundImage = 'url("' + Auth.picture.replace(/"/g, '') + '")'; pic.textContent = ''; }
+    else pic.textContent = (Cloud.email || '?').charAt(0).toUpperCase();
+  }
+}
+
+/* ---- talking to the Apps Script ---- */
+function fetchWithTimeout(url, opts, ms) {
+  if (typeof AbortController === 'undefined') return fetch(url, opts);
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  return fetch(url, Object.assign({}, opts, { signal: ctl.signal })).then(
+    r => { clearTimeout(t); return r; },
+    e => { clearTimeout(t); throw e; });
+}
+
+/**
+ * One request to the database. Every call is a POST with the sign-in token
+ * in the body (never in the URL). Network hiccups, "busy" answers and
+ * Google's occasional HTML error page are retried with a growing pause, so
+ * a flaky mobile connection does not turn into an error on screen.
+ */
+function gsCall(payload, opts) {
+  opts = opts || {};
+  const maxRetries = opts.retries === undefined ? 3 : opts.retries;
+  const attempt = (n, reauthed) => authGetToken({ noReauth: opts.noReauth })
+    .then(tok => fetchWithTimeout(CLOUD_URL, {
+      method: 'POST',
+      redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({}, payload, { token: tok }))
+    }, opts.timeout || 150000))
+    .then(r => r.text())
+    .then(text => {
+      let data;
+      try { data = JSON.parse(text); }
+      catch (e) {
+        const err = codeErr('BAD_RESPONSE', /<html|<!doctype/i.test(text)
+          ? 'Google returned a page instead of data (the script may be busy, or the deployment is not "Anyone")'
+          : 'Unexpected answer from the Google Sheet');
+        err.transient = true;
+        throw err;
+      }
+      if (!data.ok) {
+        const err = codeErr(data.code || 'ERROR', data.error || 'Unknown error from the Google Sheet.');
+        err.transient = data.code === 'BUSY';
+        throw err;
+      }
+      return data;
+    })
+    .catch(err => {
+      if ((err.code === 'AUTH_EXPIRED' || err.code === 'AUTH_REQUIRED') && !reauthed && !opts.noReauth) {
+        authClearToken();
+        return attempt(n, true);
+      }
+      if (err.code === 'FORBIDDEN' && Auth.verified) {
+        // access was taken away while the page was open
+        idbClearAll();
+        App.datasets = [];
+        refreshAfterDataChange();
+        GS.url = '';
+        gateShow('denied', err.message);
+        throw err;
+      }
+      const transient = err.transient || err.name === 'TypeError' || err.name === 'AbortError';
+      if (transient && n < maxRetries) {
+        return sleep([1500, 4000, 9000, 15000, 20000][n] || 20000).then(() => attempt(n + 1, reauthed));
+      }
+      if (err.name === 'TypeError') err.message = 'Network problem — Google Sheet tak pahunch nahi paye. Internet check karein.';
+      if (err.name === 'AbortError') err.message = 'Google Sheet ne time par jawab nahi diya. Thodi der baad dobara try karein.';
+      throw err;
+    });
+  return attempt(0, false);
+}
+
+// the rest of the app still speaks in these two
+function gsGet(params) { return gsCall(params); }
+function gsPost(body) { return gsCall(body); }
+
+/* ---- the database ---- */
+function cellOut(v) {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) return isNaN(v.getTime()) ? '' : toISODate(v);
+  if (typeof v === 'number') return isFinite(v) ? v : '';
+  if (typeof v === 'boolean') return v;
+  return String(v);
+}
+
+function cloudMetaOf(ds) {
+  const rp = ds.reportPeriod;
+  return {
+    id: ds.id, name: ds.name, type: ds.type, fields: ds.fields,
+    mapping: ds.mapping || null, headerIdx: ds.headerIdx || 0,
+    reportPeriod: rp ? { from: toISODate(rp.from), to: toISODate(rp.to), raw: rp.raw || '' } : null,
+    numeric: ds.numeric || numericFieldsOf(ds.fields, ds.records),
+    originSheet: ds.origin && ds.origin.sheet ? ds.origin.sheet : ''
+  };
+}
+
+function cloudQueueUpload(ds) {
+  if (!cloudActive() || !ds) return;
+  if (!Cloud.canWrite) { ds.cloudState = 'local'; renderCloudBits(); return; }
+  ds.cloudState = 'queued'; ds.cloudError = '';
+  Cloud.uploading[ds.id] = (Cloud.uploading[ds.id] || 0) + 1;   // sync keeps its hands off from now on
+  renderCloudBits();
+  Cloud.queue = Cloud.queue.then(() => cloudUpload(ds)).catch(() => {}).then(() => {
+    if (--Cloud.uploading[ds.id] <= 0) delete Cloud.uploading[ds.id];
+    renderCloudBits();
+  });
+}
+
+function cloudUpload(ds) {
+  if (App.datasets.indexOf(ds) === -1) return Promise.resolve();   // removed / replaced meanwhile
+  ds.cloudState = 'uploading'; ds.cloudPct = 0; ds.cloudError = '';
+  renderCloudBits();
+  const meta = cloudMetaOf(ds);
+  const n = ds.records.length;
+  let job;
+  if (meta.originSheet) {
+    job = gsCall({ action: 'dbRegister', ds: meta, rows: n });
+  } else {
+    const fields = ds.fields;
+    const chunk = Math.max(300, Math.min(4000, Math.floor(60000 / Math.max(1, fields.length))));
+    job = gsCall({ action: 'dbBegin', ds: meta, rows: n }, { timeout: 180000 }).then(() => {
+      let off = 0;
+      const step = () => {
+        if (off >= n) return null;
+        if (App.datasets.indexOf(ds) === -1) throw codeErr('CANCELLED', 'File was removed during upload.');
+        const at = off;
+        const rows = ds.records.slice(at, at + chunk).map(r => fields.map(f => cellOut(r[f])));
+        return gsCall({ action: 'dbAppend', id: ds.id, offset: at, rows }, { timeout: 180000, retries: 5 }).then(() => {
+          off = at + rows.length;
+          ds.cloudPct = Math.round(off / Math.max(1, n) * 100);
+          renderCloudBits();
+          return step();
+        });
+      };
+      return step();
+    }).then(() => gsCall({ action: 'dbCommit', id: ds.id, rows: n }, { timeout: 180000 }));
+  }
+  return job.then(res => {
+    ds.cloud = true; ds.cloudStamp = res.updated || null; ds.cloudState = 'saved'; ds.cloudPct = 100;
+    idbSaveDataset(ds);
+    toast('"' + ds.name + '" Google Sheet mein save ho gayi — ab har device par dikhegi.');
+  }).catch(err => {
+    if (err.code === 'CANCELLED') {
+      // removed while uploading: do not leave a half-written copy in the sheet
+      if (!App.datasets.some(d => d.id === ds.id)) gsCall({ action: 'dbDelete', id: ds.id }).catch(() => {});
+      return;
+    }
+    ds.cloudState = 'error'; ds.cloudError = err.message;
+    notifyError('"' + ds.name + '" Google Sheet mein save nahi hui: ' + err.message +
+                ' — Import Data par "Retry" dabaiye (file is browser mein safe hai).');
+  });
+}
+
+/** Reads every chunk of one stored file, three requests at a time. */
+function fetchDbRows(entry, onProgress) {
+  const chunk = Math.max(500, Cloud.maxRows || 8000);
+  const total = Math.max(0, entry.rows || 0);
+  const offsets = [];
+  for (let o = 0; o < Math.max(total, 1); o += chunk) offsets.push(o);
+  const results = new Array(offsets.length);
+  let next = 0, done = 0;
+  const worker = () => {
+    if (next >= offsets.length) return Promise.resolve();
+    const k = next++;
+    return gsCall({ action: 'dbRows', id: entry.id, offset: offsets[k], limit: chunk }, { retries: 4 }).then(res => {
+      results[k] = res; done++;
+      if (onProgress) onProgress(done / offsets.length);
+    }).then(worker);
+  };
+  return Promise.all([worker(), worker(), worker()]).then(() => {
+    const rows = [];
+    results.forEach(r => { if (r && r.rows) for (const x of r.rows) rows.push(x); });
+    const last = results[results.length - 1];
+    // the sheet holds more than the registry said: read on until done
+    const more = res => (res && !res.done && res.rows && res.rows.length)
+      ? gsCall({ action: 'dbRows', id: entry.id, offset: rows.length, limit: chunk }, { retries: 4 })
+          .then(r2 => { for (const x of r2.rows) rows.push(x); return more(r2); })
+      : Promise.resolve();
+    return more(last).then(() => rows);
+  });
+}
+
+/** Reads a plain tab of the spreadsheet (the "Pull data" kind), in order. */
+function fetchSheetRows(sheetName, onProgress) {
+  const chunk = Math.max(500, Cloud.maxRows || 8000);
+  const all = [];
+  const next = offset => gsCall({ action: 'data', sheet: sheetName, offset, limit: chunk }, { retries: 4 }).then(res => {
+    for (const r of res.rows) all.push(r);
+    if (onProgress && res.totalRows) onProgress(Math.min(1, all.length / res.totalRows));
+    if (!res.done && res.rows.length) return next(offset + res.rows.length);
+    return all;
+  });
+  return next(0);
+}
+
+function reviveReportPeriod(rp) {
+  if (!rp || typeof rp !== 'object') return null;
+  const from = parseDateLoose(rp.from), to = parseDateLoose(rp.to);
+  return from && to ? { from, to, raw: rp.raw || '' } : null;
+}
+
+function cloudDownload(entry, onProgress) {
+  const existing = App.datasets.find(d => d.id === entry.id);
+  const build = records => ({
+    id: entry.id, name: entry.name, type: entry.type || 'other', fields: entry.fields || [],
+    records, rowCount: records.length,
+    colorIdx: existing ? existing.colorIdx : App.nextDsColor++,
+    origin: entry.source === 'sheet' ? { sheet: entry.originSheet } : null,
+    mapping: entry.mapping || null, headerIdx: entry.headerIdx || 0,
+    reportPeriod: reviveReportPeriod(entry.reportPeriod),
+    numeric: entry.numeric || [],
+    cloud: true, cloudStamp: entry.updated, cloudState: 'saved', updatedBy: entry.updatedBy || ''
+  });
+
+  if (entry.source === 'sheet') {
+    if (!entry.mapping || !entry.mapping.length) return Promise.reject(new Error('column mapping missing'));
+    return fetchSheetRows(entry.originSheet, onProgress).then(all => {
+      const dataRows = all.slice((entry.headerIdx || 0) + 1)
+        .filter(r => r && r.some(c => c !== null && c !== undefined && c !== ''))
+        .filter(r => !isJunkRow(r));
+      return build(buildRecords(dataRows, entry.mapping, entry.id));
+    });
+  }
+
+  return fetchDbRows(entry, onProgress).then(rows => {
+    const fields = entry.fields || [];
+    const numeric = new Set(entry.numeric || []);
+    const kinds = fields.map(f => FIELD_KIND[f] === 'date' ? 'd' : (FIELD_KIND[f] === 'number' || numeric.has(f)) ? 'n' : 't');
+    const records = new Array(rows.length);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || [];
+      const o = { __ds: entry.id };
+      for (let c = 0; c < fields.length; c++) {
+        let v = row[c];
+        if (v === undefined || v === null || v === '') v = null;
+        else if (kinds[c] === 'd') v = parseDateLoose(v);
+        else if (kinds[c] === 'n') v = parseNumberLoose(v);
+        else if (typeof v !== 'string' && typeof v !== 'number') v = String(v);
+        o[fields[c]] = v;
+      }
+      records[i] = o;
+    }
+    return build(records);
+  });
+}
+
+function upsertLocalDataset(ds) {
+  const at = App.datasets.findIndex(d => d.id === ds.id);
+  if (at === -1) App.datasets.push(ds); else App.datasets[at] = ds;
+  idbSaveDataset(ds);
+}
+
+/** Brings this device in line with the sheet: new / changed files come down,
+ *  files removed elsewhere go away here too. Files already cached on this
+ *  device with the same version are not downloaded again. */
+function cloudSync(opts) {
+  opts = opts || {};
+  if (!cloudActive()) return Promise.resolve(false);
+  if (Cloud.syncing) return Cloud.syncing;
+  setCloudLine('Checking the Google Sheet for files…', 'busy');
+  Cloud.syncing = gsCall({ action: 'dbList' }).then(res => {
+    const entries = res.datasets || [];
+    if (res.maxRowsPerRequest) Cloud.maxRows = res.maxRowsPerRequest;
+    const byId = new Map(entries.map(e => [e.id, e]));
+    let changed = false;
+
+    App.datasets.filter(d => d.cloud && !byId.has(d.id) && !Cloud.uploading[d.id]).forEach(d => {
+      App.datasets = App.datasets.filter(x => x !== d);
+      idbDeleteDataset(d.id);
+      changed = true;
+    });
+
+    Cloud.missing = entries.filter(e => e.status === 'missing');
+    // A local copy that is not (yet) in the sheet - a replacement waiting to
+    // upload, or one whose upload failed - wins over the sheet's older copy.
+    const wanted = e => {
+      if (Cloud.uploading[e.id]) return false;
+      const local = App.datasets.find(d => d.id === e.id);
+      return !local || (local.cloud && local.cloudStamp !== e.updated);
+    };
+    const todo = entries.filter(e => e.status === 'ready' && /^[A-Za-z0-9_-]{3,40}$/.test(e.id)).filter(wanted);
+
+    let i = 0;
+    const failed = [];
+    const next = () => {
+      if (i >= todo.length) return Promise.resolve();
+      const e = todo[i++];
+      const label = 'Loading "' + e.name + '" (' + i + '/' + todo.length + ')';
+      setCloudLine(label + '…', 'busy');
+      showCloudProgress(label, 0);
+      return cloudDownload(e, f => showCloudProgress(label, f))
+        .then(ds => { if (wanted(e)) { upsertLocalDataset(ds); changed = true; } })
+        .catch(err => { failed.push(e.name); console.error(err); notifyError('"' + e.name + '" load nahi ho payi: ' + err.message); })
+        .then(next);
+    };
+
+    return next().then(() => {
+      hideCloudProgress();
+      if (changed) refreshAfterDataChange(); else { renderLoadedTable(); renderSidebarDatasets(); }
+      Cloud.lastSync = Date.now();
+      const ready = entries.filter(e => e.status === 'ready').length;
+      setCloudLine(failed.length
+        ? failed.length + ' file(s) could not load — Sync again'
+        : 'In sync · ' + ready + ' file(s) · ' + fmtWhen(new Date().toISOString()), failed.length ? 'err' : 'ok');
+      if (opts.first && todo.length && !failed.length) toast(todo.length + ' file(s) loaded from the Google Sheet.');
+      if (opts.manual) toast(todo.length ? todo.length + ' file(s) updated from the Google Sheet.' : 'Everything is already up to date.');
+      renderCloudPanel();
+      return changed;
+    });
+  }).catch(err => {
+    hideCloudProgress();
+    setCloudLine('Sync failed: ' + err.message, 'err');
+    if (opts.manual) notifyError('Sync failed: ' + err.message);
+    return false;
+  }).then(v => { Cloud.syncing = null; return v; });
+  return Cloud.syncing;
+}
+
+function showCloudProgress(label, frac) {
+  const el = document.getElementById('cloud-progress');
+  if (!el) return;
+  el.style.display = '';
+  const t = el.querySelector('.cp-label'), f = el.querySelector('.cp-fill');
+  if (t) t.textContent = label + ' · ' + Math.round((frac || 0) * 100) + '%';
+  if (f) f.style.width = Math.round((frac || 0) * 100) + '%';
+}
+function hideCloudProgress() {
+  const el = document.getElementById('cloud-progress');
+  if (el) el.style.display = 'none';
+}
+
+function setCloudLine(msg, cls) {
+  const el = document.getElementById('cloud-line');
+  if (el) { el.textContent = msg; el.className = 'cloud-line' + (cls ? ' ' + cls : ''); }
+  const st = document.getElementById('gs-status');
+  if (st) { st.textContent = msg; st.className = 'connect-status' + (cls ? ' ' + cls : ''); }
+}
+
+/** The small cloud badges (sidebar list, loaded-files table, pending banner). */
+const renderCloudBits = debounce(function () {
+  try { renderSidebarDatasets(); renderLoadedTable(); renderCloudPanel(); } catch (e) {}
+}, 120);
+
+function cloudBadgeHtml(ds, big) {
+  if (!cloudConfigured()) return '';
+  const st = ds.cloudState || (ds.cloud ? 'saved' : 'local');
+  if (st === 'saved') return '<span class="cloud-badge ok" title="Saved in the Google Sheet' + (ds.updatedBy ? ' by ' + escapeHtml(ds.updatedBy) : '') + '">☁ Saved</span>';
+  if (st === 'uploading') return '<span class="cloud-badge busy">↑ ' + (ds.cloudPct || 0) + '%</span>';
+  if (st === 'queued') return '<span class="cloud-badge busy">↑ waiting</span>';
+  if (st === 'error') return '<span class="cloud-badge err" title="' + escapeHtml(ds.cloudError || '') + '">⚠ Not saved</span>' +
+    (big && Cloud.canWrite ? ' <button class="ghost-btn small cloud-retry" data-id="' + escapeHtml(ds.id) + '">Retry</button>' : '');
+  return '<span class="cloud-badge local" title="Only in this browser">Local only</span>' +
+    (big && Cloud.canWrite && cloudActive() ? ' <button class="ghost-btn small cloud-retry" data-id="' + escapeHtml(ds.id) + '">☁ Save to Sheet</button>' : '');
+}
+
+function renderCloudPanel() {
+  const who = document.getElementById('cloud-who');
+  const local = !cloudConfigured();
+  document.querySelectorAll('.cloud-only').forEach(el => { el.style.display = local ? 'none' : ''; });
+  document.querySelectorAll('.local-only-note').forEach(el => { el.style.display = local ? '' : 'none'; });
+  if (who) {
+    who.innerHTML = local ? '' : cloudActive()
+      ? 'Signed in as <strong>' + escapeHtml(Cloud.email) + '</strong> · ' +
+        (Cloud.role === 'viewer' ? 'view only (can look and analyse, cannot upload)' : Cloud.role === 'admin' ? 'owner' : 'editor') +
+        (Cloud.spreadsheetName ? ' · database: <strong>' + escapeHtml(Cloud.spreadsheetName) + '</strong>' : '')
+      : 'Not signed in.';
+  }
+  const open = document.getElementById('gs-open-sheet');
+  if (open) {
+    if (Cloud.spreadsheetUrl) { open.href = Cloud.spreadsheetUrl; open.style.display = ''; }
+    else open.style.display = 'none';
+  }
+  const pend = document.getElementById('cloud-pending');
+  if (pend) {
+    const local = cloudActive() && Cloud.canWrite ? App.datasets.filter(d => !d.cloud && (d.cloudState === 'local' || d.cloudState === 'error' || !d.cloudState)) : [];
+    if (local.length) {
+      pend.style.display = '';
+      pend.innerHTML = '<span>☁ ' + local.length + ' file(s) sirf is browser mein hain, Google Sheet mein nahi — doosre devices par nahi dikhengi.</span>' +
+        '<button class="ghost-btn small primary" id="cloud-upload-all">Save all to Google Sheet</button>';
+      const b = document.getElementById('cloud-upload-all');
+      if (b) b.addEventListener('click', () => local.forEach(cloudQueueUpload));
+    } else {
+      pend.style.display = 'none';
+      pend.innerHTML = '';
+    }
+  }
+  const miss = document.getElementById('cloud-missing');
+  if (miss) {
+    if (Cloud.missing && Cloud.missing.length) {
+      miss.style.display = '';
+      miss.textContent = 'Note: ' + Cloud.missing.map(e => '"' + e.name + '"').join(', ') +
+        ' ka data tab Google Sheet mein nahi mila (shayad delete ho gaya). Us file ko dobara upload karein.';
+    } else miss.style.display = 'none';
+  }
+}
+
+/* ---- the "Google Sheet" source panel on Import Data ---- */
 function initSheets() {
-  // source switcher
   document.querySelectorAll('.source-tab').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.source-tab').forEach(b => b.classList.remove('active'));
@@ -1062,52 +2031,35 @@ function initSheets() {
     });
   });
 
-  const urlEl = document.getElementById('gs-url');
-  const keyEl = document.getElementById('gs-key');
-  const savedUrl = Store.get('sl_gs_url'), savedKey = Store.get('sl_gs_key');
-  if (savedUrl) urlEl.value = savedUrl;
-  if (savedKey) keyEl.value = savedKey;
+  // the old API-key connection is gone; do not leave the key lying around
+  try { window.localStorage.removeItem('sl_gs_url'); window.localStorage.removeItem('sl_gs_key'); } catch (e) {}
 
-  // Reconnect in the background so a browser that has never seen this
-  // dashboard still opens on the settings you last saved anywhere.
-  if (savedUrl && savedKey) {
-    GS.url = savedUrl; GS.key = savedKey;
-    setGsStatus('Reconnecting\u2026', 'busy');
-    gsGet({ action: 'meta' }).then(meta => {
-      GS.meta = meta;
-      setGsStatus('Connected: ' + meta.spreadsheetName + ' (' + meta.sheets.length + ' sheets)', 'ok');
-      renderSheetList(meta);
-      updateGsOnlyButtons();
-      startSettingsSync(false);
-    }).catch(err => {
-      GS.meta = null;
-      setGsStatus('Saved connection could not be reached: ' + err.message, 'err');
-      updateGsOnlyButtons();
-    });
-  }
+  const syncBtn = document.getElementById('cloud-sync-now');
+  if (syncBtn) syncBtn.addEventListener('click', () => {
+    if (!cloudActive()) { toast('Sign in first.'); return; }
+    cloudSync({ manual: true });
+  });
 
-  document.getElementById('gs-connect').addEventListener('click', connectSheet);
-  document.getElementById('gs-forget').addEventListener('click', () => {
-    Store.remove('sl_gs_url'); Store.remove('sl_gs_key');
-    urlEl.value = ''; keyEl.value = '';
-    GS.url = ''; GS.key = ''; GS.meta = null;
-    Sync.on = false;
-    setSyncNote('Not connected \u2014 settings are kept in this browser only.');
-    document.getElementById('gs-sheet-list').style.display = 'none';
-    setGsStatus('Saved details cleared.', '');
-    updateGsOnlyButtons();
+  const listBtn = document.getElementById('gs-list-sheets');
+  if (listBtn) listBtn.addEventListener('click', () => {
+    if (!cloudActive()) { toast('Sign in first.'); return; }
+    listBtn.disabled = true;
+    gsCall({ action: 'meta' }).then(meta => { GS.meta = meta; renderSheetList(meta); updateGsOnlyButtons(); })
+      .catch(err => notifyError('Could not list the sheet tabs: ' + err.message))
+      .then(() => { listBtn.disabled = false; });
   });
 
   const pull = document.getElementById('gs-sync-pull');
   if (pull) pull.addEventListener('click', () => {
-    if (!GS.url || !GS.key) { setSyncNote('Connect to the sheet first.'); return; }
-    setSyncNote('Reading\u2026');
+    if (!gsReady()) { setSyncNote('Sign in first.'); return; }
+    setSyncNote('Reading…');
     pullSettings(true);
   });
   const push = document.getElementById('gs-sync-push');
   if (push) push.addEventListener('click', () => {
-    if (!GS.url || !GS.key) { setSyncNote('Connect to the sheet first.'); return; }
-    setSyncNote('Saving\u2026');
+    if (!gsReady()) { setSyncNote('Sign in first.'); return; }
+    if (!Cloud.canWrite) { setSyncNote('View-only access — your changes stay in this browser.'); return; }
+    setSyncNote('Saving…');
     pushSettingsNow().then(ok => { if (ok) toast('Settings saved to your Google Sheet.'); });
   });
 
@@ -1116,99 +2068,25 @@ function initSheets() {
   if (insSheet) insSheet.addEventListener('click', insightsToSheet);
 }
 
-function setGsStatus(msg, cls) {
-  const el = document.getElementById('gs-status');
-  el.textContent = msg;
-  el.className = 'connect-status' + (cls ? ' ' + cls : '');
-}
+function setGsStatus(msg, cls) { setCloudLine(msg, cls); }
 
 function updateGsOnlyButtons() {
-  const on = !!(GS.url && GS.meta && GS.meta.canWrite);
+  const on = cloudActive() && Cloud.canWrite;
   document.querySelectorAll('.gs-only').forEach(el => { el.style.display = on ? '' : 'none'; });
-}
-
-function gsUrlWith(params) {
-  const u = GS.url + (GS.url.indexOf('?') === -1 ? '?' : '&');
-  return u + new URLSearchParams(Object.assign({ key: GS.key }, params)).toString();
-}
-
-function gsGet(params) {
-  return fetch(gsUrlWith(params), { method: 'GET', redirect: 'follow' })
-    .then(r => r.text())
-    .then(text => {
-      let data;
-      try { data = JSON.parse(text); }
-      catch (e) {
-        throw new Error('The script returned HTML instead of JSON. Is the deployment set to "Who has access: Anyone"? The URL must end in /exec.');
-      }
-      if (!data.ok) throw new Error(data.error || 'Unknown error from Apps Script.');
-      return data;
-    });
-}
-
-function gsPost(body) {
-  // text/plain rakhna zaroori hai — warna browser CORS preflight bhejta hai
-  // jise Apps Script handle nahi kar pata.
-  return fetch(GS.url, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({ key: GS.key }, body))
-  })
-    .then(r => r.text())
-    .then(text => {
-      let data;
-      try { data = JSON.parse(text); } catch (e) { throw new Error('Sheet ne unexpected response diya.'); }
-      if (!data.ok) throw new Error(data.error || 'Write failed.');
-      return data;
-    });
-}
-
-function connectSheet() {
-  const url = document.getElementById('gs-url').value.trim();
-  const key = document.getElementById('gs-key').value.trim();
-  if (!url) { setGsStatus('Enter the web app URL.', 'err'); return; }
-  if (!/^https:\/\/script\.google\.com\/.*\/exec/.test(url)) {
-    setGsStatus('The URL should look like https://script.google.com/.../exec', 'err');
-    return;
-  }
-  if (!key) { setGsStatus('Enter the API key.', 'err'); return; }
-
-  GS.url = url; GS.key = key;
-  setGsStatus('Connecting…', 'busy');
-
-  gsGet({ action: 'meta' }).then(meta => {
-    GS.meta = meta;
-    if (document.getElementById('gs-remember').checked) {
-      Store.set('sl_gs_url', url); Store.set('sl_gs_key', key);
-    }
-    setGsStatus('Connected: ' + meta.spreadsheetName + ' (' + meta.sheets.length + ' sheets)', 'ok');
-    renderSheetList(meta);
-    updateGsOnlyButtons();
-    pullSnapshotConfigFromSheet();
-    startSettingsSync(true);         // bring this browser in line with the sheet
-  }).catch(err => {
-    GS.meta = null;
-    setGsStatus(err.message, 'err');
-    document.getElementById('gs-sheet-list').style.display = 'none';
-    updateGsOnlyButtons();
-  });
 }
 
 function renderSheetList(meta) {
   const wrap = document.getElementById('gs-sheet-list');
   wrap.style.display = '';
-  if (!meta.sheets.length) { wrap.innerHTML = '<div class="empty-hint">No visible sheets found in this spreadsheet.</div>'; return; }
+  if (!meta.sheets.length) { wrap.innerHTML = '<div class="empty-hint big">No other tabs found in this spreadsheet.</div>'; return; }
 
-  wrap.innerHTML = '<h3>' + escapeHtml(meta.spreadsheetName) + '</h3>' +
+  wrap.innerHTML = '<h3>Tabs in ' + escapeHtml(meta.spreadsheetName) + '</h3>' +
+    '<p class="muted sync-help">Agar aapka report data seedha kisi Sheet tab mein hai, use yahan se jod sakte ho — tab badalne par "↻ Refresh" se naya data aa jayega.</p>' +
     meta.sheets.map(s =>
       '<div class="sheet-row" data-sheet="' + escapeHtml(s.name) + '">' +
         '<span class="sheet-name">' + escapeHtml(s.name) + '</span>' +
         '<span class="sheet-meta">' + s.rows.toLocaleString('en-IN') + ' rows × ' + s.cols + ' cols</span>' +
-        '<select class="select sheet-type">' +
-          ['sales', 'purchase', 'stock', 'other'].map(t =>
-            '<option value="' + t + '"' + (t === s.guessedType ? ' selected' : '') + '>' + t[0].toUpperCase() + t.slice(1) + '</option>').join('') +
-        '</select>' +
+        '<select class="select sheet-type">' + typeOptionsHtml(s.guessedType) + '</select>' +
         '<button class="ghost-btn small pull-sheet">Pull data</button>' +
         '<div class="progress-track" style="display:none;width:100%;"><div class="progress-fill"></div></div>' +
       '</div>'
@@ -1222,7 +2100,7 @@ function renderSheetList(meta) {
   });
 }
 
-/** Sheet ko chunks mein kheenchta hai taaki 50,000+ rows bhi aa jayen. */
+/** Pulls one tab in chunks, then opens the usual mapping card. */
 function pullSheet(sheetName, type, rowEl) {
   const btn = rowEl.querySelector('.pull-sheet');
   const track = rowEl.querySelector('.progress-track');
@@ -1231,95 +2109,74 @@ function pullSheet(sheetName, type, rowEl) {
   track.style.display = '';
   fill.style.width = '0%';
 
-  const chunkSize = (GS.meta && GS.meta.maxRowsPerRequest) || 5000;
-  const all = [];
-
-  function next(offset) {
-    return gsGet({ action: 'data', sheet: sheetName, offset: offset, limit: chunkSize }).then(res => {
-      res.rows.forEach(r => all.push(r));
-      const pct = res.totalRows ? Math.min(100, Math.round((all.length / res.totalRows) * 100)) : 100;
-      fill.style.width = pct + '%';
-      btn.textContent = 'Loading… ' + pct + '%';
-      if (!res.done && res.rows.length) return next(offset + res.rows.length);
-      return null;
-    });
-  }
-
-  next(0).then(() => {
+  fetchSheetRows(sheetName, f => {
+    fill.style.width = Math.round(f * 100) + '%';
+    btn.textContent = 'Loading… ' + Math.round(f * 100) + '%';
+  }).then(all => {
     btn.disabled = false; btn.textContent = 'Pull data';
     setTimeout(() => { track.style.display = 'none'; }, 600);
-    if (!all.length) { toast(sheetName + ': no rows found.'); return; }
-
-    // Type ko user ki choice se force karte hain, guess se nahi.
-    ingestRows(all, sheetName, null, { url: GS.url, key: GS.key, sheet: sheetName });
+    if (!all.length) { notifyError(sheetName + ': no rows found.'); return; }
+    ingestRows(all, sheetName, null, { sheet: sheetName });
     const card = document.querySelector('#import-queue .import-card:last-child');
     if (card) {
       const sel = card.querySelector('.ds-type');
       if (sel) sel.value = type;
       card.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    // Import queue Upload tab ke neeche hai, isliye user ko wahan le jaate hain
-    toast(sheetName + ' loaded — neeche mapping confirm karke "Add to workspace" dabao.');
+    toast(sheetName + ' loaded — check the mapping below and click "Add to workspace".');
   }).catch(err => {
     btn.disabled = false; btn.textContent = 'Pull data';
     track.style.display = 'none';
-    toast('Pull failed: ' + err.message);
+    notifyError('Pull failed: ' + err.message);
   });
 }
 
-/** Pehle se load ki hui sheet ko dobara kheench kar refresh karta hai. */
+/** Re-reads a file that came from a sheet tab. */
 function refreshDataset(id) {
   const ds = App.datasets.find(d => d.id === id);
-  if (!ds || !ds.origin) return;
+  if (!ds || !ds.origin || !ds.origin.sheet) return;
+  if (!cloudActive()) { toast('Sign in first.'); return; }
   toast('Refreshing "' + ds.name + '"…');
-
-  const savedUrl = GS.url, savedKey = GS.key;
-  GS.url = ds.origin.url; GS.key = ds.origin.key;
-  const chunkSize = (GS.meta && GS.meta.maxRowsPerRequest) || 5000;
-  const all = [];
-
-  function next(offset) {
-    return gsGet({ action: 'data', sheet: ds.origin.sheet, offset: offset, limit: chunkSize }).then(res => {
-      res.rows.forEach(r => all.push(r));
-      if (!res.done && res.rows.length) return next(offset + res.rows.length);
-      return null;
-    });
-  }
-
-  next(0).then(() => {
-    const dataRows = all.slice(ds.headerIdx + 1).filter(r => r && r.some(c => c !== null && c !== undefined && c !== ''));
+  fetchSheetRows(ds.origin.sheet).then(all => {
+    const dataRows = all.slice((ds.headerIdx || 0) + 1)
+      .filter(r => r && r.some(c => c !== null && c !== undefined && c !== ''))
+      .filter(r => !isJunkRow(r));
     ds.records = buildRecords(dataRows, ds.mapping, ds.id);
     ds.rowCount = ds.records.length;
     idbSaveDataset(ds);
-    GS.url = savedUrl || GS.url; GS.key = savedKey || GS.key;
     refreshAfterDataChange();
     toast('"' + ds.name + '" refreshed — ' + ds.rowCount.toLocaleString('en-IN') + ' rows.');
-  }).catch(err => {
-    GS.url = savedUrl; GS.key = savedKey;
-    toast('Refresh failed: ' + err.message);
-  });
+    if (ds.cloud && Cloud.canWrite) cloudQueueUpload(ds);     // tells other devices to re-read it
+  }).catch(err => notifyError('Refresh failed: ' + err.message));
+}
+
+function askSheetName(defName) {
+  const name = prompt('Which sheet tab should this be written to? (it will be created if missing)', defName);
+  if (!name) return null;
+  if (/^(NIMS[ _]|StockLedger)/.test(name.trim())) { notifyError('Names starting with "NIMS" are reserved for the database. Pick another name.'); return null; }
+  return name.trim();
 }
 
 function pivotToSheet() {
   const grid = pivotToGrid();
   if (!grid) { toast('Build a pivot first.'); return; }
-  const sheetName = prompt('Which sheet should this be written to? (it will be created if missing)', 'StockLedger Pivot');
+  const sheetName = askSheetName('Report Pivot');
   if (!sheetName) return;
   toast('Writing to sheet...');
   gsPost({ action: 'write', sheet: sheetName, values: [grid.headers].concat(grid.rows), mode: 'replace' })
     .then(res => toast('Done - "' + res.sheet + '" now has ' + res.rowsWritten + ' rows.'))
-    .catch(err => toast('Write failed: ' + err.message));
+    .catch(err => notifyError('Write failed: ' + err.message));
 }
 
 function insightsToSheet() {
   const grid = insightsToGrid();
   if (!grid) { toast('There is nothing to export yet.'); return; }
-  const sheetName = prompt('Which sheet should this be written to? (it will be created if missing)', 'StockLedger Reorder');
+  const sheetName = askSheetName('Report Reorder');
   if (!sheetName) return;
   toast('Writing to sheet...');
   gsPost({ action: 'write', sheet: sheetName, values: [grid.headers].concat(grid.rows), mode: 'replace' })
     .then(res => toast('Done - "' + res.sheet + '" now has ' + res.rowsWritten + ' rows.'))
-    .catch(err => toast('Write failed: ' + err.message));
+    .catch(err => notifyError('Write failed: ' + err.message));
 }
 
 /* ---------------------------------------------------------------
@@ -1584,7 +2441,7 @@ function exportExploreCSV() {
     }));
   }
   const rows = recs.map(r => fields.map(f => { const v = r[f]; return v instanceof Date ? fmtDate(v) : v; }));
-  downloadBlob(toCSV(fields, rows), 'stockledger-export.csv', 'text/csv');
+  downloadBlob(toCSV(fields, rows), 'nettwear-ims-export.csv', 'text/csv');
 }
 
 /* ---------------------------------------------------------------
@@ -1998,7 +2855,10 @@ function chartOptions(extra) {
 // ERP export purana ho to bhi "Last 30 days" sahi window pakde.
 App.period = { mode: 'all', from: null, to: null };
 
-function salesRecords() { return datasetsOfType('sales').flatMap(d => d.records); }
+/** Sales = sales files + cancel/return files. A return row carries a NEGATIVE
+ *  net quantity (see recQty), so every total that adds up "sold" is already
+ *  net of cancellations, in every table and chart, without special cases. */
+function salesRecords() { return App.datasets.filter(d => d.type === 'sales' || d.type === 'cancel').flatMap(d => d.records); }
 function purchaseRecords() { return datasetsOfType('purchase').flatMap(d => d.records); }
 function stockRecords() { return datasetsOfType('stock').flatMap(d => d.records); }
 
@@ -2125,12 +2985,96 @@ function periodDayCount(range, recs) {
   return Math.max(1, Math.round((max - min) / 86400000) + 1);
 }
 
-/** Row ki quantity. OBS/CBS report mein "Quantity" nahi hoti — wahan
- *  Closing Qty (CBS) hi asli balance hai, isliye uspar fallback karte hain. */
+/* ---- quantities: sold, cancel, net ------------------------------------
+   Every sales-side row is split into three numbers, cached on the row:
+
+     gross  = what was billed          (Quantity, when it is positive)
+     cancel = what came back           (Cancel Qty column, a negative
+                                        Quantity, a row whose Transaction
+                                        Type says Return / Cancel, or any row
+                                        of a "Cancel / Return" file)
+     net    = gross - cancel           <- this is "Sold" everywhere
+
+   recQty() returns the net figure, so sell-through, ADC, cover, ABC, the
+   charts and the catalog all work on sales AFTER customer returns.
+   ---------------------------------------------------------------------- */
+const RETURN_TXN = /return|cancel|refund|credit\s*note|\bsrn?\b/i;
+const QtyIndex = { type: new Map(), anyCancel: false };
+
+function rebuildQtyIndex() {
+  QtyIndex.type = new Map(App.datasets.map(d => [d.id, d.type]));
+  let any = App.datasets.some(d => d.type === 'cancel' && d.records.length);
+  if (!any) {
+    for (const d of App.datasets) {
+      if (d.type !== 'sales') continue;
+      for (const r of d.records) { if (qtySplit(r).cancel > 0) { any = true; break; } }
+      if (any) break;
+    }
+  }
+  QtyIndex.anyCancel = any;
+}
+
+function dsTypeOf(r) {
+  if (!r || !r.__ds) return 'other';
+  let t = QtyIndex.type.get(r.__ds);
+  if (t === undefined) {
+    const ds = App.datasets.find(d => d.id === r.__ds);
+    t = ds ? ds.type : 'other';
+    QtyIndex.type.set(r.__ds, t);
+  }
+  return t;
+}
+
+/** True when any loaded data has a cancel / return figure in it; the Cancel
+ *  columns only appear then, so nothing changes for people without returns. */
+function cancelDataPresent() { return !!QtyIndex.anyCancel; }
+
+function qtySplit(r) {
+  if (r.__qs) return r.__qs;
+  const t = dsTypeOf(r);
+  let q = typeof r.Quantity === 'number' ? r.Quantity
+        : (typeof r['Closing Qty'] === 'number' ? r['Closing Qty'] : 0);
+  let out;
+  if (t === 'stock' || t === 'other') {
+    out = { gross: q, cancel: 0, net: q };
+  } else if (t === 'cancel') {
+    const c = typeof r['Cancel Qty'] === 'number' && r['Cancel Qty'] !== 0 ? r['Cancel Qty'] : q;
+    const cancel = Math.abs(c || 0);
+    out = { gross: 0, cancel, net: -cancel };
+  } else {
+    const isReturn = typeof r['Transaction Type'] === 'string' && RETURN_TXN.test(r['Transaction Type']);
+    const fromRow = (isReturn || q < 0) ? Math.abs(q) : 0;              // the row itself is a return
+    const fromCol = typeof r['Cancel Qty'] === 'number' ? Math.abs(r['Cancel Qty']) : 0;
+    const gross = (isReturn || q < 0) ? 0 : q;
+    // A return row that ALSO fills Cancel Qty describes one return, not two.
+    const cancel = fromRow > 0 && fromCol > 0 ? Math.max(fromRow, fromCol) : fromRow + fromCol;
+    out = { gross, cancel, net: gross - cancel };
+  }
+  try { Object.defineProperty(r, '__qs', { value: out, enumerable: false, configurable: true, writable: true }); }
+  catch (e) { /* frozen row - just recompute next time */ }
+  return out;
+}
+
+/** Net quantity of a row (sales after cancel; purchase after purchase returns;
+ *  stock = closing balance). Stock / OBS-CBS reports have no "Quantity", so
+ *  Closing Qty (CBS) is used there. */
 function recQty(r) {
-  if (typeof r.Quantity === 'number') return r.Quantity;
-  if (typeof r['Closing Qty'] === 'number') return r['Closing Qty'];
-  return 0;
+  if (r.__cv !== undefined) return r.__cv;       // a "cancel view" row, see cancelViews()
+  return qtySplit(r).net;
+}
+function recCancel(r) { return r.__cv !== undefined ? r.__cv : qtySplit(r).cancel; }
+function recGross(r) { return r.__cv !== undefined ? 0 : qtySplit(r).gross; }
+
+/** Rows seen from the "Cancel / Return" chart source: same fields, but the
+ *  quantity is the returned amount. Built on the original rows (prototype),
+ *  so Brand / Colour / Date read straight through. */
+function cancelViews(recs) {
+  const out = [];
+  for (const r of recs) {
+    const c = qtySplit(r).cancel;
+    if (c > 0) { const v = Object.create(r); v.__cv = c; out.push(v); }
+  }
+  return out;
 }
 
 function recOpeningQty(r) {
@@ -2271,7 +3215,7 @@ function buildAnalysis(dim, targetDays) {
   function slot(key) {
     let s = map.get(key);
     if (!s) {
-      s = { key, sold: 0, purchased: 0, stock: 0, opening: 0, hasOpening: false, saleLines: 0,
+      s = { key, sold: 0, gross: 0, cancel: 0, purchased: 0, stock: 0, opening: 0, hasOpening: false, saleLines: 0,
             firstSale: null, lastSale: null, oldestStock: null, newestStock: null,
             meta: {} };
       map.set(key, s);
@@ -2281,9 +3225,10 @@ function buildAnalysis(dim, targetDays) {
 
   sales.forEach(r => {
     const s = slot(dimKey(r, dim));
-    const q = recQty(r);
-    s.sold += q; s.saleLines++;
-    if (r.Date) {
+    const q = recQty(r), g = recGross(r);
+    s.sold += q; s.gross += g; s.cancel += recCancel(r);
+    if (g > 0) s.saleLines++;
+    if (r.Date && g > 0) {
       if (!s.firstSale || r.Date < s.firstSale) s.firstSale = r.Date;
       if (!s.lastSale || r.Date > s.lastSale) s.lastSale = r.Date;
     }
@@ -2605,9 +3550,9 @@ function populateQuickSelects() {
   const el = document.getElementById('quick-dataset-select');
   if (!el) return;
   const opts = ['<option value="__all__">\u26A0 All files combined (mixed)</option>']
-    .concat(['sales', 'purchase', 'stock'].filter(t => datasetsOfType(t).length).map(t =>
-      '<option value="__type:' + t + '__">' + t.charAt(0).toUpperCase() + t.slice(1) + ' data</option>'))
-    .concat(App.datasets.map(ds => '<option value="' + ds.id + '">' + escapeHtml(ds.name) + '</option>'));
+    .concat(['sales', 'purchase', 'stock', 'cancel'].filter(t => datasetsOfType(t).length).map(t =>
+      '<option value="__type:' + t + '__">' + escapeHtml(typeLabel(t)) + ' data</option>'))
+    .concat(App.datasets.map(ds => '<option value="' + escapeHtml(ds.id) + '">' + escapeHtml(ds.name) + '</option>'));
   const prev = el.value;
   el.innerHTML = opts.join('');
   // User ne khud choose kiya ho to wahi rakho. Warna auto-pick — "All combined"
@@ -3053,7 +3998,7 @@ function exportQuickCSV() {
 function quickToSheet() {
   const g = quickToGrid();
   if (!g) { toast('Please tick at least one column first.'); return; }
-  const sheetName = prompt('Which sheet should this be written to?', 'StockLedger Report');
+  const sheetName = askSheetName('Report Quick');
   if (!sheetName) return;
   toast('Writing to sheet...');
   gsPost({ action: 'write', sheet: sheetName, mode: 'replace', values: [g.headers].concat(g.rows) })
@@ -3263,9 +4208,14 @@ function renderPerformance() {
   // aur "Stock" ko साफ likho ki wo closing balance (CBS) hai.
   const hasOBS = A.rows.some(r => r.hasOpening);
   const stockLabel = hasOBS ? 'Closing (CBS)' : 'Stock';
-  const cols = [
-    ['key', dim, false], ['sold', 'Sold', true], ['purchased', 'Purchased', true]
-  ]
+  // Customer returns loaded? Then show what was billed, what came back and
+  // the net figure that every other column is worked out from.
+  const hasCancel = cancelDataPresent();
+  const cols = [['key', dim, false]]
+  .concat(hasCancel
+    ? [['gross', 'Sold (gross)', true], ['cancel', 'Cancel', true], ['sold', 'Net Sold', true]]
+    : [['sold', 'Sold', true]])
+  .concat([['purchased', 'Purchased', true]])
   .concat(hasOBS ? [['opening', 'Opening (OBS)', true]] : [])
   .concat([['stock', stockLabel, true]])
   .concat([
@@ -3336,8 +4286,12 @@ function renderPerfLegend(hasOBS) {
       ['Closing (CBS)', 'Stock left at the end of the period - from the CBS Qty column'],
       ['Moved (OBS\u2212CBS)', '\u2193 means stock went down (issued), \u2191 means it went up (received)']
     ] : [['Stock', 'How much stock is on hand right now']])
+    .concat(cancelDataPresent() ? [
+      ['Sold (gross)', 'Quantity billed in the selected window, before customer returns'],
+      ['Cancel', 'Quantity the customer returned / cancelled in the window (from the Cancel column, negative qty rows, Return / Cancel bills, or a Cancel / Return file)'],
+      ['Net Sold', 'Sold (gross) \u2212 Cancel. Every other column uses this net figure']
+    ] : [['Sold', 'Quantity sold in the selected window']])
     .concat([
-      ['Sold', 'Quantity sold in the selected window'],
       ['Sell-through', 'sold / (sold + stock) - how much of the stock moved'],
       ['Days cover', 'stock / average daily sale - how many days of cover you hold'],
       ['Days since', 'Days since the last sale'],
@@ -3382,6 +4336,8 @@ function perfMetricCells(r) {
   cols.forEach(([k]) => {
     if (k === 'key') return;
     if (k === 'sold') out += '<td class="num">' + fmtNum(r.sold) + '</td>';
+    else if (k === 'gross') out += '<td class="num">' + fmtNum(r.gross || 0) + '</td>';
+    else if (k === 'cancel') out += '<td class="num cancel-col">' + (r.cancel ? fmtNum(r.cancel) : '\u2014') + '</td>';
     else if (k === 'purchased') out += '<td class="num cat-purch">' + fmtNum(r.purchased || 0) + '</td>';
     else if (k === 'opening') out += '<td class="num obs-col">' + (r.hasOpening ? fmtNum(r.opening) : '\u2014') + '</td>';
     else if (k === 'stock') out += '<td class="num cbs-col">' + fmtNum(r.stock) + '</td>';
@@ -3439,7 +4395,7 @@ function perfChildRowsHtml(path, depth, colCount) {
   const map = new Map();
   const slot = k => {
     let x = map.get(k);
-    if (!x) { x = { key: k, sold: 0, purchased: 0, stock: 0, opening: 0, hasOpening: false, lastSale: null, meta: {} }; map.set(k, x); }
+    if (!x) { x = { key: k, sold: 0, gross: 0, cancel: 0, purchased: 0, stock: 0, opening: 0, hasOpening: false, lastSale: null, meta: {} }; map.set(k, x); }
     return x;
   };
   purchaseRecords().filter(r => inPeriod(r, range)).filter(match).forEach(r => {
@@ -3447,8 +4403,9 @@ function perfChildRowsHtml(path, depth, colCount) {
   });
   sales.forEach(r => {
     const x = slot(dimKey(r, childDim));
-    x.sold += recQty(r);
-    if (r.Date && (!x.lastSale || r.Date > x.lastSale)) x.lastSale = r.Date;
+    const g = recGross(r);
+    x.sold += recQty(r); x.gross += g; x.cancel += recCancel(r);
+    if (r.Date && g > 0 && (!x.lastSale || r.Date > x.lastSale)) x.lastSale = r.Date;
   });
   stock.forEach(r => {
     const x = slot(dimKey(r, childDim));
@@ -3557,6 +4514,8 @@ function perfFootHtml(rows, cols) {
   cols.forEach(([k], i) => {
     if (i === 0) { out += '<td>Total (' + rows.length.toLocaleString('en-IN') + ' rows)</td>'; return; }
     if (k === 'sold') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.sold, 0)) + '</td>';
+    else if (k === 'gross') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.gross || 0), 0)) + '</td>';
+    else if (k === 'cancel') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.cancel || 0), 0)) + '</td>';
     else if (k === 'purchased') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.purchased || 0), 0)) + '</td>';
     else if (k === 'opening') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + (r.hasOpening ? r.opening : 0), 0)) + '</td>';
     else if (k === 'stock') out += '<td class="num">' + fmtNum(rows.reduce((s, r) => s + r.stock, 0)) + '</td>';
@@ -3656,11 +4615,11 @@ function renderBottomChart(rows) {
 function perfToGrid() {
   if (!lastPerfRows || !lastPerfRows.rows.length) return null;
   const { rows, dim } = lastPerfRows;
-  const headers = [dim, 'Brand', 'Section', 'Supplier', 'Sold Qty', 'Purchased Qty', 'Stock Qty',
+  const headers = [dim, 'Brand', 'Section', 'Supplier', 'Gross Sold Qty', 'Cancel Qty', 'Net Sold Qty', 'Purchased Qty', 'Stock Qty',
     'Sell-through %', 'Days Cover', 'Last Sold', 'Days Since Last Sale', 'Stock Age (days)',
     'Excess Qty', 'ABC', 'Status'];
   const data = rows.map(r => [r.key, r.meta.Brand || '', r.meta.Section || '', r.meta.Supplier || '',
-    r.sold, r.purchased, r.stock, Number(r.sellThrough.toFixed(1)),
+    r.gross || 0, r.cancel || 0, r.sold, r.purchased, r.stock, Number(r.sellThrough.toFixed(1)),
     r.daysCover === Infinity ? '' : Math.round(r.daysCover),
     r.lastSale ? fmtDate(r.lastSale) : '', r.daysSinceLastSale === null ? '' : r.daysSinceLastSale,
     r.stockAgeDays === null ? '' : r.stockAgeDays, r.excessQty || 0, r.abc, r.status]);
@@ -3799,10 +4758,12 @@ function renderDrill() {
 
   const sumQ = rs => rs.reduce((s, r) => s + (recQty(r)), 0);
   const sold = sumQ(sales), purchased = sumQ(purch), inStock = sumQ(stock);
+  const cancelled = sales.reduce((s, r) => s + recCancel(r), 0);
+  const grossSold = sales.reduce((s, r) => s + recGross(r), 0);
   const sellThrough = (sold + inStock) > 0 ? (sold / (sold + inStock)) * 100 : 0;
   const avgDaily = sold / days;
   const daysCover = avgDaily > 0 ? inStock / avgDaily : (inStock > 0 ? Infinity : 0);
-  const dates = sales.map(r => r.Date).filter(Boolean);
+  const dates = sales.filter(r => recGross(r) > 0).map(r => r.Date).filter(Boolean);
   const lastSale = dates.length ? new Date(minMaxTime(dates).max) : null;
 
   // title + breadcrumb
@@ -3823,7 +4784,9 @@ function renderDrill() {
 
   // KPIs
   document.getElementById('drill-kpis').innerHTML = [
-    ['Sold', fmtNum(sold), sales.length.toLocaleString('en-IN') + ' bill lines'],
+    cancelDataPresent()
+      ? ['Net Sold', fmtNum(sold), fmtNum(grossSold) + ' billed \u2212 ' + fmtNum(cancelled) + ' cancel']
+      : ['Sold', fmtNum(sold), sales.length.toLocaleString('en-IN') + ' bill lines'],
     ['Purchased', fmtNum(purchased), purch.length.toLocaleString('en-IN') + ' lines'],
     ['Stock', fmtNum(inStock), stock.length.toLocaleString('en-IN') + ' stock rows'],
     ['Sell-through', fmtNum(sellThrough, 1) + '%', 'sold ÷ (sold + stock)'],
@@ -3870,7 +4833,7 @@ function renderDrillBreakdown(sales, purch, stock, days) {
   const map = new Map();
   function slot(k) {
     let s = map.get(k);
-    if (!s) { s = { key: k, sold: 0, purchased: 0, stock: 0, lastSale: null }; map.set(k, s); }
+    if (!s) { s = { key: k, sold: 0, cancel: 0, purchased: 0, stock: 0, lastSale: null }; map.set(k, s); }
     return s;
   }
   const keyOf = r => dim === 'Month'
@@ -3879,8 +4842,8 @@ function renderDrillBreakdown(sales, purch, stock, days) {
 
   sales.forEach(r => {
     const s = slot(keyOf(r));
-    s.sold += recQty(r);
-    if (r.Date && (!s.lastSale || r.Date > s.lastSale)) s.lastSale = r.Date;
+    s.sold += recQty(r); s.cancel += recCancel(r);
+    if (r.Date && recGross(r) > 0 && (!s.lastSale || r.Date > s.lastSale)) s.lastSale = r.Date;
   });
   purch.forEach(r => { slot(keyOf(r)).purchased += recQty(r); });
   stock.forEach(r => { slot(keyOf(r)).stock += recQty(r); });
@@ -3906,9 +4869,12 @@ function renderDrillBreakdown(sales, purch, stock, days) {
   lastDrillRows = { rows, dim };
 
   const totalSold = rows.reduce((s, r) => s + r.sold, 0);
-  const cols = [['key', dim, false], ['sold', 'Sold', true], ['share', 'Share', true],
+  const hasCancel = cancelDataPresent();
+  const cols = [['key', dim, false], ['sold', hasCancel ? 'Net Sold' : 'Sold', true]]
+    .concat(hasCancel ? [['cancel', 'Cancel', true]] : [])
+    .concat([['share', 'Share', true],
                 ['stock', 'Stock', true], ['sellThrough', 'Sell-thru', true],
-                ['daysCover', 'Cover', true], ['lastSale', 'Last sold', false]];
+                ['daysCover', 'Cover', true], ['lastSale', 'Last sold', false]]);
 
   const canDrillDeeper = availableDrillDims().filter(d => !Drill.filters.some(f => f.field === d)).length > 1;
 
@@ -3921,6 +4887,7 @@ function renderDrillBreakdown(sales, purch, stock, days) {
       '<tr class="' + (canDrillDeeper ? 'drillable' : '') + '" data-value="' + escapeHtml(r.key) + '">' +
         '<td>' + escapeHtml(r.key) + (canDrillDeeper ? ' <span class="drill-hint">▸</span>' : '') + '</td>' +
         '<td class="num">' + fmtNum(r.sold) + '</td>' +
+        (hasCancel ? '<td class="num cancel-col">' + (r.cancel ? fmtNum(r.cancel) : '\u2014') + '</td>' : '') +
         '<td class="num">' + (totalSold > 0 ? fmtNum(r.sold / totalSold * 100, 1) + '%' : '—') + '</td>' +
         '<td class="num">' + fmtNum(r.stock) + '</td>' +
         '<td class="num">' + fmtNum(r.sellThrough, 1) + '%</td>' +
@@ -3935,6 +4902,7 @@ function renderDrillBreakdown(sales, purch, stock, days) {
       return '<tfoot><tr>' +
         '<td>Total · ' + rows.length.toLocaleString('en-IN') + ' ' + escapeHtml(dim) + '</td>' +
         '<td class="num">' + fmtNum(tSold) + '</td>' +
+        (hasCancel ? '<td class="num">' + fmtNum(rows.reduce(function (a, x) { return a + x.cancel; }, 0)) + '</td>' : '') +
         '<td class="num">100%</td>' +
         '<td class="num">' + fmtNum(tStock) + '</td>' +
         '<td class="num">' + fmtNum(tST, 1) + '%</td>' +
@@ -3970,7 +4938,7 @@ function renderDrillBreakdown(sales, purch, stock, days) {
 }
 
 function renderDrillRaw(sales) {
-  const fields = ['Date', 'Item Code', 'Article No', 'Style', 'Colour', 'Size', 'Brand', 'Supplier', 'Quantity'];
+  const fields = ['Date', 'Transaction Type', 'Item Code', 'Article No', 'Style', 'Colour', 'Size', 'Brand', 'Supplier', 'Quantity', 'Cancel Qty'];
   const have = fields.filter(f => App.datasets.some(d => d.fields.includes(f)));
   const rows = sales.slice(0, 200);
   document.getElementById('drill-raw-table').innerHTML =
@@ -3989,8 +4957,8 @@ function renderDrillRaw(sales) {
 function exportDrillCSV() {
   if (!lastDrillRows || !lastDrillRows.rows.length) { toast('There is nothing to export yet.'); return; }
   const { rows, dim } = lastDrillRows;
-  const headers = [dim, 'Sold Qty', 'Purchased Qty', 'Stock Qty', 'Sell-through %', 'Days Cover', 'Last Sold'];
-  const data = rows.map(r => [r.key, r.sold, r.purchased, r.stock, Number(r.sellThrough.toFixed(1)),
+  const headers = [dim, 'Net Sold Qty', 'Cancel Qty', 'Purchased Qty', 'Stock Qty', 'Sell-through %', 'Days Cover', 'Last Sold'];
+  const data = rows.map(r => [r.key, r.sold, r.cancel || 0, r.purchased, r.stock, Number(r.sellThrough.toFixed(1)),
     r.daysCover === Infinity ? '' : Math.round(r.daysCover), r.lastSale ? fmtDate(r.lastSale) : '']);
   const ctx = Drill.filters.map(f => f.field + '-' + f.value).join('_').replace(/[^\w-]+/g, '');
   downloadBlob(toCSV(headers, data), 'drill-' + ctx.slice(0, 60) + '.csv', 'text/csv');
@@ -4035,34 +5003,15 @@ function saveSnapshotConfigLocal() {
   Store.set('sl_snapshot_config', JSON.stringify(Snapshot.config));
 }
 
-/** Google Sheet se connect hote hi purani settings (agar save ki thi) khinch leta hai. */
-function pullSnapshotConfigFromSheet() {
-  if (!GS.url) return;
-  gsGet({ action: 'data', sheet: 'StockLedger Settings', offset: 0, limit: 20 }).then(res => {
-    const row = (res.rows || []).find(r => r[0] === 'snapshot_config');
-    if (row && row[1]) {
-      try {
-        const parsed = JSON.parse(row[1]);
-        if (!parsed.levels && parsed.dims) parsed.levels = parsed.dims.slice(0, 3);
-        Snapshot.config = Object.assign({}, SNAPSHOT_DEFAULT_CONFIG, parsed);
-        saveSnapshotConfigLocal();
-        if (document.getElementById('snapshot-overlay').style.display !== 'none') renderSnapshot();
-      } catch (e) {}
-    }
-  }).catch(() => { /* sheet abhi nahi bani — default settings chalengi */ });
-}
+/** Snapshot settings travel with every other setting now (sl_snapshot_config
+ *  is one of SYNC_KEYS). This used to write its own ['key','value'] table
+ *  straight over the settings tab in "replace" mode, which wiped every other
+ *  saved setting each time the snapshot settings were saved. */
+function pullSnapshotConfigFromSheet() { /* handled by the settings sync */ }
 
-/** Settings ko local aur (connected ho to) Google Sheet dono jagah save karta hai. */
 function pushSnapshotConfig() {
   saveSnapshotConfigLocal();
-  if (GS.url && GS.meta && GS.meta.canWrite) {
-    gsPost({ action: 'write', sheet: 'StockLedger Settings', mode: 'replace',
-      values: [['key', 'value'], ['snapshot_config', JSON.stringify(Snapshot.config)]] })
-      .then(() => toast('Settings saved, including to your Google Sheet.'))
-      .catch(() => toast('Settings saved on this device (could not save to the Sheet).'));
-  } else {
-    toast('Settings saved on this device.');
-  }
+  toast(gsReady() && Cloud.canWrite ? 'Settings saved, including to your Google Sheet.' : 'Settings saved on this device.');
 }
 
 function mondayOfWeekUTC(d) {
@@ -5115,7 +6064,7 @@ function renderRelations() {
 
   const nodesHtml = App.datasets.map(ds => {
     const p = RelUI.positions[ds.id];
-    return '<div class="rel-node" data-ds="' + ds.id + '" style="left:' + p.x + 'px;top:' + p.y + 'px;">' +
+    return '<div class="rel-node" data-ds="' + escapeHtml(ds.id) + '" style="left:' + p.x + 'px;top:' + p.y + 'px;">' +
       '<div class="rel-node-head ' + typeTagClass(ds.type) + '">' +
         '<span class="rel-node-title">' + escapeHtml(ds.name) + '</span>' +
         '<span class="rel-node-type">' + ds.type + '</span>' +
@@ -5123,8 +6072,8 @@ function renderRelations() {
       '<div class="rel-node-meta">' + ds.rowCount.toLocaleString('en-IN') + ' rows</div>' +
       '<div class="rel-fields">' +
         ds.fields.map(f =>
-          '<div class="rel-field" data-ds="' + ds.id + '" data-field="' + escapeHtml(f) + '">' +
-            '<span class="rel-port" data-ds="' + ds.id + '" data-field="' + escapeHtml(f) + '" title="Drag to connect"></span>' +
+          '<div class="rel-field" data-ds="' + escapeHtml(ds.id) + '" data-field="' + escapeHtml(f) + '">' +
+            '<span class="rel-port" data-ds="' + escapeHtml(ds.id) + '" data-field="' + escapeHtml(f) + '" title="Drag to connect"></span>' +
             '<span class="rel-field-name">' + escapeHtml(f) + '</span>' +
             (FIELD_KIND[f] ? '<span class="rel-field-kind">' + FIELD_KIND[f].slice(0, 3) + '</span>' : '') +
           '</div>').join('') +
@@ -5353,7 +6302,7 @@ function saveSession() {
     positions: RelUI.positions,
     period: App.period
   };
-  downloadBlob(JSON.stringify(out), 'stockledger-session.json', 'application/json');
+  downloadBlob(JSON.stringify(out), 'nettwear-ims-session.json', 'application/json');
   toast('Session saved.');
 }
 
@@ -5386,8 +6335,13 @@ function loadSession(file) {
         App.datasets.push({
           id: newId, name: ds.name, type: ds.type, fields: ds.fields, records,
           rowCount: records.length, colorIdx: App.nextDsColor++,
-          origin: ds.origin || null, mapping: ds.mapping || null, headerIdx: ds.headerIdx || 0
+          origin: ds.origin && ds.origin.sheet ? { sheet: ds.origin.sheet } : null,
+          mapping: ds.mapping || null, headerIdx: ds.headerIdx || 0,
+          cloud: false, cloudState: 'local'
         });
+        const added = App.datasets[App.datasets.length - 1];
+        idbSaveDataset(added);
+        if (cloudActive()) cloudQueueUpload(added);
       });
 
       if (!Array.isArray(parsed)) {
@@ -5414,7 +6368,7 @@ function loadSession(file) {
       toast('Session loaded — ' + list.length + ' file(s), ' + App.relationships.length + ' connection(s).');
     } catch (err) {
       console.error(err);
-      toast('That file does not look like a StockLedger session export.');
+      toast('That file does not look like a Nettwear IMS Work session export.');
     }
   };
   reader.readAsText(file);
@@ -6370,7 +7324,7 @@ function buildCatalog() {
   if (!levels.length) levels.push('Article No');
 
   const root = { key: '__root__', path: '', depth: -1, children: new Map(),
-                 sold: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null,
+                 sold: 0, gross: 0, cancel: 0, purchased: 0, obs: 0, cbs: 0, hasOBS: false, lastSale: null,
                  meta: {}, skuMap: null };
 
   function nodeFor(rec) {
@@ -6383,7 +7337,7 @@ function buildCatalog() {
       if (!child) {
         child = { key, dim: levels[i], depth: i,
                   path: (node.path ? node.path + '|' : '') + levels[i] + '=' + key,
-                  children: new Map(), sold: 0, purchased: 0, obs: 0, cbs: 0,
+                  children: new Map(), sold: 0, gross: 0, cancel: 0, purchased: 0, obs: 0, cbs: 0,
                   hasOBS: false, lastSale: null, meta: {},
                   // only the deepest level tracks each unit; parents merge
                   skuMap: (i === levels.length - 1) ? new Map() : null };
@@ -6424,10 +7378,10 @@ function buildCatalog() {
   }
 
   sales.forEach(r => {
-    const q = recQty(r), sku = skuOf(r);
+    const q = recQty(r), sku = skuOf(r), g = recGross(r), c = recCancel(r);
     const di = dayIndex(r.Date);
     nodeFor(r).forEach(n => {
-      n.sold += q;
+      n.sold += q; n.gross += g; n.cancel += c;
       // Only the days that actually sold are stored, so this costs about one
       // entry per sales line rather than one per row per day.
       if (di >= 0 && di < 800) {
@@ -6435,7 +7389,7 @@ function buildCatalog() {
         n.dayMap.set(di, (n.dayMap.get(di) || 0) + q);
       }
       if (n.skuMap) n.skuMap.set(sku, (n.skuMap.get(sku) || 0) + q);
-      if (r.Date && (!n.lastSale || r.Date > n.lastSale)) n.lastSale = r.Date;
+      if (r.Date && g > 0 && (!n.lastSale || r.Date > n.lastSale)) n.lastSale = r.Date;
       addMeta(n, r);
     });
   });
@@ -6769,7 +7723,9 @@ function renderCatalog() {
     '<th class="cat-c-design" data-sc="key">Design' + catSortArrow('key') + '</th>' +
     (catColOn('category') ? '<th data-sc="category">Category' + catSortArrow('category') + '</th>' : '') +
     (catColOn('colours') ? '<th class="cat-c-colours" data-sc="colours">Colours' + catSortArrow('colours') + '</th>' : '') +
-    (catColOn('sold') ? '<th class="num" data-sc="sold">Sold' + catSortArrow('sold') + '</th>' : '') +
+    (catColOn('gross') ? '<th class="num" data-sc="gross" title="Quantity billed, before customer returns">Sold (gross)' + catSortArrow('gross') + '</th>' : '') +
+    (catColOn('cancel') ? '<th class="num" data-sc="cancel" title="Quantity returned / cancelled by the customer">Cancel' + catSortArrow('cancel') + '</th>' : '') +
+    (catColOn('sold') ? '<th class="num" data-sc="sold"' + (cancelDataPresent() ? ' title="Sold (gross) minus Cancel - used for every calculation">Net Sold' : '>Sold') + catSortArrow('sold') + '</th>' : '') +
     (catColOn('purchased') ? '<th class="num" data-sc="purchased" title="Quantity received in this window">Purchased' + catSortArrow('purchased') + '</th>' : '') +
     (catColOn('opening') ? '<th class="num" data-sc="obs">Opening' + catSortArrow('obs') + '</th>' : '') +
     (catColOn('closing') ? '<th class="num" data-sc="cbs">Closing' + catSortArrow('cbs') + '</th>' : '') +
@@ -6806,16 +7762,21 @@ function renderCatalog() {
   const reps = rows.map(r => replenFor(r.path, r.sold, built.days, r.cbs, r));
   const tReorder = reps.reduce((a, x) => a + x.reorder, 0);
   const totMl = reps.reduce((a, x) => a + x.ml, 0);
-  const tOnHand = rows.reduce((a, r) => a + (r.cbs || 0), 0);
+  // closing + in transit, exactly what each row's own % is worked out from
+  const tOnHand = reps.reduce((a, x) => a + (x.onHand || 0), 0);
   const tStd = rows.reduce((a, r) => a + standardStock(r), 0);
-  // the total follows whichever reading is on show
+  // The total follows whichever reading is on show, with the same formula as
+  // the rows. (Stock1 % used to total as Max Level / Standard, a different
+  // ratio from the one on every row above it.)
   const totPct = pctMode() === 'stock1'
-    ? (tStd > 0 ? (totMl / tStd) * 100 : 0)
+    ? (tStd > 0 ? (tOnHand / tStd) * 100 : 0)
     : (totMl > 0 ? (tOnHand / totMl) * 100 : 0);
   const fillerCols = (catColOn('category') ? 1 : 0) + (catColOn('colours') ? 1 : 0);
   const foot = '<tfoot><tr>' +
     '<td>Total \u00b7 ' + rows.length.toLocaleString('en-IN') + ' designs</td>' +
     (fillerCols ? '<td colspan="' + fillerCols + '"></td>' : '') +
+    (catColOn('gross') ? '<td class="num">' + fmtNum(rows.reduce((a, r) => a + (r.gross || 0), 0)) + '</td>' : '') +
+    (catColOn('cancel') ? '<td class="num">' + fmtNum(rows.reduce((a, r) => a + (r.cancel || 0), 0)) + '</td>' : '') +
     (catColOn('sold') ? '<td class="num">' + fmtNum(tSold) + '</td>' : '') +
     (catColOn('purchased') ? '<td class="num">' + fmtNum(tPurch) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num">' + fmtNum(tObs) + '</td>' : '') +
@@ -6976,7 +7937,7 @@ function catSortValue(d, col) {
 /** The columns in the order they are drawn, Design first. */
 function catalogVisibleCols() {
   return ['design'].concat(
-    ['category','colours','sold','purchased','opening','closing','standard',
+    ['category','colours','gross','cancel','sold','purchased','opening','closing','standard',
      'adc','lt','sf','moq','ml','mit','stockpct','reorder',
      'cover','sellthru','lastsold','status'].filter(catColOn));
 }
@@ -6994,7 +7955,7 @@ function stripSpanCols() {
 
 /** How many columns the table has right now, for full-width rows. */
 function catalogColCount() {
-  return 1 + ['category','colours','sold','purchased','opening','closing','standard',
+  return 1 + ['category','colours','gross','cancel','sold','purchased','opening','closing','standard',
               'adc','lt','sf','moq','ml','mit','stockpct','reorder',
               'cover','sellthru','lastsold','status'].filter(catColOn).length;
 }
@@ -7041,6 +8002,8 @@ function catalogNodeRow(n, days) {
     '</td>' +
     (catColOn('category') ? '<td class="cat-cat">' + escapeHtml(n.meta['Sub Section'] || n.meta.Section || '\u2014') + '</td>' : '') +
     (catColOn('colours') ? '<td class="cat-c-colours"><span class="cat-bands">' + dots + '</span></td>' : '') +
+    (catColOn('gross') ? '<td class="num">' + fmtNum(n.gross || 0) + '</td>' : '') +
+    (catColOn('cancel') ? '<td class="num cancel-col">' + (n.cancel ? fmtNum(n.cancel) : '\u2014') + '</td>' : '') +
     (catColOn('sold') ? '<td class="num">' + fmtNum(n.sold) + '</td>' : '') +
     (catColOn('purchased') ? '<td class="num cat-purch">' + fmtNum(n.purchased) + '</td>' : '') +
     (catColOn('opening') ? '<td class="num obs-col">' + (n.hasOBS ? fmtNum(n.obs) : '\u2014') + '</td>' : '') +
@@ -7384,7 +8347,7 @@ function onCatalogImagePicked(e) {
 function exportCatalogCSV() {
   if (!Catalog.lastRows || !Catalog.lastRows.length) { toast('Nothing to export yet.'); return; }
   const headers = ['Path', 'Level', 'Section', 'Sub Section', 'Brand', 'Supplier',
-                   'Sold', 'Purchased', 'Opening', 'Closing', 'Standing Stock Ideal',
+                   'Gross Sold', 'Cancel', 'Net Sold', 'Purchased', 'Opening', 'Closing', 'Standing Stock Ideal',
                    'ADC', 'LT', 'SF', 'MOQ', 'ML', 'MIT', 'Stock %', 'Reorder', 'Status'];
   const out = [];
   const days = catalogDays();
@@ -7395,7 +8358,7 @@ function exportCatalogCSV() {
       out.push([
         line.join(' > '), n.dim || '', n.meta.Section || '', n.meta['Sub Section'] || '',
         n.meta.Brand || '', n.meta.Supplier || '',
-        n.sold, n.purchased, n.hasOBS ? n.obs : '', n.cbs, standardStock(n),
+        n.gross || 0, n.cancel || 0, n.sold, n.purchased, n.hasOBS ? n.obs : '', n.cbs, standardStock(n),
         Number(r.adc.toFixed(3)), r.lt, r.sf, r.moq, Math.round(r.ml), r.mit,
         Math.round(r.pct), r.reorder, n.status
       ]);
@@ -7414,7 +8377,8 @@ const CATALOG_LEVEL_DIMS = ['Article No', 'Item Code', 'Brand', 'Colour', 'Size'
                             'Section', 'Sub Section', 'Supplier'];
 
 const CAT_COLUMNS = [
-  ['category', 'Category'], ['colours', 'Colours'], ['sold', 'Sold'], ['purchased', 'Purchased'],
+  ['category', 'Category'], ['colours', 'Colours'], ['gross', 'Sold (gross)'], ['cancel', 'Cancel'],
+  ['sold', 'Sold / Net Sold'], ['purchased', 'Purchased'],
   ['opening', 'Opening'], ['closing', 'Closing'], ['standard', 'Standing Stock Ideal'],
   ['adc', 'ADC'], ['lt', 'LT'], ['sf', 'SF'], ['moq', 'MOQ'],
   ['ml', 'ML'], ['mit', 'MIT'], ['stockpct', 'Stock %'], ['reorder', 'Reorder'],
@@ -7649,7 +8613,7 @@ const CatPrefs = Object.assign({}, CATPREFS_DEFAULT);
 
 // Columns added in later builds must appear for people who already had
 // settings saved, otherwise a new column stays invisible for ever.
-const CAT_COLUMNS_ADDED_LATER = ['purchased'];
+const CAT_COLUMNS_ADDED_LATER = ['purchased', 'gross', 'cancel'];
 
 function loadCatPrefs() {
   try {
@@ -7666,13 +8630,16 @@ function loadCatPrefs() {
           CatPrefs.showChipCounts = false;
           CatPrefs.chipCountsMigrated = true;
         }
+        // A new column is switched on ONCE, the first time these settings meet
+        // it. It used to be re-added on every load, so unticking "Purchased"
+        // never stuck.
+        const seen = Array.isArray(saved.colsKnown) ? saved.colsKnown
+          : known.filter(c => c !== 'gross' && c !== 'cancel' &&
+                              (c !== 'purchased' || CatPrefs.columns.indexOf('purchased') !== -1));
         CAT_COLUMNS_ADDED_LATER.forEach(c => {
-          if (CatPrefs.columns.indexOf(c) === -1) {
-            const at = CatPrefs.columns.indexOf('sold');
-            if (at >= 0) CatPrefs.columns.splice(at + 1, 0, c);
-            else CatPrefs.columns.push(c);
-          }
+          if (seen.indexOf(c) === -1 && CatPrefs.columns.indexOf(c) === -1) CatPrefs.columns.push(c);
         });
+        CatPrefs.colsKnown = known.slice();
         saveCatPrefsQuiet();
       }
     }
@@ -7702,7 +8669,11 @@ function applyCatPrefs() {
   document.body.classList.toggle('cat-no-thumbs', !CatPrefs.showThumbs);
 }
 
-function catColOn(id) { return (CatPrefs.columns || []).indexOf(id) !== -1; }
+function catColOn(id) {
+  // Gross and Cancel only mean something once return data is loaded.
+  if ((id === 'gross' || id === 'cancel') && !cancelDataPresent()) return false;
+  return (CatPrefs.columns || []).indexOf(id) !== -1;
+}
 
 /* ---- image viewer: click a photo to enlarge, replace or remove ---- */
 function ensureCatImageViewer() {
@@ -8095,7 +9066,8 @@ const CHART_TYPES = [
 ];
 
 const CHART_SOURCES = [
-  ['sales', 'Sales'],
+  ['sales', 'Sales (net of cancel)'],
+  ['cancel', 'Cancel / Return'],
   ['purchase', 'Purchase'],
   ['stock', 'Stock']
 ];
@@ -8137,6 +9109,7 @@ function saveDashCharts() { Store.set('sl_dash_charts', JSON.stringify(Dash.char
 
 function dashRecordsFor(source) {
   const range = periodRange();
+  if (source === 'cancel') return cancelViews(salesRecords().filter(r => inPeriod(r, range)));
   if (source === 'purchase') return purchaseRecords().filter(r => inPeriod(r, range));
   if (source === 'stock') return stockRecords();
   return salesRecords().filter(r => inPeriod(r, range));
@@ -9478,7 +10451,7 @@ const DASH_TEMPLATES = [
   {
     id: 'classic',
     name: 'Retail Classic',
-    note: 'The standard StockLedger board on paper colours — what the Dashboard has always looked like.',
+    note: 'The standard Nettwear IMS board on paper colours — what the Dashboard has always looked like.',
     theme: { bg: '#F6F1E4', card: '#FFFDF8', fg: '#241C14', grid: '#E4DBC6', palette: 'rust' },
     charts: null   // null means "the built-in default set"
   }
@@ -10405,16 +11378,165 @@ function renderBoardBackgroundSettings(wrap) {
 }
 
 /* ---------------------------------------------------------------
+   17. CALCULATION GUIDE — har number kaise banta hai
+   ---------------------------------------------------------------
+   Opened from the sidebar. Written for the people who read the
+   reports, with one worked example that runs through every formula.
+   --------------------------------------------------------------- */
+function calcGuideHtml() {
+  const b = stockBands();
+  const lt = CatPrefs.defaultLT || 15, sf = CatPrefs.defaultSF || 1.5, moq = CatPrefs.defaultMOQ || 12;
+  const std = CatPrefs.stdMonths === undefined ? 2 : CatPrefs.stdMonths;
+  const td = Math.max(1, parseInt(Prefs.targetDays || 30, 10) || 30);
+  const f = (t) => '<code class="cg-f">' + t + '</code>';
+  const row = (name, formula, note) => '<tr><td class="cg-n">' + name + '</td><td>' + formula + '</td><td class="cg-note">' + (note || '') + '</td></tr>';
+  const table = rows => '<table class="cg-table"><thead><tr><th>Number</th><th>Calculation</th><th>Note</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
+
+  return '' +
+  '<p class="cg-lead">Neeche har screen ke har number ka formula hai. <strong>D</strong> = selected window ke din, ' +
+    '<strong>Net Sold</strong> = bechi gayi qty minus cancel/return. Settings badalne par (LT, SF, MOQ, bands) ye page bhi wahi values dikhata hai.</p>' +
+
+  '<h3>1. Window aur din (sab screens par)</h3>' +
+  table([
+    row('Anchor date ("aaj")', 'Sales + Purchase data ki <em>sabse aakhri</em> Date', 'Computer ki date nahi. Purana export ho to bhi "Last 30 days" sahi pakadta hai.'),
+    row('Last N days', f('anchor − (N−1) → anchor'), 'Last 7 / 30 / 90 / 180 / 365 days'),
+    row('This week / Last week', 'Monday → anchor &nbsp;/&nbsp; pichhla poora Mon–Sun', ''),
+    row('Latest month / Last month', '1 tareekh → anchor &nbsp;/&nbsp; pichhla poora mahina', ''),
+    row('Latest year', '1 Jan → anchor', ''),
+    row('D (days)', f('To − From + 1'), '"All data" mein: window ki pehli sale date se aakhri tak. Koi date na ho to 30.'),
+    row('Stock / Closing', 'Window se filter <em>nahi</em> hota', 'Stock file jo balance batati hai wahi hamesha.'),
+    row('Skipped rows', '"Total", "Grand Total", "Printed on…" jaisi rows', 'Import par hata di jati hain, warna har figure double ho jata.')
+  ]) +
+
+  '<h3>2. Quantities — Sold, Cancel, Net Sold, Purchased, Stock</h3>' +
+  table([
+    row('Sold (gross)', f('Σ Quantity') + ' — Sales rows, window ke andar, sirf positive qty', 'Customer ko bill hua maal'),
+    row('Cancel', f('Σ Cancel Qty') + ' + ' + f('|negative Quantity|') + ' + Return/Cancel wale bills + "Cancel / Return" file ki poori qty',
+        'Transaction Type mein Return, Cancel, Refund, Credit Note ya SR ho to wo row cancel maani jati hai.'),
+    row('Net Sold (Sold)', f('Sold (gross) − Cancel'), '<strong>Har calculation isi se hoti hai</strong> — sell-through, ADC, cover, ABC, charts. Cancel data na ho to Sold = Net Sold.'),
+    row('Purchased', f('Σ Quantity') + ' — Purchase rows, window ke andar', 'Purchase return (negative / Return bill) minus ho jata hai.'),
+    row('Stock / Closing (CBS)', f('Σ Quantity') + ' ya ' + f('Σ CBS Qty') + ' — Stock file', ''),
+    row('Opening (OBS)', f('Σ OBS Qty') + ' — Stock file', 'Sirf tab jab OBS column ho.'),
+    row('Moved', f('Opening − Closing'), '↓ = stock ghata, ↑ = stock badha')
+  ]) +
+
+  '<h3>3. Product Performance (tab 01)</h3>' +
+  table([
+    row('Avg daily sale', f('Net Sold ÷ D'), ''),
+    row('Sell-through %', f('Net Sold ÷ (Net Sold + Stock) × 100'), 'Kitna maal nikal gaya'),
+    row('Days cover', f('Stock ÷ Avg daily sale'), 'Sale 0 aur stock hai to ∞'),
+    row('Last sold', 'Sabse aakhri date jis din billed qty > 0 thi', 'Return wale din ko "sale" nahi maana jata'),
+    row('Days since last sale', f('Anchor − Last sold'), ''),
+    row('Stock age', f('Σ(qty × (anchor − Purchase Bill Date)) ÷ Σ qty'), 'Qty-weighted average umar'),
+    row('ABC', 'Net Sold ke hisaab se bade se chhota; running total % ≤ 80 = <strong>A</strong>, ≤ 95 = <strong>B</strong>, baaki = <strong>C</strong>', 'Net Sold 0 = —'),
+    row('Status', 'Is kram mein pehla jo sach ho: <br>1. Net Sold 0 aur Stock > 0 → <strong>Dead stock</strong><br>2. Stock 0 aur Net Sold > 0 → <strong>Out of stock</strong><br>' +
+        '3. Aakhri sale 90+ din pehle aur Stock > 0 → <strong>Dead stock</strong><br>4. A → <strong>Best seller</strong>, B → <strong>Steady</strong>, C → <strong>Slow mover</strong><br>5. Kuch nahi → <strong>No activity</strong>', ''),
+    row('Overstocked', f('Stock > 0 aur Days cover > 3 × ' + td + ' din'), td + ' = target cover (Settings)'),
+    row('Excess qty', f('Stock − Avg daily sale × ' + td), 'Kabhi na bika ho to poora stock'),
+    row('Footer total', 'Har column ka Σ (saari filtered rows, sirf dikhne wali 800 nahi)', 'Sell-through total = ΣNet Sold ÷ (ΣNet Sold + ΣStock)'),
+    row('Expand ki hui rows', 'Wahi formulas, us row ke andar ke data par', 'Status: Dead stock / Out of stock / Moving / No activity')
+  ]) +
+
+  '<h3>4. Catalog (tab 02) — replenishment</h3>' +
+  table([
+    row('Levels', (CatPrefs.levels || ['Article No', 'Colour', 'Size']).join(' → '), 'Settings › 02 Catalog se badal sakte hain'),
+    row('ADC', f('Net Sold ÷ D'), 'Average Daily Consumption. Box mein type karke override kar sakte ho.'),
+    row('LT / SF / MOQ', 'Default: LT <strong>' + lt + '</strong> din, SF <strong>' + sf + '</strong>, MOQ <strong>' + moq + '</strong>', 'Lead time, safety factor, minimum order qty — har row par badal sakte ho'),
+    row('ML (Max Level)', f('Σ har SKU ka max( SKU ki ADC × LT × SF , MOQ )'),
+        'SKU = Article + Colour + Size. Ek SKU wali row par seedha ' + f('max(ADC × LT × SF, MOQ)') + '. Design row = uske saare SKUs ka jod.'),
+    row('MIT', 'Material in transit — aap type karte ho', 'Default 0'),
+    row('Stock %', f('(Closing + MIT) ÷ ML × 100'), '999%+ se upar cap'),
+    row('Stock1 % (optional)', f('(Closing + MIT) ÷ Standing Stock Ideal × 100'), 'Settings mein "Stock1 %" chuna ho tab'),
+    row('Standing Stock Ideal', 'Pichhle <strong>' + std + '</strong> poore calendar mahino ki Net Sold', 'Chalu (adhoora) mahina nahi gina jata'),
+    row('Reorder', f('ML − (Closing + MIT)') + ', upar ki taraf MOQ ke multiple mein', 'Zaroorat na ho to —'),
+    row('Cover', f('Closing ÷ ADC') + ' (din)', ''),
+    row('Sell-thru', f('Net Sold ÷ (Opening + Purchased) × 100'), 'Opening/Purchase na ho to ' + f('Net Sold ÷ (Net Sold + Closing)') + '; kuch bhi na ho to —'),
+    row('Status', 'Closing 0 + sale → <strong>Stockout</strong>; dono 0 → <strong>Idle</strong>; sale 0 → <strong>No sale</strong>; warna Stock % band:<br>' +
+        '0–' + b.low + '% <strong>Low stock</strong> · ' + b.low + '–' + b.mid + '% <strong>Medium stock</strong> · ' + b.mid + '–' + b.good + '% <strong>Healthy</strong> · ' + b.good + '%+ <strong>Overstock</strong>', 'Row ka rang aur Status hamesha same band se'),
+    row('Colour dots', 'Har andar wali row (colour/size) ka apna Stock % band', 'Closing ≤ ' + (CatPrefs.lowStockAt === undefined ? 2 : CatPrefs.lowStockAt) + ' ho to amber'),
+    row('Day strip', 'Har chip = ek din jab sale hui. Rang: us row ke "typical" (median) sale din se tulna', '< 50% laal · < 100% peela · < 200% hara · 200%+ baingani'),
+    row('Footer', f('Σ') + ' har column; Stock % total = ' + f('Σ(Closing + MIT) ÷ Σ ML'), '')
+  ]) +
+
+  '<h3>5. Drill-down window (⧉ button)</h3>' +
+  table([
+    row('Sold / Net Sold', f('Σ net qty') + ' us selection ki', 'Cancel ho to "billed − cancel" niche likha hota hai'),
+    row('Sell-through', f('Net Sold ÷ (Net Sold + Stock) × 100'), ''),
+    row('Days cover', f('Stock ÷ (Net Sold ÷ D)'), ''),
+    row('Share', f('Row ki Net Sold ÷ selection ki total Net Sold × 100'), ''),
+    row('Month-wise chart', 'Har mahine ki Net Sold', '')
+  ]) +
+
+  '<h3>6. Dashboard, charts, Pivot, Quick Report</h3>' +
+  table([
+    row('Quantity', 'Sales = ' + f('Σ Net Sold') + ', Cancel / Return = ' + f('Σ Cancel') + ', Purchase = ' + f('Σ Purchased') + ', Stock = ' + f('Σ Closing'), 'Chart ke "Data" option se'),
+    row('Row count', 'Kitni rows', ''),
+    row('Distinct items', 'Alag-alag Item Code (na ho to Article No) ki ginti', ''),
+    row('Share % (table card)', f('value ÷ dikhne wali rows ka total × 100'), ''),
+    row('Running %', f('ab tak ka jod ÷ total × 100'), ''),
+    row('Chart click filter', 'Kisi bar par click = baaki sab charts us value se filter', 'Wo chart khud filter nahi hota'),
+    row('Quick Report / Pivot', 'Sum / Count / Average — chune gaye column ka, tick kiye columns ke group mein', 'Share = group ÷ grand total. Ye raw column par chalta hai, net nahi.'),
+    row('Top Items Snapshot', 'Net Sold ke hisaab se top items', '')
+  ]) +
+
+  '<h3>7. Ek example — sab formulas ek saath</h3>' +
+  '<div class="cg-example">' +
+    '<p>Article <strong>A-101</strong>, "Last 30 days" (D = 30). Bill hua <strong>120</strong>, customer ne wapas kiya <strong>10</strong>, closing stock <strong>90</strong>, MIT 0, LT 30, SF 1.5, MOQ 12 (ek hi SKU).</p>' +
+    '<ul>' +
+      '<li>Net Sold = 120 − 10 = <strong>110</strong></li>' +
+      '<li>ADC = 110 ÷ 30 = <strong>3.67</strong> pcs/din</li>' +
+      '<li>Sell-through = 110 ÷ (110 + 90) = <strong>55%</strong></li>' +
+      '<li>Days cover = 90 ÷ 3.67 = <strong>24.5 din</strong></li>' +
+      '<li>ML = max(3.67 × 30 × 1.5, 12) = <strong>165</strong></li>' +
+      '<li>Stock % = 90 ÷ 165 = <strong>54.5%</strong> → <strong>Medium stock</strong> (' + b.low + '–' + b.mid + '%)</li>' +
+      '<li>Reorder = 165 − 90 = 75 → 12 ke multiple mein upar = <strong>84</strong></li>' +
+    '</ul>' +
+  '</div>';
+}
+
+function initCalcGuide() {
+  const btn = document.getElementById('btn-calc-guide');
+  if (!btn) return;
+  btn.addEventListener('click', openCalcGuide);
+}
+
+function openCalcGuide() {
+  let ov = document.getElementById('calc-guide-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'calc-guide-overlay';
+    ov.className = 'drill-overlay';
+    ov.innerHTML = '<div class="drill-panel cg-panel">' +
+      '<div class="drill-head"><div><h2>Calculation guide</h2>' +
+      '<div class="drill-subtitle">Har number kaise calculate hota hai</div></div>' +
+      '<button class="drill-close" id="cg-close" title="Close (Esc)">&times;</button></div>' +
+      '<div class="cg-body" id="cg-body"></div></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov && modalIsTop('calc-guide-overlay')) closeCalcGuide(); });
+    ov.querySelector('#cg-close').addEventListener('click', closeCalcGuide);
+  }
+  document.getElementById('cg-body').innerHTML = calcGuideHtml();
+  ov.style.display = 'flex';
+  modalOpen('calc-guide-overlay', closeCalcGuide);
+}
+
+function closeCalcGuide() {
+  const ov = document.getElementById('calc-guide-overlay');
+  if (ov) ov.style.display = 'none';
+  modalClose('calc-guide-overlay');
+}
+
+/* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v57';
+const BUILD_VERSION = 'v60';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
  *  uske baad ka saara setup (date range, session) chalta hi nahi tha. */
 function safeInit(label, fn) {
   try { fn(); }
-  catch (e) { console.error('StockLedger: "' + label + '" setup failed —', e); }
+  catch (e) { console.error('Nettwear IMS: "' + label + '" setup failed —', e); }
 }
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -10459,7 +11581,10 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('dashboard-render', renderDashboard);
   safeInit('performance-render', renderPerformance);
   safeInit('relations-render', renderRelations);
-  safeInit('restore-persisted', restorePersistedDatasets);
+  safeInit('calc-guide', initCalcGuide);
+  // Signs in (when config.js is filled in), then loads this device's cached
+  // copy and brings it up to date from the Google Sheet.
+  safeInit('cloud', startCloud);
 });
 
 })();
