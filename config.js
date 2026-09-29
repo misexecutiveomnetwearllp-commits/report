@@ -15,5 +15,5 @@
    ===================================================================== */
 window.NIMS_CONFIG = {
   webAppUrl: 'https://script.google.com/macros/s/AKfycbxKcH7rql9b6H_q8Y6_XlGMKR7WppEn1a-NLAM4g62HbGdI3nJKYTlcyt9xKPAyvH-W/exec',
-  googleClientId: 'PASTE-YOUR-CLIENT-ID.apps.googleusercontent.com'
+  googleClientId: 'project-420b7f09-282e-4e96-aeb.apps.googleusercontent.com'
 };
