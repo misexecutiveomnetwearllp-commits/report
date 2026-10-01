@@ -2096,3 +2096,11 @@ body.gate-open { overflow: hidden; }
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .sidebar { min-width: 0; }
 }
+
+/* ---- password screen ---- */
+.auth-form { display: grid; gap: 10px; text-align: left; margin: 0 auto 6px; max-width: 300px; }
+.auth-label { font-size: 12px; font-weight: 600; color: var(--text-soft); text-transform: uppercase; letter-spacing: .5px; }
+.auth-input { width: 100%; font-size: 16px; padding: 10px 12px; }
+.auth-check { font-size: 13px; color: var(--text-soft); display: flex; gap: 8px; align-items: center; }
+.auth-submit { justify-content: center; padding: 10px 14px; }
+.auth-pic { font-size: 15px; }

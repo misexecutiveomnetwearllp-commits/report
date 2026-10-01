@@ -12,7 +12,7 @@
 </head>
 <body>
 
-<!-- ============ SIGN-IN SCREEN (only shown when config.js is filled in) ============ -->
+<!-- ============ PASSWORD SCREEN (only shown when config.js is filled in) ============ -->
 <div id="auth-gate" class="auth-gate" data-mode="checking">
   <div class="auth-card">
     <div class="auth-brand">
@@ -20,13 +20,18 @@
       <div><strong>Nettwear IMS Work</strong><small>Sales · Purchase · Stock · Cancel</small></div>
     </div>
     <h2 id="auth-title">Opening Nettwear IMS Work…</h2>
-    <p id="auth-msg" class="auth-msg">Checking your Google sign-in and access…</p>
-    <div id="auth-btn" class="auth-btn"></div>
+    <p id="auth-msg" class="auth-msg">Google Sheet (database) se connect ho raha hai…</p>
+    <form id="auth-form" class="auth-form" style="display:none" autocomplete="on">
+      <input type="text" name="username" value="Nettwear IMS" autocomplete="username" hidden>
+      <label class="auth-label" for="auth-password">Password</label>
+      <input type="password" id="auth-password" class="text-input auth-input" autocomplete="current-password" required>
+      <label class="auth-check"><input type="checkbox" id="auth-remember" checked> Is device par yaad rakho</label>
+      <button type="submit" class="ghost-btn primary auth-submit">Open</button>
+    </form>
     <div class="auth-actions">
       <button id="auth-retry" class="ghost-btn small" style="display:none">Try again</button>
-      <button id="auth-switch" class="ghost-btn small" style="display:none">Use another Gmail</button>
     </div>
-    <p class="auth-foot">🔒 Data aapki Google Sheet mein hai. Sirf wahi Gmail sign in kar sakte hain jinke saath Sheet share ki gayi hai.</p>
+    <p class="auth-foot">🔒 Data aapki Google Sheet mein hai. Password ke bina kuch nahi dikhta.</p>
   </div>
 </div>
 
@@ -49,7 +54,7 @@
         <span class="auth-email"></span>
         <span class="auth-role"></span>
       </div>
-      <button id="auth-signout" class="auth-signout" title="Sign out (removes the cached copy from this device)">Sign out</button>
+      <button id="auth-signout" class="auth-signout" title="Forget the password on this device and remove its cached copy">Lock</button>
     </div>
     <div id="cloud-line" class="cloud-line"></div>
 
@@ -129,8 +134,8 @@
         <div class="connect-card">
           <div class="local-only-note" style="display:none;">
             <p><strong>Google Sheet database abhi set nahi hai.</strong> Files sirf is browser mein rehti hain aur
-              koi login nahi maanga jata. Har device par data aur Gmail security ke liye <code>config.js</code> mein
-              Apps Script URL aur Google Client ID daaliye (SETUP_GUIDE dekhiye).</p>
+              koi login nahi maanga jata. Har device par data ke liye <code>config.js</code> mein
+              Apps Script ka /exec URL daaliye.</p>
           </div>
           <div class="cloud-only">
             <div class="connect-row">
@@ -146,11 +151,11 @@
             <div class="connect-row sync-row">
               <button id="gs-sync-pull" class="ghost-btn small">Load settings from the sheet</button>
               <button id="gs-sync-push" class="ghost-btn small">Save settings to the sheet</button>
-              <span id="gs-sync-note" class="connect-status">Settings sync starts after sign-in.</span>
+              <span id="gs-sync-note" class="connect-status">Settings sync starts after the password is accepted.</span>
             </div>
             <p class="muted sync-help">Jo bhi file aap "Add to workspace" karte ho, wo apne aap is Google Sheet mein save
-              ho jati hai. Mobile, tablet, laptop ya desktop — kisi par bhi sign in karo, wahi data aur wahi dashboard milega.
-              Editors upload / remove kar sakte hain; Viewers sirf dekh aur analyse kar sakte hain.</p>
+              ho jati hai. Mobile, tablet, laptop ya desktop — kisi par bhi password daalo, wahi data aur wahi dashboard milega.
+              Full-access password se upload / remove; view-only password se sirf dekhna aur analyse.</p>
           </div>
         </div>
 
@@ -556,10 +561,8 @@ setTimeout(function () {
   if (m) m.textContent = 'Website poori load nahi ho payi. Internet check karke page refresh karein.';
 }, 25000);
 </script>
-<!-- connection settings (Apps Script URL + Google Client ID) -->
-<script src="config.js?v=7"></script>
-<!-- Google Sign-In -->
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="app.js?v=7" defer></script>
+<!-- connection setting (Apps Script /exec URL) -->
+<script src="config.js?v=8"></script>
+<script src="app.js?v=8" defer></script>
 </body>
 </html>

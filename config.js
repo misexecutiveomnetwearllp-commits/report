@@ -1,19 +1,16 @@
 /* =====================================================================
-   Nettwear IMS Work — connection settings
+   Nettwear IMS Work — connection setting
    ---------------------------------------------------------------------
-   Ye do values bharne ke baad website har device par Google Sheet
-   (database) se data khud load karegi, aur sirf permission wale Gmail
-   users hi sign in karke data dekh payenge.
+   Apps Script -> Deploy -> Manage deployments wala URL yahan daalo
+   (…/exec par khatam hota hai). Bas itna.
 
-   1. webAppUrl      : Apps Script -> Deploy -> Manage deployments wala
-                       URL (…/exec par khatam hota hai)
-   2. googleClientId : Google Cloud Console -> Credentials -> OAuth
-                       Client ID (…apps.googleusercontent.com)
+   Iske baad website har device par password maangegi (ek baar, device
+   yaad rakhega) aur data Google Sheet se khud load karegi.
+   Password Code.gs ke CONFIG.PASSWORD mein set hota hai, yahan NAHI.
 
-   Dono khaali chhodoge to website purane tareeke se (sirf is browser
-   mein, bina login) chalegi.
+   Khaali chhodoge to website purane tareeke se (sirf is browser mein,
+   bina password) chalegi.
    ===================================================================== */
 window.NIMS_CONFIG = {
-  webAppUrl: 'https://script.google.com/macros/s/AKfycbxKcH7rql9b6H_q8Y6_XlGMKR7WppEn1a-NLAM4g62HbGdI3nJKYTlcyt9xKPAyvH-W/exec',
-  googleClientId: 'project-420b7f09-282e-4e96-aeb'
+  webAppUrl: 'PASTE-YOUR-APPS-SCRIPT-EXEC-URL-HERE'
 };

@@ -1,7 +1,7 @@
 /* ============================================================
    Nettwear IMS Work — ERP Sales / Purchase / Stock / Cancel Analyzer
    Data lives in the owner's Google Sheet (the database) and is only
-   served to Gmail accounts that the sheet is shared with.
+   served to people who know the password.
    ============================================================ */
 (function () {
 "use strict";
@@ -543,7 +543,7 @@ function initSaveButton() {
   btn.addEventListener('click', () => {
     if (!gsReady()) {
       setSaveNote('Not connected to the Google Sheet \u2014 saved in this browser only.', 'warn');
-      toast(cloudConfigured() ? 'Sign in first.' : 'The Google Sheet database is not set up yet (config.js).');
+      toast(cloudConfigured() ? 'Pehle password daaliye.' : 'The Google Sheet database is not set up yet (config.js).');
       return;
     }
     if (!Cloud.canWrite) {
@@ -1326,36 +1326,33 @@ function populateDatasetSelects() {
 }
 
 /* ---------------------------------------------------------------
-   4b. CLOUD DATABASE — Google Sheet via Apps Script, Google sign-in
+   4b. CLOUD DATABASE — Google Sheet via Apps Script, password protected
    ---------------------------------------------------------------
-   config.js holds two things: the Apps Script /exec URL and the Google
-   OAuth Client ID. With both filled in:
+   config.js holds the Apps Script /exec URL. With it filled in:
 
-     1. The whole site sits behind a "Sign in with Google" screen.
-     2. The Google ID token goes with every request; the script checks
-        it with Google and only answers Gmail accounts the spreadsheet
-        is shared with (Editor = can upload, Viewer = can only look).
+     1. The site asks for a password once per device (remembered).
+     2. The password goes with every request; the script answers only
+        when it matches CONFIG.PASSWORD (full) or VIEW_PASSWORD (look only).
      3. Every file added on any device is written into the sheet, and
         every device loads what is in the sheet - no re-uploading.
 
    With config.js empty the site behaves as before: one browser, no
-   login, data kept only on this device.
+   password, data kept only on this device.
    --------------------------------------------------------------- */
 const NIMS_CFG = (typeof window !== 'undefined' && window.NIMS_CONFIG) || {};
 const CLOUD_URL = String(NIMS_CFG.webAppUrl || '').trim();
-const CLIENT_ID = String(NIMS_CFG.googleClientId || '').trim();
 
+/** Cloud mode needs only the Apps Script /exec URL in config.js. */
 function cloudConfigured() {
-  return /^https:\/\/script\.google(usercontent)?\.com\/.+\/exec/.test(CLOUD_URL) &&
-         /^[\w-]+\.apps\.googleusercontent\.com$/.test(CLIENT_ID);
+  return /^https:\/\/script\.google(usercontent)?\.com\/.+\/exec/.test(CLOUD_URL);
 }
 
-const GS = { url: '', meta: null };    // url is set only after access is verified
+const GS = { url: '', meta: null };    // url is set only after the password is accepted
 const Cloud = {
   role: '', canWrite: false, email: '', name: '', spreadsheetName: '', spreadsheetUrl: '',
   maxRows: 8000, queue: Promise.resolve(), syncing: null, lastSync: 0, uploading: {}, missing: []
 };
-const Auth = { token: '', exp: 0, email: '', name: '', picture: '', verified: false, waiters: [], gisInit: false };
+const Auth = { password: '', verified: false, waiters: [], readyOnce: false };
 
 function cloudActive() { return !!GS.url; }
 function gsReady() { return cloudActive(); }
@@ -1363,111 +1360,36 @@ function gsReady() { return cloudActive(); }
 function codeErr(code, msg) { const e = new Error(msg); e.code = code; return e; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-/* ---- sign-in token ---- */
-function decodeJwt(t) {
-  const part = String(t).split('.')[1] || '';
-  const b64 = part.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((part.length + 3) % 4);
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return JSON.parse(new TextDecoder('utf-8').decode(bytes));
-}
-
-/* The sign-in token lives in sessionStorage: it survives a page reload but
-   is gone once the tab / browser is closed, so the next person at a shared
-   computer has to sign in with their own Gmail. */
+/* ---- the password ----
+   Remembered on the device (unless the person unticks "Remember"), so it is
+   typed once per phone / laptop, not every visit. "Lock" forgets it. */
+const PW_KEY = 'nims_pw';
 function authLoadSaved() {
-  try {
-    const o = JSON.parse(window.sessionStorage.getItem('nims_auth') || 'null');
-    if (o && o.token && o.exp) Object.assign(Auth, { token: o.token, exp: o.exp, email: o.email || '', name: o.name || '', picture: o.picture || '' });
-  } catch (e) {}
-  try { window.localStorage.removeItem('nims_auth'); } catch (e) {}
+  try { Auth.password = window.localStorage.getItem(PW_KEY) || window.sessionStorage.getItem(PW_KEY) || ''; }
+  catch (e) { Auth.password = ''; }
 }
-function authSave() {
+function authSave(remember) {
   try {
-    window.sessionStorage.setItem('nims_auth', JSON.stringify({ token: Auth.token, exp: Auth.exp, email: Auth.email, name: Auth.name, picture: Auth.picture }));
+    window.localStorage.removeItem(PW_KEY); window.sessionStorage.removeItem(PW_KEY);
+    (remember ? window.localStorage : window.sessionStorage).setItem(PW_KEY, Auth.password);
   } catch (e) {}
 }
-function authClearToken() {
-  Auth.token = ''; Auth.exp = 0;
-  try { window.sessionStorage.removeItem('nims_auth'); } catch (e) {}
-}
-function authTokenValid(marginSec) {
-  return !!Auth.token && Auth.exp * 1000 > Date.now() + (marginSec === undefined ? 60 : marginSec) * 1000;
+function authClear() {
+  Auth.password = '';
+  try { window.localStorage.removeItem(PW_KEY); window.sessionStorage.removeItem(PW_KEY); } catch (e) {}
 }
 
-function waitForGis(ms) {
-  return new Promise((resolve, reject) => {
-    const t0 = Date.now();
-    (function poll() {
-      if (window.google && google.accounts && google.accounts.id) { resolve(); return; }
-      if (Date.now() - t0 > ms) { reject(new Error('Google Sign-In could not load')); return; }
-      setTimeout(poll, 150);
-    })();
-  });
-}
-
-function initGis() {
-  if (Auth.gisInit) return;
-  google.accounts.id.initialize({
-    client_id: CLIENT_ID,
-    callback: onGoogleCredential,
-    auto_select: true,
-    cancel_on_tap_outside: false,
-    itp_support: true,
-    use_fedcm_for_prompt: true
-  });
-  Auth.gisInit = true;
-}
-
-function promptGoogle() {
-  try { if (Auth.gisInit) google.accounts.id.prompt(); } catch (e) {}
-}
-
-function renderGoogleButton() {
-  const el = document.getElementById('auth-btn');
-  if (!el || !Auth.gisInit) return;
-  el.innerHTML = '';
-  try {
-    google.accounts.id.renderButton(el, { theme: 'filled_blue', size: 'large', text: 'signin_with',
-                                          shape: 'pill', logo_alignment: 'left', width: 260 });
-  } catch (e) { el.textContent = 'Google Sign-In could not start: ' + e.message; }
-}
-
-function onGoogleCredential(resp) {
-  if (!resp || !resp.credential) return;
-  let p;
-  try { p = decodeJwt(resp.credential); } catch (e) { gateShow('error', 'Sign-in response could not be read. Try again.'); return; }
-  const previous = Cloud.email;
-  Object.assign(Auth, { token: resp.credential, exp: p.exp || 0, email: String(p.email || '').toLowerCase(),
-                        name: p.name || '', picture: p.picture || '' });
-  authSave();
-  scheduleTokenRefresh();
-  if (!Auth.verified) { verifyAccess(); return; }
-  if (previous && Auth.email !== previous) { location.reload(); return; }   // a different person signed in
-  gateHide();
-  const w = Auth.waiters.splice(0);
-  w.forEach(fn => fn(Auth.token));
-}
-
-let _refreshTimer = null;
-function scheduleTokenRefresh() {
-  clearTimeout(_refreshTimer);
-  const ms = Auth.exp * 1000 - Date.now() - 5 * 60 * 1000;   // 5 minutes before it runs out
-  if (ms > 0) _refreshTimer = setTimeout(() => { if (!authTokenValid(360)) promptGoogle(); }, ms);
-}
-
-/** A fresh token, asking the person to sign in again if the old one ran out. */
-function authGetToken(opts) {
-  if (authTokenValid(60)) return Promise.resolve(Auth.token);
-  if (opts && opts.noReauth) return Promise.reject(codeErr('AUTH_EXPIRED', 'Sign-in expired.'));
+/** The password, asking for it again if the sheet stopped accepting it. */
+function authGetPassword(opts) {
+  if (Auth.password) return Promise.resolve(Auth.password);
+  if (opts && opts.noReauth) return Promise.reject(codeErr('AUTH_REQUIRED', 'Password daaliye.'));
   return new Promise(resolve => {
     Auth.waiters.push(resolve);
-    if (Auth.waiters.length === 1) { gateShow('expired'); promptGoogle(); }
+    if (Auth.waiters.length === 1) gateShow('signin', 'Password daaliye.');
   });
 }
 
-/* ---- the sign-in screen ---- */
+/* ---- the password screen ---- */
 function gateShow(mode, msg) {
   const g = document.getElementById('auth-gate');
   if (!g) return;
@@ -1476,29 +1398,28 @@ function gateShow(mode, msg) {
   const title = document.getElementById('auth-title');
   const text = document.getElementById('auth-msg');
   const retry = document.getElementById('auth-retry');
-  const sw = document.getElementById('auth-switch');
-  const btn = document.getElementById('auth-btn');
+  const form = document.getElementById('auth-form');
   const titles = {
     checking: 'Opening Nettwear IMS Work…',
-    signin: 'Sign in to continue',
-    expired: 'Session expired — sign in again',
-    denied: 'Access denied',
+    signin: 'Password daaliye',
+    denied: 'Galat password',
     error: 'Could not connect'
   };
   const texts = {
-    checking: 'Checking your Google sign-in and access…',
-    signin: 'Sirf un Gmail accounts ko access hai jinke saath Google Sheet share ki gayi hai.',
-    expired: 'Security ke liye sign-in har kuch der mein renew hota hai. Wahi Gmail chuniye — aapka kaam jaha tha wahin se chalega.',
-    denied: '',
+    checking: 'Google Sheet (database) se connect ho raha hai…',
+    signin: 'Ek baar password daaliye — ye device yaad rakhega.',
+    denied: 'Ye password sahi nahi hai. Dobara try karein.',
     error: ''
   };
   if (title) title.textContent = titles[mode] || '';
   if (text) text.textContent = msg || texts[mode] || '';
-  if (btn) btn.style.display = (mode === 'signin' || mode === 'expired' || mode === 'denied') ? '' : 'none';
+  if (form) form.style.display = (mode === 'signin' || mode === 'denied') ? '' : 'none';
   if (retry) retry.style.display = mode === 'error' ? '' : 'none';
-  if (sw) sw.style.display = (mode === 'denied' || mode === 'expired') ? '' : 'none';
-  if (mode === 'signin' || mode === 'expired' || mode === 'denied') renderGoogleButton();
   document.body.classList.add('gate-open');
+  if (mode === 'signin' || mode === 'denied') {
+    const inp = document.getElementById('auth-password');
+    if (inp) { inp.value = ''; setTimeout(() => { try { inp.focus(); } catch (e) {} }, 50); }
+  }
 }
 
 function gateHide() {
@@ -1510,15 +1431,29 @@ function gateHide() {
 function initAuthGateButtons() {
   const retry = document.getElementById('auth-retry');
   if (retry) retry.addEventListener('click', () => {
-    if (authTokenValid(60)) verifyAccess();
-    else location.reload();
+    if (Auth.password) verifyAccess(); else gateShow('signin');
   });
-  const sw = document.getElementById('auth-switch');
-  if (sw) sw.addEventListener('click', () => {
-    try { google.accounts.id.disableAutoSelect(); } catch (e) {}
-    authClearToken();
-    gateShow('signin', 'Doosra Gmail account chuniye.');
-    promptGoogle();
+  const form = document.getElementById('auth-form');
+  if (form) form.addEventListener('submit', e => {
+    e.preventDefault();
+    const inp = document.getElementById('auth-password');
+    const pw = inp ? inp.value.trim() : '';
+    if (!pw) { if (inp) inp.focus(); return; }
+    const rem = document.getElementById('auth-remember');
+    Auth.password = pw;
+    authSave(!rem || rem.checked);
+    if (!Auth.verified) { verifyAccess(); return; }
+    // asked again mid-session: carry on with whatever was waiting
+    gsCall({ action: 'whoami' }, { retries: 1, noReauth: true }).then(me => {
+      if (me.role !== Cloud.role) { location.reload(); return; }
+      gateHide();
+      GS.url = CLOUD_URL;
+      Auth.waiters.splice(0).forEach(fn => fn(Auth.password));
+      if (!App.datasets.length) restorePersistedDatasets().then(() => cloudSync());
+    }).catch(err => {
+      authClear();
+      gateShow(err.code === 'BAD_PASSWORD' ? 'denied' : 'error', err.code === 'BAD_PASSWORD' ? '' : err.message);
+    });
   });
   const so = document.getElementById('auth-signout');
   if (so) so.addEventListener('click', signOut);
@@ -1535,51 +1470,36 @@ function startCloud() {
     return restorePersistedDatasets();
   }
   document.body.classList.add('cloud-mode');
-  gateShow('checking');
   authLoadSaved();
-  return waitForGis(15000).then(() => {
-    initGis();
-    if (authTokenValid(120)) { scheduleTokenRefresh(); return verifyAccess(); }
-    gateShow('signin');
-    promptGoogle();
-  }).catch(() => {
-    if (authTokenValid(120)) return verifyAccess();
-    gateShow('error', 'Google Sign-In load nahi ho paya. Internet connection / ad-blocker check karke "Try again" dabaiye.');
-  });
+  if (!Auth.password) { gateShow('signin'); return Promise.resolve(); }
+  return verifyAccess();
 }
 
 function verifyAccess() {
-  gateShow('checking', 'Checking access for ' + (Auth.email || 'your account') + '…');
+  gateShow('checking');
   return gsCall({ action: 'whoami' }, { retries: 2, noReauth: true }).then(me => {
     Object.assign(Cloud, {
-      role: me.role, canWrite: !!me.canWrite, email: me.email, name: me.name || Auth.name,
+      role: me.role, canWrite: !!me.canWrite, email: me.email, name: me.name || '',
       spreadsheetName: me.spreadsheetName || '', spreadsheetUrl: me.spreadsheetUrl || '',
       maxRows: me.maxRowsPerRequest || 8000
     });
     GS.url = CLOUD_URL;
     Auth.verified = true;
-    // someone else's cache on this device is not this person's business
-    const cachedFor = Store.get('nims_cache_owner');
-    const wipe = cachedFor && cachedFor !== me.email ? idbClearAll() : Promise.resolve();
-    Store.set('nims_cache_owner', me.email);
     gateHide();
-    return wipe.then(onCloudReady);
+    return onCloudReady();
   }).catch(err => {
-    if (err.code === 'FORBIDDEN') {
-      authClearToken();
-      idbClearAll();
-      App.datasets = [];
+    if (/api key|Unknown action|google|token/i.test(err.message)) {
+      // the sheet is still running an older script (API-key or Gmail version)
+      gateShow('error', 'Google Sheet mein abhi purana Apps Script chal raha hai. Naya Code.gs paste karke ' +
+        'Deploy → Manage deployments → Edit → New version → Deploy karein.');
+    } else if (err.code === 'BAD_PASSWORD' || err.code === 'AUTH_REQUIRED') {
+      authClear();
+      gateShow('denied');
+    } else if (err.code === 'LOCKED') {
+      authClear();
       gateShow('denied', err.message);
-    } else if (err.code === 'AUTH_EXPIRED' || err.code === 'AUTH_REQUIRED') {
-      authClearToken();
-      gateShow('signin', 'Please sign in again.');
-      promptGoogle();
     } else if (err.code === 'SETUP') {
       gateShow('error', err.message + ' (Owner ko batayein.)');
-    } else if (/api key|Unknown action/i.test(err.message)) {
-      // the sheet is still running the old (v5, API-key) script
-      gateShow('error', 'Google Sheet mein abhi purana Apps Script chal raha hai. Owner: naya Code.gs paste karke ' +
-        'Deploy \u2192 Manage deployments \u2192 Edit \u2192 New version \u2192 Deploy karein.');
     } else {
       gateShow('error', 'Database (Google Sheet) se connect nahi ho paya: ' + err.message);
     }
@@ -1592,6 +1512,8 @@ function onCloudReady() {
   renderCloudPanel();
   startSettingsSync(false);
   return restorePersistedDatasets().then(() => cloudSync({ first: true })).then(() => {
+    if (Auth.readyOnce) return;
+    Auth.readyOnce = true;
     // pick up files added on other devices when the person comes back to the tab
     const maybe = () => {
       if (document.visibilityState === 'visible' && cloudActive() && Date.now() - Cloud.lastSync > 3 * 60 * 1000) cloudSync();
@@ -1602,11 +1524,10 @@ function onCloudReady() {
   });
 }
 
+/** "Lock" - forgets the password on this device and removes the cached copy. */
 function signOut() {
-  if (!confirm('Sign out?\n\nIs device se cached data hata diya jayega. Google Sheet (database) mein sab safe rahega.')) return;
-  try { google.accounts.id.disableAutoSelect(); } catch (e) {}
-  authClearToken();
-  Store.remove('nims_cache_owner');
+  if (!confirm('Is device ko lock karein?\n\nPassword bhool jayega aur is device ki cached copy hat jayegi. Google Sheet mein sab data safe rahega.')) return;
+  authClear();
   idbClearAll().then(() => location.reload(), () => location.reload());
 }
 
@@ -1615,16 +1536,13 @@ function renderAuthChip() {
   if (!el) return;
   if (!cloudActive()) { el.style.display = 'none'; return; }
   el.style.display = '';
-  const roleWord = Cloud.role === 'admin' ? 'Owner' : Cloud.role === 'editor' ? 'Editor' : 'View only';
+  const full = Cloud.canWrite;
   const nameEl = el.querySelector('.auth-email');
   const roleEl = el.querySelector('.auth-role');
   const pic = el.querySelector('.auth-pic');
-  if (nameEl) { nameEl.textContent = Cloud.email; nameEl.title = Cloud.name || Cloud.email; }
-  if (roleEl) { roleEl.textContent = roleWord; roleEl.className = 'auth-role role-' + Cloud.role; }
-  if (pic) {
-    if (Auth.picture) { pic.style.backgroundImage = 'url("' + Auth.picture.replace(/"/g, '') + '")'; pic.textContent = ''; }
-    else pic.textContent = (Cloud.email || '?').charAt(0).toUpperCase();
-  }
+  if (nameEl) nameEl.textContent = Cloud.spreadsheetName ? 'Database: ' + Cloud.spreadsheetName : 'Google Sheet database';
+  if (roleEl) { roleEl.textContent = full ? 'Full access' : 'View only'; roleEl.className = 'auth-role role-' + (full ? 'admin' : 'viewer'); }
+  if (pic) pic.textContent = '☁';
 }
 
 /* ---- talking to the Apps Script ---- */
@@ -1638,20 +1556,20 @@ function fetchWithTimeout(url, opts, ms) {
 }
 
 /**
- * One request to the database. Every call is a POST with the sign-in token
- * in the body (never in the URL). Network hiccups, "busy" answers and
- * Google's occasional HTML error page are retried with a growing pause, so
- * a flaky mobile connection does not turn into an error on screen.
+ * One request to the database: a POST with the password in the body (never
+ * in the URL). Network hiccups, "busy" answers and Google's occasional HTML
+ * error page are retried with a growing pause, so a flaky mobile connection
+ * does not turn into an error on screen.
  */
 function gsCall(payload, opts) {
   opts = opts || {};
   const maxRetries = opts.retries === undefined ? 3 : opts.retries;
-  const attempt = (n, reauthed) => authGetToken({ noReauth: opts.noReauth })
-    .then(tok => fetchWithTimeout(CLOUD_URL, {
+  const attempt = (n, reauthed) => authGetPassword({ noReauth: opts.noReauth })
+    .then(pw => fetchWithTimeout(CLOUD_URL, {
       method: 'POST',
       redirect: 'follow',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({}, payload, { token: tok }))
+      body: JSON.stringify(Object.assign({}, payload, { password: pw }))
     }, opts.timeout || 150000))
     .then(r => r.text())
     .then(text => {
@@ -1672,18 +1590,14 @@ function gsCall(payload, opts) {
       return data;
     })
     .catch(err => {
-      if ((err.code === 'AUTH_EXPIRED' || err.code === 'AUTH_REQUIRED') && !reauthed && !opts.noReauth) {
-        authClearToken();
-        return attempt(n, true);
-      }
-      if (err.code === 'FORBIDDEN' && Auth.verified) {
-        // access was taken away while the page was open
-        idbClearAll();
+      if ((err.code === 'BAD_PASSWORD' || err.code === 'AUTH_REQUIRED') && Auth.verified && !opts.noReauth && !reauthed) {
+        // the owner changed the password while this page was open: hide the
+        // data and ask for the new one; the request carries on afterwards
+        authClear();
+        GS.url = '';
         App.datasets = [];
         refreshAfterDataChange();
-        GS.url = '';
-        gateShow('denied', err.message);
-        throw err;
+        return attempt(n, true);
       }
       const transient = err.transient || err.name === 'TypeError' || err.name === 'AbortError';
       if (transient && n < maxRetries) {
@@ -1986,10 +1900,10 @@ function renderCloudPanel() {
   document.querySelectorAll('.local-only-note').forEach(el => { el.style.display = local ? '' : 'none'; });
   if (who) {
     who.innerHTML = local ? '' : cloudActive()
-      ? 'Signed in as <strong>' + escapeHtml(Cloud.email) + '</strong> · ' +
-        (Cloud.role === 'viewer' ? 'view only (can look and analyse, cannot upload)' : Cloud.role === 'admin' ? 'owner' : 'editor') +
+      ? 'Connected \u00b7 ' +
+        (Cloud.canWrite ? '<strong>full access</strong> (upload, remove, save setup)' : '<strong>view only</strong> (can look and analyse, cannot upload)') +
         (Cloud.spreadsheetName ? ' · database: <strong>' + escapeHtml(Cloud.spreadsheetName) + '</strong>' : '')
-      : 'Not signed in.';
+      : 'Password nahi daala gaya.';
   }
   const open = document.getElementById('gs-open-sheet');
   if (open) {
@@ -2036,13 +1950,13 @@ function initSheets() {
 
   const syncBtn = document.getElementById('cloud-sync-now');
   if (syncBtn) syncBtn.addEventListener('click', () => {
-    if (!cloudActive()) { toast('Sign in first.'); return; }
+    if (!cloudActive()) { toast('Pehle password daaliye.'); return; }
     cloudSync({ manual: true });
   });
 
   const listBtn = document.getElementById('gs-list-sheets');
   if (listBtn) listBtn.addEventListener('click', () => {
-    if (!cloudActive()) { toast('Sign in first.'); return; }
+    if (!cloudActive()) { toast('Pehle password daaliye.'); return; }
     listBtn.disabled = true;
     gsCall({ action: 'meta' }).then(meta => { GS.meta = meta; renderSheetList(meta); updateGsOnlyButtons(); })
       .catch(err => notifyError('Could not list the sheet tabs: ' + err.message))
@@ -2051,13 +1965,13 @@ function initSheets() {
 
   const pull = document.getElementById('gs-sync-pull');
   if (pull) pull.addEventListener('click', () => {
-    if (!gsReady()) { setSyncNote('Sign in first.'); return; }
+    if (!gsReady()) { setSyncNote('Pehle password daaliye.'); return; }
     setSyncNote('Reading…');
     pullSettings(true);
   });
   const push = document.getElementById('gs-sync-push');
   if (push) push.addEventListener('click', () => {
-    if (!gsReady()) { setSyncNote('Sign in first.'); return; }
+    if (!gsReady()) { setSyncNote('Pehle password daaliye.'); return; }
     if (!Cloud.canWrite) { setSyncNote('View-only access — your changes stay in this browser.'); return; }
     setSyncNote('Saving…');
     pushSettingsNow().then(ok => { if (ok) toast('Settings saved to your Google Sheet.'); });
@@ -2135,7 +2049,7 @@ function pullSheet(sheetName, type, rowEl) {
 function refreshDataset(id) {
   const ds = App.datasets.find(d => d.id === id);
   if (!ds || !ds.origin || !ds.origin.sheet) return;
-  if (!cloudActive()) { toast('Sign in first.'); return; }
+  if (!cloudActive()) { toast('Pehle password daaliye.'); return; }
   toast('Refreshing "' + ds.name + '"…');
   fetchSheetRows(ds.origin.sheet).then(all => {
     const dataRows = all.slice((ds.headerIdx || 0) + 1)
