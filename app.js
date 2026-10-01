@@ -2117,6 +2117,26 @@ function initTabs() {
  *  finally switched to them. "Reset dashboard" appeared to be the cure only
  *  because it redraws while the tab is on screen. Now the board is measured
  *  again the moment its tab is shown. */
+/** Phones / tablets: the ☰ button on the left rail opens the full sidebar. */
+function initMobileNav() {
+  const btn = document.getElementById('nav-toggle');
+  const back = document.getElementById('nav-backdrop');
+  if (!btn) return;
+  const set = open => {
+    document.body.classList.toggle('nav-open', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+    btn.textContent = open ? '\u2715' : '\u2630';
+    if (back) back.hidden = !open;
+  };
+  btn.addEventListener('click', () => set(!document.body.classList.contains('nav-open')));
+  if (back) back.addEventListener('click', () => set(false));
+  // picking a tab (or a sidebar action) closes the drawer again
+  document.querySelectorAll('.tab-btn').forEach(t => t.addEventListener('click', () => set(false)));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && document.body.classList.contains('nav-open')) set(false); });
+  window.addEventListener('resize', debounce(() => { if (window.innerWidth > 980) set(false); }, 150));
+}
+
 function onTabShown(tab) {
   if (tab === 'top') renderTop10(true);
   const boardId = tab === 'dashboard' ? 'dash' : tab === 'performance' ? 'perf' : null;
@@ -11665,7 +11685,7 @@ function exportTop10CSV() {
 /* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v63';
+const BUILD_VERSION = 'v64';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -11680,6 +11700,7 @@ document.addEventListener('DOMContentLoaded', function () {
   if (vb) vb.textContent = 'build ' + BUILD_VERSION;
 
   safeInit('tabs', initTabs);
+  safeInit('mobile-nav', initMobileNav);
   safeInit('import', initImport);
   safeInit('sheets', initSheets);
   safeInit('explore', initExplore);
