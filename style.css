@@ -2104,3 +2104,49 @@ body.gate-open { overflow: hidden; }
 .auth-check { font-size: 13px; color: var(--text-soft); display: flex; gap: 8px; align-items: center; }
 .auth-submit { justify-content: center; padding: 10px 14px; }
 .auth-pic { font-size: 15px; }
+
+/* ---- Top Sellers tab ---- */
+.top-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.top-sum-item { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.top-sum-item span { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-soft); }
+.top-sum-item strong { font-family: var(--font-display); font-size: 18px; color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.top-sum-item em { font-style: normal; font-size: 12px; color: var(--text-soft); }
+.top-list { display: grid; gap: 14px; }
+.top-card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 16px; min-width: 0; }
+.top-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.top-rank {
+  width: 36px; height: 36px; flex: 0 0 auto; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-weight: 700; font-size: 17px; background: var(--xl-head-bg); color: var(--ink);
+}
+.top-rank.r1 { background: #C9A227; color: #fff; }
+.top-rank.r2 { background: #9AA3AD; color: #fff; }
+.top-rank.r3 { background: #B07A4B; color: #fff; }
+.top-title { flex: 1; min-width: 160px; }
+.top-title h3 { font-size: 18px; margin: 0; overflow-wrap: anywhere; }
+.top-meta { font-size: 12.5px; color: var(--text-soft); margin-top: 2px; }
+.top-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.top-share { height: 4px; background: var(--line); border-radius: 2px; margin: 12px 0; overflow: hidden; }
+.top-share span { display: block; height: 100%; background: var(--rust); border-radius: 2px; }
+.top-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+.top-stat { background: var(--paper); border-radius: 7px; padding: 7px 10px; display: flex; flex-direction: column; min-width: 0; }
+.top-stat span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; color: var(--text-soft); }
+.top-stat strong { font-size: 15px; font-variant-numeric: tabular-nums; color: var(--ink); }
+.top-stat em { font-style: normal; font-size: 11.5px; color: var(--text-soft); }
+.top-stat.big strong { font-size: 18px; color: var(--rust-dark); }
+.top-stat.warn strong { color: var(--rust); }
+.top-brks { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-top: 14px; }
+.top-brk { min-width: 0; }
+.top-brk-h { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; color: var(--text-soft); margin-bottom: 6px; }
+.top-brk-h small { text-transform: none; font-weight: 400; letter-spacing: 0; }
+.top-bar { display: grid; grid-template-columns: minmax(0, 90px) 1fr auto; gap: 8px; align-items: center; font-size: 12.5px; padding: 2px 0; }
+.top-bar-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-bar-t { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.top-bar-t span { display: block; height: 100%; background: var(--teal); border-radius: 4px; }
+.top-bar-v { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.top-bar-v small { color: var(--text-soft); }
+.top-more { font-size: 11.5px; color: var(--text-soft); margin-top: 2px; }
+.top-months { display: flex; align-items: flex-end; gap: 4px; height: 96px; }
+.top-mon { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 2px; }
+.top-mon-bar { width: 100%; max-width: 26px; background: var(--gold); border-radius: 3px 3px 0 0; }
+.top-mon-v { font-size: 10px; font-variant-numeric: tabular-nums; color: var(--text); order: -1; }
+.top-mon-k { font-size: 10px; color: var(--text-soft); }

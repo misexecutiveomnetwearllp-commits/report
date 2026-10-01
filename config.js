@@ -1,15 +1,15 @@
 /* =====================================================================
    Nettwear IMS Work — connection setting
    ---------------------------------------------------------------------
-   Apps Script -> Deploy -> Manage deployments wala URL yahan daalo
-   (…/exec par khatam hota hai). Bas itna.
+   Paste the Apps Script URL from Deploy -> Manage deployments here
+   (it ends in …/exec). That is all.
 
-   Iske baad website har device par password maangegi (ek baar, device
-   yaad rakhega) aur data Google Sheet se khud load karegi.
-   Password Code.gs ke CONFIG.PASSWORD mein set hota hai, yahan NAHI.
+   The website then asks for the password on each device (once; the
+   device remembers it) and loads the data from the Google Sheet.
+   The password is set in CONFIG.PASSWORD in Code.gs, NOT here.
 
-   Khaali chhodoge to website purane tareeke se (sirf is browser mein,
-   bina password) chalegi.
+   Leave it empty and the website works the old way (this browser
+   only, no password).
    ===================================================================== */
 window.NIMS_CONFIG = {
   webAppUrl: 'https://script.google.com/macros/s/AKfycbxKcH7rql9b6H_q8Y6_XlGMKR7WppEn1a-NLAM4g62HbGdI3nJKYTlcyt9xKPAyvH-W/exec'

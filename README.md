@@ -1,12 +1,12 @@
-# Nettwear IMS Work — v61 (password version)
+# Nettwear IMS Work — v63
 
-GitHub repo mein upload karein: `index.html`, `app.js`, `style.css`, `config.js`
-Google Sheet ke Apps Script mein paste karein: `Code.gs` (GitHub par nahi)
+Upload to the GitHub repo: `index.html`, `app.js`, `style.css`, `config.js`
+Paste into the Google Sheet's Apps Script: `Code.gs` (not on GitHub)
 
-1. Code.gs paste karo → `CONFIG.PASSWORD` mein apna password (6+ akshar) → Save
-2. `testSetup` Run → Allow → Deploy → Manage deployments → Edit → New version → Deploy
-3. `config.js` mein `/exec` URL daalo → 4 files GitHub par upload
-4. Website kholo → password daalo (device yaad rakhta hai)
+1. Paste Code.gs → put your password (6+ characters) in `CONFIG.PASSWORD` → Save
+2. Run `testSetup` → Allow → Deploy → Manage deployments → Edit → New version → Deploy
+3. Put the `/exec` URL in `config.js` → upload the 4 files to GitHub
+4. Open the website → enter the password (the device remembers it)
 
-Koi Google Cloud / OAuth Client ID nahi chahiye.
-Har number ka formula: website ke sidebar mein "🧮 Calculation guide".
+No Google Cloud / OAuth Client ID is needed.
+Every formula: "🧮 Calculation guide" in the website's sidebar.

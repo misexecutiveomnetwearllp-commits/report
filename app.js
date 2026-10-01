@@ -543,7 +543,7 @@ function initSaveButton() {
   btn.addEventListener('click', () => {
     if (!gsReady()) {
       setSaveNote('Not connected to the Google Sheet \u2014 saved in this browser only.', 'warn');
-      toast(cloudConfigured() ? 'Pehle password daaliye.' : 'The Google Sheet database is not set up yet (config.js).');
+      toast(cloudConfigured() ? 'Enter the password first.' : 'The Google Sheet database is not set up yet (config.js).');
       return;
     }
     if (!Cloud.canWrite) {
@@ -845,7 +845,7 @@ function handleFiles(fileList) {
   const ok = /\.(xlsx|xlsm|xlsb|xls|csv|txt|tsv|ods|htm|html)$/i;
   files.forEach(file => {
     if (!ok.test(file.name)) {
-      notifyError(file.name + ': ye Excel / CSV file nahi lagti. .xlsx, .xls ya .csv file chuniye.');
+      notifyError(file.name + ': this does not look like an Excel / CSV file. Choose an .xlsx, .xls or .csv file.');
       return;
     }
     try { readWorkbook(file); }
@@ -1047,7 +1047,7 @@ function renderImportCard(filename, sheetName, columns, dataRows, guessedType, o
             fmtDate(reportPeriod.from) + ' \u2192 ' + fmtDate(reportPeriod.to) + '</span> '
           : '') +
         dataRows.length.toLocaleString('en-IN') + ' rows detected' +
-        (droppedCount ? ' <span class="drop-note" title="ERP total / footer rows hata diye gaye — warna har figure double ho jata">· ' + droppedCount + ' total/footer row' + (droppedCount > 1 ? 's' : '') + ' skipped</span>' : '') +
+        (droppedCount ? ' <span class="drop-note" title="ERP total / footer rows were removed, otherwise every figure would double">· ' + droppedCount + ' total/footer row' + (droppedCount > 1 ? 's' : '') + ' skipped</span>' : '') +
       '</span>' +
     '</div>' +
     '<div class="import-card-row">' +
@@ -1133,20 +1133,20 @@ function confirmImport(card, filename, columns, dataRows, origin, headerIdx, rep
   });
   if (!mapping.length) { notifyError('Map at least one column before adding.'); return; }
   if (type === 'sales' && !mapping.some(m => m.field === 'Quantity' || m.field === 'Cancel Qty')) {
-    if (!confirm('Is Sales file mein koi column "Quantity" par map nahi hua — Sold hamesha 0 dikhega.\n\n' +
-                 'OK = phir bhi add karo,  Cancel = wapas jaakar "Review column mapping" check karo.')) return;
+    if (!confirm('No column in this Sales file is mapped to "Quantity", so Sold will always show 0.\n\n' +
+                 'OK = add it anyway,  Cancel = go back and check "Review column mapping".')) return;
   }
 
   // Same file added twice is the most common cause of every figure doubling.
   const twin = App.datasets.find(d => d.name.trim().toLowerCase() === name.toLowerCase() && d.type === type);
   let replace = null;
   if (twin) {
-    const ok = confirm('"' + name + '" (' + typeLabel(type) + ') pehle se loaded hai.\n\n' +
-      'OK = purani file ko is nayi file se REPLACE karo (recommended — figures double nahi honge)\n' +
-      'Cancel = dono files rakho');
+    const ok = confirm('"' + name + '" (' + typeLabel(type) + ') is already loaded.\n\n' +
+      'OK = REPLACE the old file with this one (recommended, figures will not double)\n' +
+      'Cancel = keep both files');
     if (ok) {
       if (twin.cloud && cloudActive() && !Cloud.canWrite) {
-        notifyError('Aapke paas view-only access hai — cloud wali file replace nahi ho sakti.');
+        notifyError('You have view-only access, so a file in the Google Sheet cannot be replaced.');
         return;
       }
       replace = twin;
@@ -1225,6 +1225,7 @@ function refreshAfterDataChange() {
   renderInsights();
   renderPerformance();
   renderCatalog();
+  renderTop10();
   renderRelations();
   updateRangeNotes();
   if (Drill.open) renderDrill();
@@ -1235,8 +1236,8 @@ function removeDataset(id) {
   const ds = App.datasets.find(d => d.id === id);
   if (!ds) return;
   if (ds.cloud && cloudActive()) {
-    if (!Cloud.canWrite) { notifyError('View-only access \u2014 sirf editors Google Sheet se file hata sakte hain.'); return; }
-    if (!confirm('"' + ds.name + '" ko Google Sheet (database) se bhi hata dein?\n\nYe SABHI devices aur users ke liye hat jayegi.')) return;
+    if (!Cloud.canWrite) { notifyError('View-only access: only the full-access password can remove files from the Google Sheet.'); return; }
+    if (!confirm('"' + ds.name + '" from the Google Sheet (database) too?\n\nIt will be removed for ALL devices and users.')) return;
     toast('Removing "' + ds.name + '"\u2026');
     gsCall({ action: 'dbDelete', id }).then(() => {
       App.datasets = App.datasets.filter(d => d.id !== id);
@@ -1382,10 +1383,10 @@ function authClear() {
 /** The password, asking for it again if the sheet stopped accepting it. */
 function authGetPassword(opts) {
   if (Auth.password) return Promise.resolve(Auth.password);
-  if (opts && opts.noReauth) return Promise.reject(codeErr('AUTH_REQUIRED', 'Password daaliye.'));
+  if (opts && opts.noReauth) return Promise.reject(codeErr('AUTH_REQUIRED', 'Enter the password.'));
   return new Promise(resolve => {
     Auth.waiters.push(resolve);
-    if (Auth.waiters.length === 1) gateShow('signin', 'Password daaliye.');
+    if (Auth.waiters.length === 1) gateShow('signin', 'Enter the password.');
   });
 }
 
@@ -1401,14 +1402,14 @@ function gateShow(mode, msg) {
   const form = document.getElementById('auth-form');
   const titles = {
     checking: 'Opening Nettwear IMS Work…',
-    signin: 'Password daaliye',
-    denied: 'Galat password',
+    signin: 'Enter password',
+    denied: 'Wrong password',
     error: 'Could not connect'
   };
   const texts = {
-    checking: 'Google Sheet (database) se connect ho raha hai…',
-    signin: 'Ek baar password daaliye — ye device yaad rakhega.',
-    denied: 'Ye password sahi nahi hai. Dobara try karein.',
+    checking: 'Connecting to the Google Sheet (database)…',
+    signin: 'Enter the password once. This device will remember it.',
+    denied: 'That password is not correct. Please try again.',
     error: ''
   };
   if (title) title.textContent = titles[mode] || '';
@@ -1490,8 +1491,8 @@ function verifyAccess() {
   }).catch(err => {
     if (/api key|Unknown action|google|token/i.test(err.message)) {
       // the sheet is still running an older script (API-key or Gmail version)
-      gateShow('error', 'Google Sheet mein abhi purana Apps Script chal raha hai. Naya Code.gs paste karke ' +
-        'Deploy → Manage deployments → Edit → New version → Deploy karein.');
+      gateShow('error', 'The Google Sheet is still running the old Apps Script. Paste the new Code.gs, then ' +
+        'Deploy → Manage deployments → Edit → New version → Deploy.');
     } else if (err.code === 'BAD_PASSWORD' || err.code === 'AUTH_REQUIRED') {
       authClear();
       gateShow('denied');
@@ -1499,9 +1500,9 @@ function verifyAccess() {
       authClear();
       gateShow('denied', err.message);
     } else if (err.code === 'SETUP') {
-      gateShow('error', err.message + ' (Owner ko batayein.)');
+      gateShow('error', err.message + ' (Please tell the owner.)');
     } else {
-      gateShow('error', 'Database (Google Sheet) se connect nahi ho paya: ' + err.message);
+      gateShow('error', 'Could not connect to the database (Google Sheet): ' + err.message);
     }
   });
 }
@@ -1526,7 +1527,7 @@ function onCloudReady() {
 
 /** "Lock" - forgets the password on this device and removes the cached copy. */
 function signOut() {
-  if (!confirm('Is device ko lock karein?\n\nPassword bhool jayega aur is device ki cached copy hat jayegi. Google Sheet mein sab data safe rahega.')) return;
+  if (!confirm('Lock this device?\n\nThe password is forgotten and this device\'s cached copy is removed. All data stays safe in the Google Sheet.')) return;
   authClear();
   idbClearAll().then(() => location.reload(), () => location.reload());
 }
@@ -1603,8 +1604,8 @@ function gsCall(payload, opts) {
       if (transient && n < maxRetries) {
         return sleep([1500, 4000, 9000, 15000, 20000][n] || 20000).then(() => attempt(n + 1, reauthed));
       }
-      if (err.name === 'TypeError') err.message = 'Network problem — Google Sheet tak pahunch nahi paye. Internet check karein.';
-      if (err.name === 'AbortError') err.message = 'Google Sheet ne time par jawab nahi diya. Thodi der baad dobara try karein.';
+      if (err.name === 'TypeError') err.message = 'Network problem: could not reach the Google Sheet. Check the internet connection.';
+      if (err.name === 'AbortError') err.message = 'The Google Sheet did not answer in time. Please try again in a moment.';
       throw err;
     });
   return attempt(0, false);
@@ -1678,7 +1679,7 @@ function cloudUpload(ds) {
   return job.then(res => {
     ds.cloud = true; ds.cloudStamp = res.updated || null; ds.cloudState = 'saved'; ds.cloudPct = 100;
     idbSaveDataset(ds);
-    toast('"' + ds.name + '" Google Sheet mein save ho gayi — ab har device par dikhegi.');
+    toast('"' + ds.name + '" saved to the Google Sheet. It now shows on every device.');
   }).catch(err => {
     if (err.code === 'CANCELLED') {
       // removed while uploading: do not leave a half-written copy in the sheet
@@ -1686,8 +1687,8 @@ function cloudUpload(ds) {
       return;
     }
     ds.cloudState = 'error'; ds.cloudError = err.message;
-    notifyError('"' + ds.name + '" Google Sheet mein save nahi hui: ' + err.message +
-                ' — Import Data par "Retry" dabaiye (file is browser mein safe hai).');
+    notifyError('"' + ds.name + '" was not saved to the Google Sheet: ' + err.message +
+                '. Press "Retry" on Import Data (the file is safe in this browser).');
   });
 }
 
@@ -1830,7 +1831,7 @@ function cloudSync(opts) {
       showCloudProgress(label, 0);
       return cloudDownload(e, f => showCloudProgress(label, f))
         .then(ds => { if (wanted(e)) { upsertLocalDataset(ds); changed = true; } })
-        .catch(err => { failed.push(e.name); console.error(err); notifyError('"' + e.name + '" load nahi ho payi: ' + err.message); })
+        .catch(err => { failed.push(e.name); console.error(err); notifyError('"' + e.name + '" could not be loaded: ' + err.message); })
         .then(next);
     };
 
@@ -1903,7 +1904,7 @@ function renderCloudPanel() {
       ? 'Connected \u00b7 ' +
         (Cloud.canWrite ? '<strong>full access</strong> (upload, remove, save setup)' : '<strong>view only</strong> (can look and analyse, cannot upload)') +
         (Cloud.spreadsheetName ? ' · database: <strong>' + escapeHtml(Cloud.spreadsheetName) + '</strong>' : '')
-      : 'Password nahi daala gaya.';
+      : 'Password not entered.';
   }
   const open = document.getElementById('gs-open-sheet');
   if (open) {
@@ -1915,7 +1916,7 @@ function renderCloudPanel() {
     const local = cloudActive() && Cloud.canWrite ? App.datasets.filter(d => !d.cloud && (d.cloudState === 'local' || d.cloudState === 'error' || !d.cloudState)) : [];
     if (local.length) {
       pend.style.display = '';
-      pend.innerHTML = '<span>☁ ' + local.length + ' file(s) sirf is browser mein hain, Google Sheet mein nahi — doosre devices par nahi dikhengi.</span>' +
+      pend.innerHTML = '<span>☁ ' + local.length + ' file(s) are only in this browser, not in the Google Sheet, so other devices will not see them.</span>' +
         '<button class="ghost-btn small primary" id="cloud-upload-all">Save all to Google Sheet</button>';
       const b = document.getElementById('cloud-upload-all');
       if (b) b.addEventListener('click', () => local.forEach(cloudQueueUpload));
@@ -1929,7 +1930,7 @@ function renderCloudPanel() {
     if (Cloud.missing && Cloud.missing.length) {
       miss.style.display = '';
       miss.textContent = 'Note: ' + Cloud.missing.map(e => '"' + e.name + '"').join(', ') +
-        ' ka data tab Google Sheet mein nahi mila (shayad delete ho gaya). Us file ko dobara upload karein.';
+        ': its data tab was not found in the Google Sheet (it may have been deleted). Please upload that file again.';
     } else miss.style.display = 'none';
   }
 }
@@ -1950,13 +1951,13 @@ function initSheets() {
 
   const syncBtn = document.getElementById('cloud-sync-now');
   if (syncBtn) syncBtn.addEventListener('click', () => {
-    if (!cloudActive()) { toast('Pehle password daaliye.'); return; }
+    if (!cloudActive()) { toast('Enter the password first.'); return; }
     cloudSync({ manual: true });
   });
 
   const listBtn = document.getElementById('gs-list-sheets');
   if (listBtn) listBtn.addEventListener('click', () => {
-    if (!cloudActive()) { toast('Pehle password daaliye.'); return; }
+    if (!cloudActive()) { toast('Enter the password first.'); return; }
     listBtn.disabled = true;
     gsCall({ action: 'meta' }).then(meta => { GS.meta = meta; renderSheetList(meta); updateGsOnlyButtons(); })
       .catch(err => notifyError('Could not list the sheet tabs: ' + err.message))
@@ -1965,13 +1966,13 @@ function initSheets() {
 
   const pull = document.getElementById('gs-sync-pull');
   if (pull) pull.addEventListener('click', () => {
-    if (!gsReady()) { setSyncNote('Pehle password daaliye.'); return; }
+    if (!gsReady()) { setSyncNote('Enter the password first.'); return; }
     setSyncNote('Reading…');
     pullSettings(true);
   });
   const push = document.getElementById('gs-sync-push');
   if (push) push.addEventListener('click', () => {
-    if (!gsReady()) { setSyncNote('Pehle password daaliye.'); return; }
+    if (!gsReady()) { setSyncNote('Enter the password first.'); return; }
     if (!Cloud.canWrite) { setSyncNote('View-only access — your changes stay in this browser.'); return; }
     setSyncNote('Saving…');
     pushSettingsNow().then(ok => { if (ok) toast('Settings saved to your Google Sheet.'); });
@@ -1995,7 +1996,7 @@ function renderSheetList(meta) {
   if (!meta.sheets.length) { wrap.innerHTML = '<div class="empty-hint big">No other tabs found in this spreadsheet.</div>'; return; }
 
   wrap.innerHTML = '<h3>Tabs in ' + escapeHtml(meta.spreadsheetName) + '</h3>' +
-    '<p class="muted sync-help">Agar aapka report data seedha kisi Sheet tab mein hai, use yahan se jod sakte ho — tab badalne par "↻ Refresh" se naya data aa jayega.</p>' +
+    '<p class="muted sync-help">If your report data sits directly in a Sheet tab, link it from here. When the tab changes, "↻ Refresh" loads the new data.</p>' +
     meta.sheets.map(s =>
       '<div class="sheet-row" data-sheet="' + escapeHtml(s.name) + '">' +
         '<span class="sheet-name">' + escapeHtml(s.name) + '</span>' +
@@ -2049,7 +2050,7 @@ function pullSheet(sheetName, type, rowEl) {
 function refreshDataset(id) {
   const ds = App.datasets.find(d => d.id === id);
   if (!ds || !ds.origin || !ds.origin.sheet) return;
-  if (!cloudActive()) { toast('Pehle password daaliye.'); return; }
+  if (!cloudActive()) { toast('Enter the password first.'); return; }
   toast('Refreshing "' + ds.name + '"…');
   fetchSheetRows(ds.origin.sheet).then(all => {
     const dataRows = all.slice((ds.headerIdx || 0) + 1)
@@ -2117,6 +2118,7 @@ function initTabs() {
  *  because it redraws while the tab is on screen. Now the board is measured
  *  again the moment its tab is shown. */
 function onTabShown(tab) {
+  if (tab === 'top') renderTop10(true);
   const boardId = tab === 'dashboard' ? 'dash' : tab === 'performance' ? 'perf' : null;
   if (boardId) remeasureBoard(boardId);
 }
@@ -2168,7 +2170,7 @@ function openExploreFilterPicker() {
   const popup = document.createElement('div');
   popup.className = 'modal-backdrop';
   popup.innerHTML = '<div class="modal-box">' +
-    '<h3>Filter lagao</h3>' +
+    '<h3>Add a filter</h3>' +
     '<label class="toolbar-label">Column:</label> ' +
     '<select id="efp-field" class="select">' + fields.map(f => '<option value="' + escapeHtml(f) + '">' + escapeHtml(f) + '</option>').join('') + '</select>' +
     '<div id="efp-values" class="efp-values"></div>' +
@@ -3319,6 +3321,7 @@ function renderAllPeriodViews() {
   renderPerformance();
   renderCatalog();
   renderDashboard();
+  renderTop10();
   if (typeof Drill !== 'undefined' && Drill.open) renderDrill();
 }
 
@@ -3848,7 +3851,7 @@ function renderQuickReport() {
 
   const colHead = dims.map(d => {
     const on = !!QuickReport.filters[d];
-    return '<span class="qr-colchip' + (on ? ' on' : '') + '" data-col="' + escapeHtml(d) + '" title="' + escapeHtml(d) + ' par filter lagao">' +
+    return '<span class="qr-colchip' + (on ? ' on' : '') + '" data-col="' + escapeHtml(d) + '" title="Filter on ' + escapeHtml(d) + '">' +
       escapeHtml(d) + '<span class="qr-funnel">\u25BE</span></span>';
   }).join('<span class="qr-arrow">\u2794</span>');
 
@@ -11307,103 +11310,114 @@ function calcGuideHtml() {
   const table = rows => '<table class="cg-table"><thead><tr><th>Number</th><th>Calculation</th><th>Note</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
 
   return '' +
-  '<p class="cg-lead">Neeche har screen ke har number ka formula hai. <strong>D</strong> = selected window ke din, ' +
-    '<strong>Net Sold</strong> = bechi gayi qty minus cancel/return. Settings badalne par (LT, SF, MOQ, bands) ye page bhi wahi values dikhata hai.</p>' +
+  '<p class="cg-lead">The formula behind every number on every screen. <strong>D</strong> = number of days in the selected window, ' +
+    '<strong>Net Sold</strong> = quantity sold minus cancels / returns. This page always shows your current settings (LT, SF, MOQ, bands).</p>' +
 
-  '<h3>1. Window aur din (sab screens par)</h3>' +
+  '<h3>1. Window and days (all screens)</h3>' +
   table([
-    row('Anchor date ("aaj")', 'Sales + Purchase data ki <em>sabse aakhri</em> Date', 'Computer ki date nahi. Purana export ho to bhi "Last 30 days" sahi pakadta hai.'),
+    row('Anchor date ("today")', 'The <em>latest</em> Date in the Sales + Purchase data', 'Not the computer’s date, so "Last 30 days" is right even for an older export.'),
     row('Last N days', f('anchor − (N−1) → anchor'), 'Last 7 / 30 / 90 / 180 / 365 days'),
-    row('This week / Last week', 'Monday → anchor &nbsp;/&nbsp; pichhla poora Mon–Sun', ''),
-    row('Latest month / Last month', '1 tareekh → anchor &nbsp;/&nbsp; pichhla poora mahina', ''),
+    row('This week / Last week', 'Monday → anchor &nbsp;/&nbsp; the previous full Mon–Sun', ''),
+    row('Latest month / Last month', '1st of the month → anchor &nbsp;/&nbsp; the previous full month', ''),
     row('Latest year', '1 Jan → anchor', ''),
-    row('D (days)', f('To − From + 1'), '"All data" mein: window ki pehli sale date se aakhri tak. Koi date na ho to 30.'),
-    row('Stock / Closing', 'Window se filter <em>nahi</em> hota', 'Stock file jo balance batati hai wahi hamesha.'),
-    row('Skipped rows', '"Total", "Grand Total", "Printed on…" jaisi rows', 'Import par hata di jati hain, warna har figure double ho jata.')
+    row('D (days)', f('To − From + 1'), 'For "All data": first to last sale date in the window. 30 if there are no dates.'),
+    row('Stock / Closing', '<em>Not</em> filtered by the window', 'Always the balance the stock file reports.'),
+    row('Skipped rows', '"Total", "Grand Total", "Printed on…" rows', 'Removed on import, otherwise every figure would double.')
   ]) +
 
-  '<h3>2. Quantities — Sold, Cancel, Net Sold, Purchased, Stock</h3>' +
+  '<h3>2. Quantities: Sold, Cancel, Net Sold, Purchased, Stock</h3>' +
   table([
-    row('Sold (gross)', f('Σ Quantity') + ' — Sales rows, window ke andar, sirf positive qty', 'Customer ko bill hua maal'),
-    row('Cancel', f('Σ Cancel Qty') + ' + ' + f('|negative Quantity|') + ' + Return/Cancel wale bills + "Cancel / Return" file ki poori qty',
-        'Transaction Type mein Return, Cancel, Refund, Credit Note ya SR ho to wo row cancel maani jati hai.'),
-    row('Net Sold (Sold)', f('Sold (gross) − Cancel'), '<strong>Har calculation isi se hoti hai</strong> — sell-through, ADC, cover, ABC, charts. Cancel data na ho to Sold = Net Sold.'),
-    row('Purchased', f('Σ Quantity') + ' — Purchase rows, window ke andar', 'Purchase return (negative / Return bill) minus ho jata hai.'),
-    row('Stock / Closing (CBS)', f('Σ Quantity') + ' ya ' + f('Σ CBS Qty') + ' — Stock file', ''),
-    row('Opening (OBS)', f('Σ OBS Qty') + ' — Stock file', 'Sirf tab jab OBS column ho.'),
-    row('Moved', f('Opening − Closing'), '↓ = stock ghata, ↑ = stock badha')
+    row('Sold (gross)', f('Σ Quantity') + ' of Sales rows in the window, positive quantities only', 'Goods billed to customers'),
+    row('Cancel', f('Σ Cancel Qty') + ' + ' + f('|negative Quantity|') + ' + Return / Cancel bills + all quantity in a "Cancel / Return" file',
+        'A row whose Transaction Type says Return, Cancel, Refund, Credit Note or SR counts as a cancel.'),
+    row('Net Sold (Sold)', f('Sold (gross) − Cancel'), '<strong>Every other calculation uses this</strong>: sell-through, ADC, cover, ABC, charts. Without cancel data, Sold = Net Sold.'),
+    row('Purchased', f('Σ Quantity') + ' of Purchase rows in the window', 'Purchase returns (negative / Return bills) are subtracted.'),
+    row('Stock / Closing (CBS)', f('Σ Quantity') + ' or ' + f('Σ CBS Qty') + ' from the Stock file', ''),
+    row('Opening (OBS)', f('Σ OBS Qty') + ' from the Stock file', 'Only when there is an OBS column.'),
+    row('Moved', f('Opening − Closing'), '↓ = stock went down, ↑ = stock went up')
   ]) +
 
   '<h3>3. Product Performance (tab 01)</h3>' +
   table([
     row('Avg daily sale', f('Net Sold ÷ D'), ''),
-    row('Sell-through %', f('Net Sold ÷ (Net Sold + Stock) × 100'), 'Kitna maal nikal gaya'),
-    row('Days cover', f('Stock ÷ Avg daily sale'), 'Sale 0 aur stock hai to ∞'),
-    row('Last sold', 'Sabse aakhri date jis din billed qty > 0 thi', 'Return wale din ko "sale" nahi maana jata'),
+    row('Sell-through %', f('Net Sold ÷ (Net Sold + Stock) × 100'), 'How much of the goods has moved'),
+    row('Days cover', f('Stock ÷ Avg daily sale'), '∞ when there is stock but no sale'),
+    row('Last sold', 'Latest date with billed quantity > 0', 'A day with only returns does not count as a sale'),
     row('Days since last sale', f('Anchor − Last sold'), ''),
-    row('Stock age', f('Σ(qty × (anchor − Purchase Bill Date)) ÷ Σ qty'), 'Qty-weighted average umar'),
-    row('ABC', 'Net Sold ke hisaab se bade se chhota; running total % ≤ 80 = <strong>A</strong>, ≤ 95 = <strong>B</strong>, baaki = <strong>C</strong>', 'Net Sold 0 = —'),
-    row('Status', 'Is kram mein pehla jo sach ho: <br>1. Net Sold 0 aur Stock > 0 → <strong>Dead stock</strong><br>2. Stock 0 aur Net Sold > 0 → <strong>Out of stock</strong><br>' +
-        '3. Aakhri sale 90+ din pehle aur Stock > 0 → <strong>Dead stock</strong><br>4. A → <strong>Best seller</strong>, B → <strong>Steady</strong>, C → <strong>Slow mover</strong><br>5. Kuch nahi → <strong>No activity</strong>', ''),
-    row('Overstocked', f('Stock > 0 aur Days cover > 3 × ' + td + ' din'), td + ' = target cover (Settings)'),
-    row('Excess qty', f('Stock − Avg daily sale × ' + td), 'Kabhi na bika ho to poora stock'),
-    row('Footer total', 'Har column ka Σ (saari filtered rows, sirf dikhne wali 800 nahi)', 'Sell-through total = ΣNet Sold ÷ (ΣNet Sold + ΣStock)'),
-    row('Expand ki hui rows', 'Wahi formulas, us row ke andar ke data par', 'Status: Dead stock / Out of stock / Moving / No activity')
+    row('Stock age', f('Σ(qty × (anchor − Purchase Bill Date)) ÷ Σ qty'), 'Quantity-weighted average age'),
+    row('ABC', 'Sorted by Net Sold, highest first; running total % ≤ 80 = <strong>A</strong>, ≤ 95 = <strong>B</strong>, rest = <strong>C</strong>', 'Net Sold 0 = —'),
+    row('Status', 'The first rule that applies, in this order:<br>1. Net Sold 0 and Stock > 0 → <strong>Dead stock</strong><br>2. Stock 0 and Net Sold > 0 → <strong>Out of stock</strong><br>' +
+        '3. Last sale 90+ days ago and Stock > 0 → <strong>Dead stock</strong><br>4. A → <strong>Best seller</strong>, B → <strong>Steady</strong>, C → <strong>Slow mover</strong><br>5. Otherwise → <strong>No activity</strong>', ''),
+    row('Overstocked', f('Stock > 0 and Days cover > 3 × ' + td + ' days'), td + ' = target cover (Settings)'),
+    row('Excess qty', f('Stock − Avg daily sale × ' + td), 'The whole stock if it never sold'),
+    row('Footer total', 'Σ of each column over all filtered rows, not just the 800 shown', 'Sell-through total = ΣNet Sold ÷ (ΣNet Sold + ΣStock)'),
+    row('Expanded rows', 'Same formulas, on the data inside that row', 'Status: Dead stock / Out of stock / Moving / No activity')
   ]) +
 
-  '<h3>4. Catalog (tab 02) — replenishment</h3>' +
+  '<h3>4. Catalog (tab 02): replenishment</h3>' +
   table([
-    row('Levels', (CatPrefs.levels || ['Article No', 'Colour', 'Size']).join(' → '), 'Settings › 02 Catalog se badal sakte hain'),
-    row('ADC', f('Net Sold ÷ D'), 'Average Daily Consumption. Box mein type karke override kar sakte ho.'),
-    row('LT / SF / MOQ', 'Default: LT <strong>' + lt + '</strong> din, SF <strong>' + sf + '</strong>, MOQ <strong>' + moq + '</strong>', 'Lead time, safety factor, minimum order qty — har row par badal sakte ho'),
-    row('ML (Max Level)', f('Σ har SKU ka max( SKU ki ADC × LT × SF , MOQ )'),
-        'SKU = Article + Colour + Size. Ek SKU wali row par seedha ' + f('max(ADC × LT × SF, MOQ)') + '. Design row = uske saare SKUs ka jod.'),
-    row('MIT', 'Material in transit — aap type karte ho', 'Default 0'),
-    row('Stock %', f('(Closing + MIT) ÷ ML × 100'), '999%+ se upar cap'),
-    row('Stock1 % (optional)', f('(Closing + MIT) ÷ Standing Stock Ideal × 100'), 'Settings mein "Stock1 %" chuna ho tab'),
-    row('Standing Stock Ideal', 'Pichhle <strong>' + std + '</strong> poore calendar mahino ki Net Sold', 'Chalu (adhoora) mahina nahi gina jata'),
-    row('Reorder', f('ML − (Closing + MIT)') + ', upar ki taraf MOQ ke multiple mein', 'Zaroorat na ho to —'),
-    row('Cover', f('Closing ÷ ADC') + ' (din)', ''),
-    row('Sell-thru', f('Net Sold ÷ (Opening + Purchased) × 100'), 'Opening/Purchase na ho to ' + f('Net Sold ÷ (Net Sold + Closing)') + '; kuch bhi na ho to —'),
-    row('Status', 'Closing 0 + sale → <strong>Stockout</strong>; dono 0 → <strong>Idle</strong>; sale 0 → <strong>No sale</strong>; warna Stock % band:<br>' +
-        '0–' + b.low + '% <strong>Low stock</strong> · ' + b.low + '–' + b.mid + '% <strong>Medium stock</strong> · ' + b.mid + '–' + b.good + '% <strong>Healthy</strong> · ' + b.good + '%+ <strong>Overstock</strong>', 'Row ka rang aur Status hamesha same band se'),
-    row('Colour dots', 'Har andar wali row (colour/size) ka apna Stock % band', 'Closing ≤ ' + (CatPrefs.lowStockAt === undefined ? 2 : CatPrefs.lowStockAt) + ' ho to amber'),
-    row('Day strip', 'Har chip = ek din jab sale hui. Rang: us row ke "typical" (median) sale din se tulna', '< 50% laal · < 100% peela · < 200% hara · 200%+ baingani'),
-    row('Footer', f('Σ') + ' har column; Stock % total = ' + f('Σ(Closing + MIT) ÷ Σ ML'), '')
+    row('Levels', (CatPrefs.levels || ['Article No', 'Colour', 'Size']).join(' → '), 'Change in Settings › 02 Catalog'),
+    row('ADC', f('Net Sold ÷ D'), 'Average Daily Consumption. Type in the box to override it.'),
+    row('LT / SF / MOQ', 'Defaults: LT <strong>' + lt + '</strong> days, SF <strong>' + sf + '</strong>, MOQ <strong>' + moq + '</strong>', 'Lead time, safety factor, minimum order quantity; each row can be changed'),
+    row('ML (Max Level)', f('Σ for each SKU of max( SKU ADC × LT × SF , MOQ )'),
+        'SKU = Article + Colour + Size. A single-SKU row is simply ' + f('max(ADC × LT × SF, MOQ)') + '. A design row adds up all its SKUs.'),
+    row('MIT', 'Material in transit, typed in by you', 'Default 0'),
+    row('Stock %', f('(Closing + MIT) ÷ ML × 100'), 'Capped at 999%+'),
+    row('Stock1 % (optional)', f('(Closing + MIT) ÷ Standing Stock Ideal × 100'), 'When "Stock1 %" is chosen in Settings'),
+    row('Standing Stock Ideal', 'Net Sold over the last <strong>' + std + '</strong> complete calendar months', 'The current, unfinished month is not counted'),
+    row('Reorder', f('ML − (Closing + MIT)') + ', rounded up to a multiple of MOQ', '— when nothing is needed'),
+    row('Cover', f('Closing ÷ ADC') + ' (days)', ''),
+    row('Sell-thru', f('Net Sold ÷ (Opening + Purchased) × 100'), 'Without opening / purchases: ' + f('Net Sold ÷ (Net Sold + Closing)') + '; with neither: —'),
+    row('Status', 'Closing 0 with sales → <strong>Stockout</strong>; both 0 → <strong>Idle</strong>; no sale → <strong>No sale</strong>; otherwise the Stock % band:<br>' +
+        '0–' + b.low + '% <strong>Low stock</strong> · ' + b.low + '–' + b.mid + '% <strong>Medium stock</strong> · ' + b.mid + '–' + b.good + '% <strong>Healthy</strong> · ' + b.good + '%+ <strong>Overstock</strong>', 'Row colour and Status always use the same band'),
+    row('Colour dots', 'Each inner row (colour / size) in its own Stock % band', 'Amber when Closing ≤ ' + (CatPrefs.lowStockAt === undefined ? 2 : CatPrefs.lowStockAt)),
+    row('Day strip', 'One chip per day with a sale, coloured against the row’s typical (median) selling day', '< 50% red · < 100% yellow · < 200% green · 200%+ purple'),
+    row('Footer', f('Σ') + ' of each column; Stock % total = ' + f('Σ(Closing + MIT) ÷ Σ ML'), '')
+  ]) +
+
+  '<h3>4b. Top Sellers (★ tab)</h3>' +
+  table([
+    row('Rank', 'Highest Net Sold first (or by Amount when "On: Sale value" is chosen)', 'Only items with Net Sold > 0. The section filter applies first.'),
+    row('Share', f('item Net Sold ÷ Net Sold of all items × 100'), ''),
+    row('Billed / Cancel', 'Sold (gross) / Cancel; ' + f('Cancel ÷ Billed × 100') + ' = return %', 'Only when there is cancel data'),
+    row('Sale value', f('Σ Amount') + ' (return rows subtracted); ' + f('value ÷ Net Sold') + ' = ₹ per piece', 'Only when the Sales file has an Amount column'),
+    row('Per day, Stock, Cover, Sell-through', 'Same formulas as Product Performance', ''),
+    row('Colour / Size wise', 'The item’s Net Sold in each colour / size; current stock in brackets', 'Top 8 shown'),
+    row('Month wise', 'Net Sold per month (last 12 months)', '')
   ]) +
 
   '<h3>5. Drill-down window (⧉ button)</h3>' +
   table([
-    row('Sold / Net Sold', f('Σ net qty') + ' us selection ki', 'Cancel ho to "billed − cancel" niche likha hota hai'),
+    row('Sold / Net Sold', f('Σ net qty') + ' of the selection', 'With cancels, "billed − cancel" is shown underneath'),
     row('Sell-through', f('Net Sold ÷ (Net Sold + Stock) × 100'), ''),
     row('Days cover', f('Stock ÷ (Net Sold ÷ D)'), ''),
-    row('Share', f('Row ki Net Sold ÷ selection ki total Net Sold × 100'), ''),
-    row('Month-wise chart', 'Har mahine ki Net Sold', '')
+    row('Share', f('row Net Sold ÷ total Net Sold of the selection × 100'), ''),
+    row('Month-wise chart', 'Net Sold per month', '')
   ]) +
 
   '<h3>6. Dashboard, charts, Pivot, Quick Report</h3>' +
   table([
-    row('Quantity', 'Sales = ' + f('Σ Net Sold') + ', Cancel / Return = ' + f('Σ Cancel') + ', Purchase = ' + f('Σ Purchased') + ', Stock = ' + f('Σ Closing'), 'Chart ke "Data" option se'),
-    row('Row count', 'Kitni rows', ''),
-    row('Distinct items', 'Alag-alag Item Code (na ho to Article No) ki ginti', ''),
-    row('Share % (table card)', f('value ÷ dikhne wali rows ka total × 100'), ''),
-    row('Running %', f('ab tak ka jod ÷ total × 100'), ''),
-    row('Chart click filter', 'Kisi bar par click = baaki sab charts us value se filter', 'Wo chart khud filter nahi hota'),
-    row('Quick Report / Pivot', 'Sum / Count / Average — chune gaye column ka, tick kiye columns ke group mein', 'Share = group ÷ grand total. Ye raw column par chalta hai, net nahi.'),
-    row('Top Items Snapshot', 'Net Sold ke hisaab se top items', '')
+    row('Quantity', 'Sales = ' + f('Σ Net Sold') + ', Cancel / Return = ' + f('Σ Cancel') + ', Purchase = ' + f('Σ Purchased') + ', Stock = ' + f('Σ Closing'), 'Chosen with the chart’s "Data" option'),
+    row('Row count', 'Number of rows', ''),
+    row('Distinct items', 'Count of different Item Codes (Article No when there is none)', ''),
+    row('Share % (table card)', f('value ÷ total of the rows shown × 100'), ''),
+    row('Running %', f('running total ÷ total × 100'), ''),
+    row('Chart click filter', 'Clicking a bar filters every other chart to that value', 'The clicked chart itself is not filtered'),
+    row('Quick Report / Pivot', 'Sum / Count / Average of the chosen column, grouped by the ticked columns', 'Share = group ÷ grand total. Works on the raw column, not net.'),
+    row('Top Items Snapshot', 'Top items by Net Sold', '')
   ]) +
 
-  '<h3>7. Ek example — sab formulas ek saath</h3>' +
+  '<h3>7. One worked example</h3>' +
   '<div class="cg-example">' +
-    '<p>Article <strong>A-101</strong>, "Last 30 days" (D = 30). Bill hua <strong>120</strong>, customer ne wapas kiya <strong>10</strong>, closing stock <strong>90</strong>, MIT 0, LT 30, SF 1.5, MOQ 12 (ek hi SKU).</p>' +
+    '<p>Article <strong>A-101</strong>, "Last 30 days" (D = 30). Billed <strong>120</strong>, returned by customers <strong>10</strong>, closing stock <strong>90</strong>, MIT 0, LT 30, SF 1.5, MOQ 12 (a single SKU).</p>' +
     '<ul>' +
       '<li>Net Sold = 120 − 10 = <strong>110</strong></li>' +
-      '<li>ADC = 110 ÷ 30 = <strong>3.67</strong> pcs/din</li>' +
+      '<li>ADC = 110 ÷ 30 = <strong>3.67</strong> pcs per day</li>' +
       '<li>Sell-through = 110 ÷ (110 + 90) = <strong>55%</strong></li>' +
-      '<li>Days cover = 90 ÷ 3.67 = <strong>24.5 din</strong></li>' +
+      '<li>Days cover = 90 ÷ 3.67 = <strong>24.5 days</strong></li>' +
       '<li>ML = max(3.67 × 30 × 1.5, 12) = <strong>165</strong></li>' +
       '<li>Stock % = 90 ÷ 165 = <strong>54.5%</strong> → <strong>Medium stock</strong> (' + b.low + '–' + b.mid + '%)</li>' +
-      '<li>Reorder = 165 − 90 = 75 → 12 ke multiple mein upar = <strong>84</strong></li>' +
+      '<li>Reorder = 165 − 90 = 75 → rounded up to a multiple of 12 = <strong>84</strong></li>' +
     '</ul>' +
   '</div>';
 }
@@ -11422,7 +11436,7 @@ function openCalcGuide() {
     ov.className = 'drill-overlay';
     ov.innerHTML = '<div class="drill-panel cg-panel">' +
       '<div class="drill-head"><div><h2>Calculation guide</h2>' +
-      '<div class="drill-subtitle">Har number kaise calculate hota hai</div></div>' +
+      '<div class="drill-subtitle">How every number is calculated</div></div>' +
       '<button class="drill-close" id="cg-close" title="Close (Esc)">&times;</button></div>' +
       '<div class="cg-body" id="cg-body"></div></div>';
     document.body.appendChild(ov);
@@ -11441,9 +11455,217 @@ function closeCalcGuide() {
 }
 
 /* ---------------------------------------------------------------
+   18. TOP SELLERS — top 10 (or 20 / 50) best-selling items, full detail
+   ---------------------------------------------------------------
+   Ranked on Net Sold (after cancel / return) in the selected sales
+   window, or on sale value when the sales file has an Amount column.
+   Every card carries the item's own numbers plus what it sold in each
+   colour / size / month, so the "what is selling" question is answered
+   on one screen.
+   --------------------------------------------------------------- */
+const TopState = { dim: 'Article No', n: 10, by: 'qty', section: 'all', dirty: true, last: null };
+const TOP_DIMS = ['Article No', 'Style', 'Item Code', 'Colour', 'Size', 'Brand', 'Sub Section', 'Section', 'Supplier'];
+
+function initTop10() {
+  const host = document.getElementById('tab-top');
+  if (!host) return;
+  const on = (id, ev, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(ev, fn); };
+  on('top-dim', 'change', e => { TopState.dim = e.target.value; renderTop10(true); });
+  on('top-n', 'change', e => { TopState.n = parseInt(e.target.value, 10) || 10; renderTop10(true); });
+  on('top-by', 'change', e => { TopState.by = e.target.value; renderTop10(true); });
+  on('top-section', 'change', e => { TopState.section = e.target.value; renderTop10(true); });
+  on('top-export', 'click', exportTop10CSV);
+}
+
+function topTabVisible() {
+  const p = document.getElementById('tab-top');
+  return !!(p && p.classList.contains('active'));
+}
+
+/** Sale value of one row: Amount, taken off again for a return row. */
+function rowValue(r) {
+  const a = typeof r.Amount === 'number' ? r.Amount : null;
+  if (a === null) return null;
+  return qtySplit(r).net < 0 ? -Math.abs(a) : a;
+}
+
+function renderTop10(force) {
+  if (!force && !topTabVisible()) { TopState.dirty = true; return; }
+  TopState.dirty = false;
+  const list = document.getElementById('top-list');
+  const sum = document.getElementById('top-summary');
+  if (!list) return;
+  if (!App.datasets.length || !salesRecords().length) {
+    list.innerHTML = '<div class="empty-hint big">Load a Sales file and the top-selling items will appear here.</div>';
+    if (sum) sum.innerHTML = '';
+    return;
+  }
+
+  // the "Rank by" list shows only dimensions that exist in the data
+  const have = new Set();
+  App.datasets.forEach(d => d.fields.forEach(f => have.add(f)));
+  const dimSel = document.getElementById('top-dim');
+  const dims = TOP_DIMS.filter(d => have.has(d));
+  if (dims.length && dims.indexOf(TopState.dim) === -1) TopState.dim = dims[0];
+  if (dimSel) dimSel.innerHTML = dims.map(d => '<option' + (d === TopState.dim ? ' selected' : '') + '>' + escapeHtml(d) + '</option>').join('');
+
+  const dim = TopState.dim;
+  const targetDays = Math.max(1, parseInt(Prefs.targetDays || 30, 10) || 30);
+  const A = buildAnalysis(dim, targetDays);
+  const range = A.range;
+  const sales = salesRecords().filter(r => inPeriod(r, range));
+
+  // sale value per key (only when an Amount column exists)
+  const hasValue = sales.some(r => typeof r.Amount === 'number');
+  const value = new Map();
+  if (hasValue) sales.forEach(r => {
+    const v = rowValue(r); if (v === null) return;
+    const k = dimKey(r, dim); value.set(k, (value.get(k) || 0) + v);
+  });
+  const bySel = document.getElementById('top-by');
+  if (bySel) {
+    bySel.innerHTML = '<option value="qty">Net Sold (pcs)</option>' + (hasValue ? '<option value="value">Sale value (₹)</option>' : '');
+    if (!hasValue) TopState.by = 'qty';
+    bySel.value = TopState.by;
+  }
+
+  // section filter
+  const secs = [...new Set(A.rows.map(r => r.meta.Section).filter(Boolean))].sort();
+  const secSel = document.getElementById('top-section');
+  if (secSel) {
+    if (TopState.section !== 'all' && secs.indexOf(TopState.section) === -1) TopState.section = 'all';
+    secSel.innerHTML = '<option value="all">All sections</option>' +
+      secs.map(s => '<option value="' + escapeHtml(s) + '"' + (s === TopState.section ? ' selected' : '') + '>' + escapeHtml(s) + '</option>').join('');
+    secSel.parentElement.style.display = secs.length > 1 ? '' : 'none';
+  }
+
+  let pool = A.rows.filter(r => r.sold > 0 && r.key !== '(blank)');
+  if (TopState.section !== 'all') pool = pool.filter(r => r.meta.Section === TopState.section);
+  pool.forEach(r => { r.value = hasValue ? (value.get(r.key) || 0) : null; });
+  const totalSold = pool.reduce((a, r) => a + r.sold, 0);
+  const totalValue = hasValue ? pool.reduce((a, r) => a + (r.value || 0), 0) : 0;
+  const metric = TopState.by === 'value' ? (r => r.value || 0) : (r => r.sold);
+  pool.sort((a, b) => metric(b) - metric(a) || b.sold - a.sold);
+  const top = pool.slice(0, TopState.n);
+
+  // breakdowns for just these items, in one pass
+  const keys = new Set(top.map(r => r.key));
+  const subDims = ['Colour', 'Size', 'Article No', 'Style'].filter(d => d !== dim && have.has(d)).slice(0, 2);
+  const brk = new Map();
+  top.forEach(r => brk.set(r.key, { sub: subDims.map(() => new Map()), month: new Map(), sizeStock: new Map() }));
+  sales.forEach(r => {
+    const k = dimKey(r, dim); if (!keys.has(k)) return;
+    const b = brk.get(k), q = recQty(r);
+    subDims.forEach((d, i) => { const s = dimKey(r, d); b.sub[i].set(s, (b.sub[i].get(s) || 0) + q); });
+    if (r.Date) { const m = dateKeyForGrain(r.Date, 'month'); b.month.set(m, (b.month.get(m) || 0) + q); }
+  });
+  if (subDims.length) stockRecords().forEach(r => {
+    const k = dimKey(r, dim); if (!keys.has(k)) return;
+    const s = dimKey(r, subDims[0]); const b = brk.get(k);
+    b.sizeStock.set(s, (b.sizeStock.get(s) || 0) + recQty(r));
+  });
+
+  const topSold = top.reduce((a, r) => a + r.sold, 0);
+  const er = effectiveRange(range);
+  if (sum) sum.innerHTML =
+    '<div class="top-sum-item"><span>Window</span><strong>' + escapeHtml(er.from ? er.text : range.label) + '</strong><em>' + A.days + ' days</em></div>' +
+    '<div class="top-sum-item"><span>Top ' + top.length + ' sold</span><strong>' + fmtNum(topSold) + ' pcs</strong><em>' +
+      (totalSold > 0 ? fmtNum(topSold / totalSold * 100, 1) + '% of all sales' : '') + '</em></div>' +
+    '<div class="top-sum-item"><span>Total ' + escapeHtml(dim) + ' with sales</span><strong>' + pool.length.toLocaleString('en-IN') + '</strong><em>' + fmtNum(totalSold) + ' pcs net sold</em></div>' +
+    (hasValue ? '<div class="top-sum-item"><span>Top ' + top.length + ' sale value</span><strong>₹' + fmtNum(top.reduce((a, r) => a + (r.value || 0), 0), 0) + '</strong><em>' +
+      (totalValue > 0 ? fmtNum(top.reduce((a, r) => a + (r.value || 0), 0) / totalValue * 100, 1) + '% of value' : '') + '</em></div>' : '');
+
+  const hasCancel = cancelDataPresent();
+  const hasStock = stockRecords().length > 0;
+  const anchor = A.anchor;
+  const maxSold = top.length ? Math.max.apply(null, top.map(r => r.sold)) : 1;
+
+  list.innerHTML = top.map((r, i) => {
+    const b = brk.get(r.key);
+    const m = r.meta || {};
+    const metaLine = [m.Brand, [m.Section, m['Sub Section']].filter(Boolean).join(' › '), m.Supplier,
+                      dim !== 'Style' && m.Style ? 'Style ' + m.Style : '']
+      .filter(Boolean).map(escapeHtml).join(' · ');
+    const stat = (label, val, sub, cls) => '<div class="top-stat' + (cls ? ' ' + cls : '') + '"><span>' + label + '</span><strong>' + val + '</strong>' + (sub ? '<em>' + sub + '</em>' : '') + '</div>';
+    const daysAgo = r.lastSale ? Math.round((anchor - r.lastSale) / 86400000) : null;
+    const stats = [
+      stat('Net Sold', fmtNum(r.sold) + ' pcs', totalSold > 0 ? fmtNum(r.sold / totalSold * 100, 1) + '% share' : '', 'big'),
+      hasCancel ? stat('Billed / Cancel', fmtNum(r.gross || 0) + ' / ' + fmtNum(r.cancel || 0),
+        (r.gross > 0 ? fmtNum((r.cancel || 0) / r.gross * 100, 1) + '% return' : '')) : '',
+      r.value !== null && r.value !== undefined ? stat('Sale value', '₹' + fmtNum(r.value, 0), r.sold > 0 ? '₹' + fmtNum(r.value / r.sold, 0) + ' / pc' : '') : '',
+      stat('Per day', fmtNum(r.avgDaily, 2), 'avg pcs / day'),
+      hasStock ? stat('Stock now', fmtNum(r.stock), r.daysCover === Infinity ? 'no sale' : fmtNum(r.daysCover, 0) + ' days cover',
+        r.stock === 0 ? 'warn' : (r.daysCover < 15 ? 'warn' : '')) : '',
+      stat('Purchased', fmtNum(r.purchased || 0), 'in window'),
+      hasStock ? stat('Sell-through', fmtNum(r.sellThrough, 1) + '%', 'sold ÷ (sold + stock)') : '',
+      stat('Last sold', r.lastSale ? fmtDate(r.lastSale) : '—', daysAgo === null ? '' : daysAgo === 0 ? 'latest day' : daysAgo === 1 ? '1 day ago' : daysAgo + ' days ago'),
+      stat('First sold', r.firstSale ? fmtDate(r.firstSale) : '—', r.saleLines ? r.saleLines.toLocaleString('en-IN') + ' bill lines' : '')
+    ].join('');
+
+    const chips = (map, i2, label) => {
+      const arr = [...map.entries()].filter(e => e[1] > 0).sort((x, y) => y[1] - x[1]);
+      if (!arr.length) return '';
+      const mx = arr[0][1];
+      const shown = arr.slice(0, 8);
+      return '<div class="top-brk"><div class="top-brk-h">' + escapeHtml(label) + ' wise sale' +
+        (i2 === 0 && hasStock && b.sizeStock.size ? ' <small>(stock in brackets)</small>' : '') + '</div>' +
+        shown.map(([k, q]) => '<div class="top-bar"><span class="top-bar-k" title="' + escapeHtml(k) + '">' + escapeHtml(k) + '</span>' +
+          '<span class="top-bar-t"><span style="width:' + Math.max(4, q / mx * 100).toFixed(1) + '%"></span></span>' +
+          '<span class="top-bar-v">' + fmtNum(q) + (i2 === 0 && hasStock && b.sizeStock.size ? ' <small>(' + fmtNum(b.sizeStock.get(k) || 0) + ')</small>' : '') + '</span></div>').join('') +
+        (arr.length > shown.length ? '<div class="top-more">+' + (arr.length - shown.length) + ' more</div>' : '') + '</div>';
+    };
+    const months = [...b.month.entries()].sort((x, y) => grainSort(x[0], 'month') - grainSort(y[0], 'month')).slice(-12);
+    const mMax = months.length ? Math.max.apply(null, months.map(x => x[1]).concat([1])) : 1;
+    const monthHtml = months.length > 1
+      ? '<div class="top-brk"><div class="top-brk-h">Month wise</div><div class="top-months">' +
+        months.map(([k, q]) => '<div class="top-mon" title="' + escapeHtml(k + ': ' + fmtNum(q) + ' pcs') + '"><span class="top-mon-bar" style="height:' +
+          Math.max(3, Math.max(0, q) / mMax * 100).toFixed(1) + '%"></span><span class="top-mon-v">' + fmtNum(q) + '</span><span class="top-mon-k">' + escapeHtml(k.split(' ')[0]) + '</span></div>').join('') +
+        '</div></div>'
+      : '';
+
+    return '<article class="top-card">' +
+      '<div class="top-head">' +
+        '<span class="top-rank' + (i < 3 ? ' r' + (i + 1) : '') + '">' + (i + 1) + '</span>' +
+        '<div class="top-title"><h3>' + escapeHtml(r.key) + '</h3><div class="top-meta">' + (metaLine || escapeHtml(dim)) + '</div></div>' +
+        '<div class="top-tags">' +
+          (r.abc && r.abc !== '—' ? '<span class="abc-tag abc-' + r.abc + '">' + r.abc + '</span>' : '') +
+          '<span class="status-tag st-' + String(r.status || '').replace(/\s+/g, '-').toLowerCase() + '">' + escapeHtml(r.status || '') + '</span>' +
+          '<button class="ghost-btn small top-open" data-key="' + escapeHtml(r.key) + '" title="Open the full drill-down">Full details ⧉</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="top-share"><span style="width:' + (r.sold / maxSold * 100).toFixed(1) + '%"></span></div>' +
+      '<div class="top-stats">' + stats + '</div>' +
+      '<div class="top-brks">' + subDims.map((d, i2) => chips(b.sub[i2], i2, d)).join('') + monthHtml + '</div>' +
+    '</article>';
+  }).join('') || '<div class="empty-hint big">No sales found in this window / section.</div>';
+
+  list.querySelectorAll('.top-open').forEach(btn => btn.addEventListener('click', () => openDrill(dim, btn.dataset.key)));
+  TopState.last = { top, dim, totalSold, hasValue, subDims, brk };
+}
+
+function exportTop10CSV() {
+  const L = TopState.last;
+  if (!L || !L.top.length) { toast('Nothing to export yet.'); return; }
+  const headers = ['Rank', L.dim, 'Brand', 'Section', 'Sub Section', 'Supplier', 'Net Sold', 'Share %', 'Gross Sold', 'Cancel',
+                   'Sale Value', 'Avg / Day', 'Stock', 'Days Cover', 'Purchased', 'Sell-through %', 'First Sold', 'Last Sold', 'ABC', 'Status']
+    .concat(L.subDims.map(d => 'Top ' + d));
+  const rows = L.top.map((r, i) => {
+    const b = L.brk.get(r.key);
+    return [i + 1, r.key, r.meta.Brand || '', r.meta.Section || '', r.meta['Sub Section'] || '', r.meta.Supplier || '',
+      r.sold, L.totalSold ? Number((r.sold / L.totalSold * 100).toFixed(1)) : '', r.gross || 0, r.cancel || 0,
+      r.value === null || r.value === undefined ? '' : Math.round(r.value), Number(r.avgDaily.toFixed(2)), r.stock,
+      r.daysCover === Infinity ? '' : Math.round(r.daysCover), r.purchased || 0, Number(r.sellThrough.toFixed(1)),
+      r.firstSale ? fmtDate(r.firstSale) : '', r.lastSale ? fmtDate(r.lastSale) : '', r.abc, r.status]
+      .concat(L.subDims.map((d, j) => [...b.sub[j].entries()].filter(e => e[1] > 0).sort((x, y) => y[1] - x[1]).slice(0, 5)
+        .map(e => e[0] + ' (' + e[1] + ')').join(', ')));
+  });
+  downloadBlob(toCSV(headers, rows), 'top-' + L.top.length + '-sellers.csv', 'text/csv');
+}
+
+/* ---------------------------------------------------------------
    11. INIT
    --------------------------------------------------------------- */
-const BUILD_VERSION = 'v60';
+const BUILD_VERSION = 'v63';
 
 /** Ek init fail ho to baaki sab band na ho jaye — har step alag-alag chalta hai.
  *  Pehle ye sab ek hi try-block mein the, to koi ek element missing hone par
@@ -11496,6 +11718,7 @@ document.addEventListener('DOMContentLoaded', function () {
   safeInit('performance-render', renderPerformance);
   safeInit('relations-render', renderRelations);
   safeInit('calc-guide', initCalcGuide);
+  safeInit('top10', initTop10);
   // Signs in (when config.js is filled in), then loads this device's cached
   // copy and brings it up to date from the Google Sheet.
   safeInit('cloud', startCloud);

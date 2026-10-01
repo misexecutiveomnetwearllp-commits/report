@@ -25,13 +25,13 @@
       <input type="text" name="username" value="Nettwear IMS" autocomplete="username" hidden>
       <label class="auth-label" for="auth-password">Password</label>
       <input type="password" id="auth-password" class="text-input auth-input" autocomplete="current-password" required>
-      <label class="auth-check"><input type="checkbox" id="auth-remember" checked> Is device par yaad rakho</label>
+      <label class="auth-check"><input type="checkbox" id="auth-remember" checked> Remember on this device</label>
       <button type="submit" class="ghost-btn primary auth-submit">Open</button>
     </form>
     <div class="auth-actions">
       <button id="auth-retry" class="ghost-btn small" style="display:none">Try again</button>
     </div>
-    <p class="auth-foot">🔒 Data aapki Google Sheet mein hai. Password ke bina kuch nahi dikhta.</p>
+    <p class="auth-foot">🔒 Your data lives in your Google Sheet. Nothing is shown without the password.</p>
   </div>
 </div>
 
@@ -67,6 +67,9 @@
       <button class="tab-btn active" data-tab="performance">
         <span class="tab-no">01</span> Product Performance
       </button>
+      <button class="tab-btn" data-tab="top">
+        <span class="tab-no">★</span> Top Sellers
+      </button>
       <button class="tab-btn" data-tab="catalog">
         <span class="tab-no">02</span> Catalog
       </button>
@@ -92,8 +95,8 @@
     </div>
 
     <div class="sidebar-footer">
-      <button id="btn-calc-guide" class="ghost-btn" title="Har number kaise calculate hota hai">🧮 Calculation guide</button>
-      <button id="btn-open-snapshot" class="ghost-btn" title="Top items ka snapshot dobara kholo">📌 Top Items Snapshot</button>
+      <button id="btn-calc-guide" class="ghost-btn" title="How every number is calculated">🧮 Calculation guide</button>
+      <button id="btn-open-snapshot" class="ghost-btn" title="Open the top items snapshot again">📌 Top Items Snapshot</button>
       <button id="btn-save-session" class="ghost-btn" title="Download everything you've loaded &amp; mapped as one JSON file">⬇ Save session</button>
       <label class="ghost-btn" for="session-load-input" title="Reload a session JSON you saved earlier">⬆ Load session
         <input type="file" id="session-load-input" accept=".json" hidden>
@@ -133,9 +136,9 @@
       <div id="source-sheet" style="display:none;">
         <div class="connect-card">
           <div class="local-only-note" style="display:none;">
-            <p><strong>Google Sheet database abhi set nahi hai.</strong> Files sirf is browser mein rehti hain aur
-              koi login nahi maanga jata. Har device par data ke liye <code>config.js</code> mein
-              Apps Script ka /exec URL daaliye.</p>
+            <p><strong>The Google Sheet database is not set up yet.</strong> Files stay only in this browser and
+              no password is asked. To have the data on every device, put the Apps Script /exec URL in
+              <code>config.js</code>.</p>
           </div>
           <div class="cloud-only">
             <div class="connect-row">
@@ -153,9 +156,9 @@
               <button id="gs-sync-push" class="ghost-btn small">Save settings to the sheet</button>
               <span id="gs-sync-note" class="connect-status">Settings sync starts after the password is accepted.</span>
             </div>
-            <p class="muted sync-help">Jo bhi file aap "Add to workspace" karte ho, wo apne aap is Google Sheet mein save
-              ho jati hai. Mobile, tablet, laptop ya desktop — kisi par bhi password daalo, wahi data aur wahi dashboard milega.
-              Full-access password se upload / remove; view-only password se sirf dekhna aur analyse.</p>
+            <p class="muted sync-help">Every file you "Add to workspace" is saved to this Google Sheet automatically. On a phone, tablet,
+              laptop or desktop, enter the password and you get the same data and the same dashboard.
+              The full-access password can upload and remove; the view-only password can only view and analyse.</p>
           </div>
         </div>
 
@@ -193,6 +196,29 @@
         <table class="data-table" id="explore-table"></table>
       </div>
       <div class="pager" id="explore-pager"></div>
+    </section>
+
+    <!-- ---------- TAB: TOP SELLERS ---------- -->
+    <section class="tab-panel" id="tab-top">
+      <div class="toolbar">
+        <label class="toolbar-label" for="top-dim">Rank by:</label>
+        <select id="top-dim" class="select"><option>Article No</option></select>
+        <label class="toolbar-label" for="top-n">Show:</label>
+        <select id="top-n" class="select">
+          <option value="10" selected>Top 10</option>
+          <option value="20">Top 20</option>
+          <option value="50">Top 50</option>
+        </select>
+        <label class="toolbar-label" for="top-by">On:</label>
+        <select id="top-by" class="select"><option value="qty">Net Sold (pcs)</option></select>
+        <label class="toolbar-label" for="top-period">Sales window:</label>
+        <select id="top-period" class="select period-select"><option value="all" selected>All data</option><option value="thisweek">This week</option><option value="lastweek">Last week</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 180 days</option><option value="365">Last 365 days</option><option value="thismonth">Latest month</option><option value="lastmonth">Last month</option><option value="thisyear">Latest year</option><option value="custom">Custom range&hellip;</option></select>
+        <span class="top-sec-wrap"><select id="top-section" class="select" aria-label="Section"><option value="all">All sections</option></select></span>
+        <span class="spacer"></span>
+        <button id="top-export" class="ghost-btn small">&#11015; Export CSV</button>
+      </div>
+      <div id="top-summary" class="top-summary"></div>
+      <div id="top-list" class="top-list"></div>
     </section>
 
     <!-- ---------- TAB: CATALOG ---------- -->
@@ -558,11 +584,11 @@ setTimeout(function () {
   if (window.__nimsStarted) return;
   var m = document.getElementById('auth-msg'), t = document.getElementById('auth-title');
   if (t) t.textContent = 'Could not load';
-  if (m) m.textContent = 'Website poori load nahi ho payi. Internet check karke page refresh karein.';
+  if (m) m.textContent = 'The website did not load completely. Check the internet connection and refresh the page.';
 }, 25000);
 </script>
 <!-- connection setting (Apps Script /exec URL) -->
-<script src="config.js?v=8"></script>
-<script src="app.js?v=8" defer></script>
+<script src="config.js?v=9"></script>
+<script src="app.js?v=10" defer></script>
 </body>
 </html>
